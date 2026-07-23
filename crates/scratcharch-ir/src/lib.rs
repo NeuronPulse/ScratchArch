@@ -6,3 +6,5 @@ pub mod function;
 pub mod r#module;
 pub mod builder;
 pub mod lower;
+pub mod debug;
+pub mod text;

@@ -1,4 +1,5 @@
 use crate::block::BasicBlock;
+use crate::debug::DebugLoc;
 use crate::function::IrFunction;
 use crate::instruction::{GepIndex, Instruction, Terminator};
 use crate::r#module::IrModule;
@@ -188,5 +189,28 @@ impl IrBuilder {
             let _ = func_name;
         }
         self.module
+    }
+
+    pub fn set_entry_block(&mut self, label: impl Into<String>) {
+        if let Some(func_name) = &self.current_func {
+            if let Some(func) = self.module.get_function_mut(func_name) {
+                func.entry_block = label.into();
+            }
+        }
+    }
+
+    /// Set the debug location on the most recently emitted instruction in the
+    /// current block. Does nothing if no block is active.
+    pub fn set_last_debug_loc(&mut self, debug: Option<DebugLoc>) {
+        if let (Some(func_name), Some(block_label)) = (&self.current_func, &self.current_block) {
+            if let Some(func) = self.module.get_function_mut(func_name) {
+                if let Some(idx) = func.block_index(block_label) {
+                    let block = &mut func.blocks[idx];
+                    if !block.instructions.is_empty() {
+                        block.set_debug_loc(block.instructions.len() - 1, debug);
+                    }
+                }
+            }
+        }
     }
 }
