@@ -1,6 +1,6 @@
 # ScratchArch Development Roadmap
 
-> Last updated: 2026-07-23 (runtime library v0.1 completed)
+> Last updated: 2026-07-23 (toolchain integration v0.1 completed)
 > Status: living document
 
 ## Legend
@@ -152,10 +152,33 @@
       `docs/design/RUNTIME_DESIGN.md`.
 - [x] Architecture-independent, no Scratch-specific or backend-specific code.
 
+### Toolchain Integration v0.1 (`scratcharch-driver`)
+
+- [x] **New crate** `crates/scratcharch-driver`: unified compilation pipeline
+      `LLVM IR → translator → SAIR → optimizer → interpreter`.
+- [x] **Clean API**: `CompileDriver`, `CompileConfig`, `OptLevel`,
+      `CompiledModule`, `DriverError`; no dependency cycles.
+- [x] **CLI example** `examples/sairc.rs`: compiles and runs an LLVM IR file
+      with selectable optimization level.
+- [x] **Driver tests**: end-to-end tests for all C compatibility programs under
+      multiple optimization levels plus invalid-input error handling.
+- [x] **SAIR serialization**: stable textual format in
+      `crates/scratcharch-ir/src/text/`, specification in
+      `docs/specification/SAIR_FORMAT.md`, round-trip tests including debug
+      locations and call instructions.
+- [x] **Debug metadata**: optional `DebugLoc` (file, line, column) stored as a
+      side-table in `BasicBlock`; does not affect validation or execution.
+- [x] **Expanded C compatibility**: `pointer`, `string`, `memory`, `recursion`
+      tests alongside existing `hello`, `add`, `factorial`, `fib`, `array`,
+      `struct`; all verified through `LLVM → SAIR → interpreter`.
+- [x] **Documentation review**: added "Known limitations for v0.1" sections to
+      `ISA.md` and `ABI.md` documenting gaps between the frozen architecture
+      and the v0.1 implementation.
+
 ### Testing
 
 - [x] All tests pass with 0 warnings and 0 clippy errors
-- [x] Test breakdown: 6 pipeline + 10 runtime pipeline + 23 translator + 23 IR + 23 interpreter + 20 VM + 12 target + 20 opt + 21 runtime = 158
+- [x] Test breakdown: 6 pipeline + 10 runtime pipeline + 23 translator + 24 IR + 23 interpreter + 20 VM + 12 target + 20 opt + 21 runtime = 159
 
 ## In Progress
 
