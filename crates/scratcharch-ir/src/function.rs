@@ -64,7 +64,7 @@ impl IrFunction {
         self.value_counter = counter;
     }
 
-    fn build_pred_map(&self) -> HashMap<String, Vec<String>> {
+    pub(crate) fn build_pred_map(&self) -> HashMap<String, Vec<String>> {
         let mut preds: HashMap<String, Vec<String>> = HashMap::new();
         for block in &self.blocks {
             preds.entry(block.label.clone()).or_default();

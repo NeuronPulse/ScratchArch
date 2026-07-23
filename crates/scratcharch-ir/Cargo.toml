@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 scratcharch-core = { path = "../scratcharch-core" }
+scratcharch-target = { path = "../scratcharch-target" }
 
 [dev-dependencies]
 scratcharch-vm = { path = "../scratcharch-vm" }

@@ -10,12 +10,14 @@ version = "0.1.0"
 name = "scratcharch-driver"
 version = "0.1.0"
 dependencies = [
+ "scratcharch-core",
  "scratcharch-ir",
  "scratcharch-llvm",
  "scratcharch-opt",
  "scratcharch-runtime",
  "scratcharch-sair-interpreter",
  "scratcharch-target",
+ "scratcharch-vm",
 ]
 
 [[package]]
@@ -23,6 +25,7 @@ name = "scratcharch-ir"
 version = "0.1.0"
 dependencies = [
  "scratcharch-core",
+ "scratcharch-target",
  "scratcharch-vm",
 ]
 

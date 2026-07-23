@@ -213,4 +213,33 @@ impl IrBuilder {
             }
         }
     }
+
+    /// Update an operand of an existing phi instruction.
+    ///
+    /// This is useful for loop-carried phis whose back-edge value is defined
+    /// after the phi itself, a common situation in SSA construction.
+    pub fn set_phi_operand(
+        &mut self,
+        block_label: &str,
+        instr_idx: usize,
+        pred_label: &str,
+        value: ValueId,
+    ) {
+        let func_name = self.current_func.as_ref().expect("no current function");
+        let func = self.module.get_function_mut(func_name).expect("function missing");
+        let block_idx = func.block_index(block_label).expect("block not found");
+        let instr = func.blocks[block_idx]
+            .instructions
+            .get_mut(instr_idx)
+            .expect("instruction index out of bounds");
+        if let Instruction::Phi { incoming, .. } = instr {
+            for (v, l) in incoming.iter_mut() {
+                if l == pred_label {
+                    *v = value;
+                    return;
+                }
+            }
+        }
+        panic!("phi operand for predecessor '{}' not found", pred_label);
+    }
 }
