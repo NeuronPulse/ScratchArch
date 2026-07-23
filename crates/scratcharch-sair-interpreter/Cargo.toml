@@ -1,0 +1,9 @@
+[package]
+name = "scratcharch-sair-interpreter"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+scratcharch-ir = { path = "../scratcharch-ir" }
+scratcharch-core = { path = "../scratcharch-core" }
+scratcharch-runtime = { path = "../scratcharch-runtime" }
