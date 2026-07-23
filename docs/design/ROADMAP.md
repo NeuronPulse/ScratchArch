@@ -200,13 +200,34 @@
       `PHI_LOWERING.md`, `SAIR_DESIGN.md`, `ROADMAP.md`, and
       `EXECUTION_MODEL.md`.
 
+### Scratch Backend Foundation v0.1 (`scratcharch-scratchgraph`)
+
+- [x] **New crate** `crates/scratcharch-scratchgraph`: ScratchGraph IR for
+      semantic Scratch program representation.
+- [x] **ScratchGraph data model**: `Project`, `Stage`, `Sprite`, `Script`,
+      `Procedure`, `Variable`, `List`, `Broadcast`, `Stmt`, `Expr`, `Value`,
+      and event `Hat`s.
+- [x] **SAIR → ScratchGraph lowering**: `ScratchGraphLowerer` maps SAIR
+      functions to Scratch custom blocks, SSA values to stage variables,
+      control flow to Scratch control blocks, and calls to custom block calls.
+- [x] **Exporter abstraction**: `ScratchExporter` trait isolates format-specific
+      code. `JsonExporter` produces Scratch 3 `project.json`.
+- [x] **Architecture separation**: `scratcharch-core`, `scratcharch-ir`, and
+      `scratcharch-vm` remain Scratch-agnostic. Only `scratcharch-scratchgraph`
+      and exporters know Scratch concepts.
+- [x] **Tests**: SAIR → ScratchGraph → JSON exporter pipeline tests for
+      arithmetic, variable assignment, conditional, procedure call, and loop
+      exporter output.
+- [x] **Documentation**: `docs/design/SCRATCH_BACKEND_DESIGN.md` and
+      `docs/specification/SCRATCHGRAPH.md`.
+
 ### Testing
 
 - [x] All tests pass with 0 warnings and 0 clippy errors
 - [x] Test breakdown: 12 driver + 9 VM backend + 2 IR unit + 28 IR integration +
       11 SAIR text round-trip + 10 pipeline + 10 runtime pipeline + 23 translator +
       20 opt + 21 runtime + 23 interpreter + 7 target unit + 5 target integration +
-      26 VM = 207
+      26 VM + 6 scratchgraph = 213
 
 ## In Progress
 
