@@ -354,3 +354,191 @@ fn test_recursive_call() {
     let vm = run_program(&mut prog);
     assert_eq!(vm.stack.peek().unwrap().as_i32(), Some(120));
 }
+
+// ── Local-slot tests ─────────────────────────────────────────────
+
+fn build_program_with_function(func: Function) -> Program {
+    let mut prog = Program::new(&func.name);
+    prog.add_function(func);
+    prog
+}
+
+#[test]
+fn test_local_get_set() {
+    let mut main_fn = Function::new("main");
+    main_fn.local_count = 1;
+    main_fn.return_cells = 1;
+    main_fn.push(None::<&str>, Instruction::ConstI32(42));
+    main_fn.push(None::<&str>, Instruction::LocalSet(0));
+    main_fn.push(None::<&str>, Instruction::LocalGet(0));
+    main_fn.push(None::<&str>, Instruction::Return);
+
+    let mut prog = build_program_with_function(main_fn);
+    let vm = run_program(&mut prog);
+    assert_eq!(vm.stack.peek().unwrap().as_i32(), Some(42));
+}
+
+#[test]
+fn test_function_prologue_consumes_args() {
+    let mut add_fn = Function::new("add");
+    add_fn.param_cells = 2;
+    add_fn.local_count = 2;
+    add_fn.return_cells = 1;
+    // Prologue: pop arguments into slots [b, a]
+    add_fn.push(None::<&str>, Instruction::LocalSet(1));
+    add_fn.push(None::<&str>, Instruction::LocalSet(0));
+    add_fn.push(None::<&str>, Instruction::LocalGet(0));
+    add_fn.push(None::<&str>, Instruction::LocalGet(1));
+    add_fn.push(None::<&str>, Instruction::I32Add);
+    add_fn.push(None::<&str>, Instruction::Return);
+
+    let mut main_fn = Function::new("main");
+    main_fn.return_cells = 1;
+    main_fn.push(None::<&str>, Instruction::ConstI32(20));
+    main_fn.push(None::<&str>, Instruction::ConstI32(22));
+    main_fn.push(None::<&str>, Instruction::Call("add".to_string()));
+    main_fn.push(None::<&str>, Instruction::Return);
+
+    let mut prog = Program::new("main");
+    prog.add_function(add_fn);
+    prog.add_function(main_fn);
+
+    let vm = run_program(&mut prog);
+    assert_eq!(vm.stack.peek().unwrap().as_i32(), Some(42));
+}
+
+#[test]
+fn test_call_return_preserves_caller_locals() {
+    let mut callee = Function::new("callee");
+    callee.return_cells = 1;
+    callee.push(None::<&str>, Instruction::ConstI32(1));
+    callee.push(None::<&str>, Instruction::Return);
+
+    let mut main_fn = Function::new("main");
+    main_fn.local_count = 2;
+    main_fn.return_cells = 1;
+    // Set locals 0 and 1
+    main_fn.push(None::<&str>, Instruction::ConstI32(10));
+    main_fn.push(None::<&str>, Instruction::LocalSet(0));
+    main_fn.push(None::<&str>, Instruction::ConstI32(20));
+    main_fn.push(None::<&str>, Instruction::LocalSet(1));
+    // Call and discard return value
+    main_fn.push(None::<&str>, Instruction::Call("callee".to_string()));
+    main_fn.push(None::<&str>, Instruction::Drop);
+    // Read locals back and add
+    main_fn.push(None::<&str>, Instruction::LocalGet(0));
+    main_fn.push(None::<&str>, Instruction::LocalGet(1));
+    main_fn.push(None::<&str>, Instruction::I32Add);
+    main_fn.push(None::<&str>, Instruction::Return);
+
+    let mut prog = Program::new("main");
+    prog.add_function(callee);
+    prog.add_function(main_fn);
+
+    let vm = run_program(&mut prog);
+    assert_eq!(vm.stack.peek().unwrap().as_i32(), Some(30));
+}
+
+#[test]
+fn test_multi_block_branch_locals() {
+    let mut main_fn = Function::new("main");
+    main_fn.local_count = 1;
+    main_fn.return_cells = 1;
+    main_fn.push(None::<&str>, Instruction::ConstI1(true));
+    main_fn.push(None::<&str>, Instruction::Branch("then".to_string(), "else".to_string()));
+
+    main_fn.push(Some("then"), Instruction::ConstI32(42));
+    main_fn.push(None::<&str>, Instruction::LocalSet(0));
+    main_fn.push(None::<&str>, Instruction::Jump("end".to_string()));
+
+    main_fn.push(Some("else"), Instruction::ConstI32(99));
+    main_fn.push(None::<&str>, Instruction::LocalSet(0));
+    main_fn.push(None::<&str>, Instruction::Jump("end".to_string()));
+
+    main_fn.push(Some("end"), Instruction::LocalGet(0));
+    main_fn.push(None::<&str>, Instruction::Return);
+
+    let mut prog = build_program_with_function(main_fn);
+    let vm = run_program(&mut prog);
+    assert_eq!(vm.stack.peek().unwrap().as_i32(), Some(42));
+}
+
+#[test]
+fn test_loop_with_locals() {
+    let mut main_fn = Function::new("main");
+    main_fn.local_count = 2; // slot 0 = i, slot 1 = acc
+    main_fn.return_cells = 1;
+    // i = 0; acc = 0;
+    main_fn.push(None::<&str>, Instruction::ConstI32(0));
+    main_fn.push(None::<&str>, Instruction::LocalSet(0));
+    main_fn.push(None::<&str>, Instruction::ConstI32(0));
+    main_fn.push(None::<&str>, Instruction::LocalSet(1));
+    main_fn.push(None::<&str>, Instruction::Jump("check".to_string()));
+
+    // check: i < 5 ?
+    main_fn.push(Some("check"), Instruction::LocalGet(0));
+    main_fn.push(None::<&str>, Instruction::ConstI32(5));
+    main_fn.push(None::<&str>, Instruction::Lt);
+    main_fn.push(None::<&str>, Instruction::Branch("body".to_string(), "end".to_string()));
+
+    // body: acc += i; i += 1
+    main_fn.push(Some("body"), Instruction::LocalGet(1));
+    main_fn.push(None::<&str>, Instruction::LocalGet(0));
+    main_fn.push(None::<&str>, Instruction::I32Add);
+    main_fn.push(None::<&str>, Instruction::LocalSet(1));
+    main_fn.push(None::<&str>, Instruction::LocalGet(0));
+    main_fn.push(None::<&str>, Instruction::ConstI32(1));
+    main_fn.push(None::<&str>, Instruction::I32Add);
+    main_fn.push(None::<&str>, Instruction::LocalSet(0));
+    main_fn.push(None::<&str>, Instruction::Jump("check".to_string()));
+
+    // end: return acc (0+1+2+3+4 = 10)
+    main_fn.push(Some("end"), Instruction::LocalGet(1));
+    main_fn.push(None::<&str>, Instruction::Return);
+
+    let mut prog = build_program_with_function(main_fn);
+    let vm = run_program(&mut prog);
+    assert_eq!(vm.stack.peek().unwrap().as_i32(), Some(10));
+}
+
+#[test]
+fn test_recursive_factorial_locals() {
+    let mut fact = Function::new("fact");
+    fact.param_cells = 1;
+    fact.local_count = 2; // slot 0 = n, slot 1 = recursive result
+    fact.return_cells = 1;
+    // Prologue: pop n
+    fact.push(None::<&str>, Instruction::LocalSet(0));
+    // if n < 2 return 1
+    fact.push(None::<&str>, Instruction::LocalGet(0));
+    fact.push(None::<&str>, Instruction::ConstI32(2));
+    fact.push(None::<&str>, Instruction::Lt);
+    fact.push(None::<&str>, Instruction::Branch("base".to_string(), "recur".to_string()));
+
+    fact.push(Some("base"), Instruction::ConstI32(1));
+    fact.push(None::<&str>, Instruction::Return);
+
+    // recur: rec = fact(n - 1); return n * rec
+    fact.push(Some("recur"), Instruction::LocalGet(0));
+    fact.push(None::<&str>, Instruction::ConstI32(1));
+    fact.push(None::<&str>, Instruction::I32Sub);
+    fact.push(None::<&str>, Instruction::Call("fact".to_string()));
+    fact.push(None::<&str>, Instruction::LocalSet(1));
+    fact.push(None::<&str>, Instruction::LocalGet(0));
+    fact.push(None::<&str>, Instruction::LocalGet(1));
+    fact.push(None::<&str>, Instruction::I32Mul);
+    fact.push(None::<&str>, Instruction::Return);
+
+    let mut main_fn = Function::new("main");
+    main_fn.return_cells = 1;
+    main_fn.push(None::<&str>, Instruction::ConstI32(5));
+    main_fn.push(None::<&str>, Instruction::Call("fact".to_string()));
+    main_fn.push(None::<&str>, Instruction::Return);
+
+    let mut prog = Program::new("main");
+    prog.add_function(fact);
+    prog.add_function(main_fn);
+
+    let vm = run_program(&mut prog);
+    assert_eq!(vm.stack.peek().unwrap().as_i32(), Some(120));
+}
