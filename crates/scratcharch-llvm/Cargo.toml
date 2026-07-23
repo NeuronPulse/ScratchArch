@@ -1,0 +1,10 @@
+[package]
+name = "scratcharch-llvm"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+scratcharch-ir = { path = "../scratcharch-ir" }
+
+[dev-dependencies]
+scratcharch-sair-interpreter = { path = "../scratcharch-sair-interpreter" }
