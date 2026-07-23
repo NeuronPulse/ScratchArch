@@ -411,6 +411,37 @@ to the value it had at callee entry. The memory contents of the callee's
 frame become undefined — they may be overwritten by the next `alloca` in
 the caller or in a subsequent callee.
 
+### 5.5 VM Realization: Local Slots
+
+The ISA describes SSA virtual registers at the architecture level
+([`ISA.md`](./ISA.md) §2.5). A stack-based VM implementation realizes those
+registers with **local slots**: a per-activation vector indexed by non-negative
+integers.
+
+```text
+Frame:
+  ┌──────────────────────┐
+  │ locals[0]            │  ← parameter cells start here
+  │ ...                  │
+  │ locals[param_cells]  │  ← first non-parameter SSA value
+  │ ...                  │
+  │ locals[local_count-1]│  ← includes temp slot for phi cycles
+  └──────────────────────┘
+```
+
+- `local.get <slot>` pushes the value in `locals[slot]` onto the operand stack.
+- `local.set <slot>` pops a value from the operand stack into `locals[slot]`.
+- Slot lifetimes are tied to the activation: every slot is allocated when the
+  frame is created and deallocated when the frame is destroyed.
+- The set of slots and their cell counts are determined by the target profile
+  during SAIR→ISA lowering; the architecture itself does not fix a slot count.
+
+Local slots are a **VM realization detail**, not an architecture-level concept.
+They make multi-block control flow and phi elimination practical because a
+value can be stored in a slot at the end of one block and loaded from the same
+slot at the start of another, regardless of the operand-stack shape at the
+block boundary.
+
 ---
 
 ## 6. Memory Model
@@ -519,7 +550,10 @@ On instruction execute:
 
 The ISA VM uses a flat `Vec<Code>` per function with a program counter.
 Each instruction is a `Code` enum variant. The VM dispatches on the opcode
-and manipulates an operand stack.
+and manipulates an operand stack. Stack-based instructions consume operands
+from and push results onto this stack; `local.get` and `local.set` transfer
+values between the operand stack and the frame-local slots described in
+§5.5, allowing SSA values to survive across block boundaries.
 
 ### 7.3 Dispatch Equivalence
 
@@ -570,3 +604,5 @@ the behavior.
 9. Uninitialized memory has undefined contents (§6.6).
 10. The execution models of SAIR interpreter and ISA VM are observationally
     equivalent under correct lowering (§7.3).
+11. Local slots are a VM realization detail for stable cross-block SSA value
+    storage; they do not alter the architecture-level SSA model (§5.5).
