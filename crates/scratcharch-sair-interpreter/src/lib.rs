@@ -106,6 +106,12 @@ impl Interpreter {
         }
     }
 
+    /// Set the maximum number of call frames allowed before execution fails with
+    /// [`InterpError::CallStackOverflow`].
+    pub fn set_max_frames(&mut self, max_frames: usize) {
+        self.max_frames = max_frames;
+    }
+
     pub fn run(&mut self) -> Result<Option<RuntimeValue>, InterpError> {
         let entry_name = self.module.entry.clone();
         let _ = self.func_index.get(&entry_name)
