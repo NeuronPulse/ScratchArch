@@ -1,9 +1,9 @@
 # ScratchArch Scratch Backend Design
 
 This document describes the Scratch-specific backend layer introduced in
-**ScratchArch Scratch Backend Foundation v0.1** and extended in **v0.2**. The
-goal of this layer is to target Scratch without coupling Scratch serialization
-formats to the compiler core.
+**ScratchArch Scratch Backend Foundation v0.1**, extended in **v0.2**, and
+matured in **v0.3**. The goal of this layer is to target Scratch without
+coupling Scratch serialization formats to the compiler core.
 
 ## Architecture
 
@@ -99,52 +99,65 @@ architecture tests but will be extended later.
 SAIR module.entry  -->  Script { hat: GreenFlag, body: [Call entry, Stop] }
 ```
 
-### Variables → Scratch variables
+### Variables → frame slots
 
 SAIR is SSA form: each `ValueId` represents a single definition. ScratchGraph
-maps every non-parameter SSA value to a variable. The variable name is `v{id}`
-by default, or the value's debug name if present. Because SAIR currently has no
-module-level globals, these compiler-generated values are placed on the stage
-and marked `Global` for now.
+v0.3 maps non-parameter SSA values to frame slots inside a runtime call stack,
+not to individual Scratch variables. Each function has a frame size of
+`2 + L`, where `L` is the number of non-parameter SSA values:
+
+| Frame offset | Content                    |
+| ------------ | -------------------------- |
+| 0            | Saved caller frame pointer |
+| 1            | Return value slot          |
+| 2 ..         | Non-parameter SSA values   |
 
 ```text
-SAIR value %5  -->  Stage variable "v5"
+SAIR value %5  -->  FrameGet { offset: 2 + (5 - param_count) }
 ```
 
-ScratchGraph also distinguishes variable scope so future frontends can place
-variables on sprites:
+Parameters are passed through Scratch custom-block inputs and read with
+`ProcedureParam` expressions, so they do not occupy frame slots.
 
-| Scope         | Owner            | Typical use                              |
-| ------------- | ---------------- | ---------------------------------------- |
-| `Global`      | Stage            | Shared across all sprites and the stage  |
-| `SpriteLocal` | A single sprite  | Owned by one sprite                      |
-| `Temporary`   | Stage (usually)  | Compiler-generated hidden state          |
+Compiler-generated runtime values such as `__scratcharch_fp` and the runtime
+stack list `__scratcharch_stack` are declared on the stage as temporary
+variables and lists. User-visible variables can still be modeled directly with
+`Variable` and `SetVariable` when a frontend constructs ScratchGraph by hand.
 
-Phi nodes and stores become variable updates, which aligns with Scratch's
-variable-centric execution model.
+Phi nodes become `FrameSet` updates on incoming control-flow edges, copying the
+incoming value into the merge block's phi slot. This aligns with Scratch's
+sequential execution model while preserving SSA edge semantics.
 
 ### Calls → custom block calls
 
-A SAIR `Call` instruction becomes a `Stmt::Call` to the corresponding
-procedure.
+A SAIR `Call` instruction becomes a frame push, a `Stmt::Call` to the
+corresponding procedure, a copy of the per-frame return slot, and a frame pop.
 
 ```text
 %r = call @add(%a, %b)
-  -->  Stmt::Call { proc: "add", args: [a, b] }
-       Stmt::SetVariable { var: "%r", value: Variable("__ret_add") }
+  -->  Stmt::EnterFrame { slots: add_frame_size }
+       Stmt::Call { proc: "add", args: [a, b] }
+       Stmt::FrameSet { offset: offset(%r), value: FrameGet { offset: 1 } }
+       Stmt::SetVariable { var: "__scratcharch_fp", value: FrameGet { offset: 0 } }
+       Stmt::PopFrame { slots: add_frame_size }
 ```
 
-Scratch custom blocks do not return values natively. v0.2 models return values
-with a hidden stage variable named `__ret_<func>`:
+Scratch custom blocks do not return values natively. v0.3 models return values
+with a per-call frame slot in the runtime call stack:
 
-- The callee writes its return value to `__ret_<func>` immediately before
-  `Stop`.
-- The caller copies `__ret_<func>` into its own result SSA variable right
-  after the `Call`.
+- The caller pushes a frame for the callee with `EnterFrame`.
+- The callee writes its return value to frame offset 1 before popping its locals
+  and stopping.
+- The caller copies frame offset 1 into its own result SSA slot, restores the
+  frame pointer from the saved FP at offset 0, and pops the callee's frame.
 
 This convention is purely a ScratchGraph concern and does not leak into SAIR.
-It is not re-entrant: recursion or concurrent calls to the same function will
-overwrite the slot.
+It is **re-entrant**: recursion and nested calls each have their own return
+slot and local slots because every activation occupies a separate region of
+`__scratcharch_stack`.
+
+See [`docs/specification/SCRATCH_ABI.md`](../specification/SCRATCH_ABI.md) for
+the full frame layout and calling convention.
 
 ### Control flow → Scratch control blocks
 
@@ -218,6 +231,9 @@ mutation fields.
   stage.
 - Integration with the driver crate so users can run
   `LLVM IR → SAIR → ScratchGraph → project.json` in one command.
-- Re-entrant procedure return values (e.g. per-call frame slots or a stack).
 - Full C memory model with alignment, padding, `free`, and `realloc`.
 - Additional exporters (`sb3`, `scratchblocks`).
+- Scratch scheduler implementation for multi-script concurrency and cooperative
+  yielding (see [`SCRATCH_SCHEDULER.md`](./SCRATCH_SCHEDULER.md)).
+- Roundtrip parsing: `project.json → ScratchGraph → SAIR` for decompilation
+  (see [`SCRATCH_ROUNDTRIP.md`](./SCRATCH_ROUNDTRIP.md)).

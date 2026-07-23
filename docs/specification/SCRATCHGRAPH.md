@@ -118,15 +118,16 @@ pub enum Hat {
 ### Procedures
 
 A procedure is a reusable block definition with named parameters. Scratch
-custom blocks cannot return values natively; ScratchGraph models a return value
-through an optional hidden stage variable.
+custom blocks cannot return values natively; ScratchGraph v0.3 models return
+values through a per-call frame slot in the runtime call stack (see
+[`SCRATCH_ABI.md`](./SCRATCH_ABI.md)).
 
 ```rust
 pub struct Procedure {
     pub prototype: ProcedurePrototype,
     pub body: Vec<Stmt>,
-    /// Hidden stage variable used to communicate the return value, if any.
-    pub return_var: Option<String>,
+    /// Total frame size = 2 (saved FP + return slot) + local_count.
+    pub frame_size: u32,
 }
 
 pub struct ProcedurePrototype {
@@ -181,8 +182,11 @@ pub enum Stmt {
     DeleteListItem { list: String, index: Expr },
     InsertListItem { list: String, index: Expr, value: Expr },
     Broadcast { message: Expr },
-    HeapAlloc { result: String, size: Expr },
+    HeapAlloc { result_offset: u32, size: Expr },
     Call { proc: String, args: Vec<Expr> },
+    EnterFrame { slots: u32 },
+    PopFrame { slots: u32 },
+    FrameSet { offset: u32, value: Expr },
     If { condition: Expr, then_body: Vec<Stmt>, else_body: Vec<Stmt> },
     Repeat { times: Expr, body: Vec<Stmt> },
     RepeatUntil { condition: Expr, body: Vec<Stmt> },
@@ -206,6 +210,10 @@ pub enum Expr {
     Operator { opcode: String, args: Vec<Expr> },
     HeapLoad { addr: Box<Expr> },
     HeapIndex { base: Box<Expr>, offset: Box<Expr> },
+    /// Read the current frame pointer `__scratcharch_fp`.
+    FrameBase,
+    /// Read `__scratcharch_stack[fp + offset]`.
+    FrameGet { offset: u32 },
 }
 
 pub enum Value {
@@ -231,5 +239,5 @@ Each exporter implements the `ScratchExporter` trait and operates only on a
 
 ## Version
 
-This specification describes ScratchGraph v0.2 as implemented in the
-ScratchArch Scratch Backend Foundation v0.2 milestone.
+This specification describes ScratchGraph v0.3 as implemented in the
+ScratchArch Scratch Backend Foundation v0.3 milestone.

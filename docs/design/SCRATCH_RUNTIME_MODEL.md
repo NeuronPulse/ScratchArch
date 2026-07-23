@@ -11,19 +11,23 @@ Scratch 3 custom blocks (procedures) do not return values. A custom block can
 report its result only by writing to a variable that the caller can read after
 the block finishes.
 
-ScratchGraph models SAIR functions that return a value with a **hidden stage
-variable** named after the callee:
+ScratchGraph v0.3 models SAIR functions that return a value with a **per-call
+frame slot** in the runtime call stack:
 
 ```text
-__ret_<function_name>
+__scratcharch_stack[fp + 1]
 ```
+
+Every activation has its own frame in the hidden stage list
+`__scratcharch_stack`, indexed by the frame pointer `__scratcharch_fp`.
 
 ### Caller/callee contract
 
-- The callee writes its return value to `__ret_<function_name>` immediately
-  before it stops.
-- The caller invokes the custom block and then copies `__ret_<function_name>`
-  into its own SSA result variable.
+- The caller pushes a frame for the callee with `EnterFrame { slots }`.
+- The callee writes its return value to frame offset 1 before popping its locals
+  and stopping.
+- The caller copies frame offset 1 into its own result SSA slot, restores the
+  frame pointer from the saved FP at offset 0, and pops the callee's frame.
 
 Example lowering:
 
@@ -32,25 +36,31 @@ SAIR:
   %r = call @add(%a, %b)
 
 ScratchGraph caller:
+  EnterFrame { slots: add_frame_size }
   call add(a, b)
-  set %r = __ret_add
+  FrameSet { offset: offset(%r), value: FrameGet { offset: 1 } }
+  set __scratcharch_fp = FrameGet { offset: 0 }
+  PopFrame { slots: add_frame_size }
 
 ScratchGraph callee `add`:
-  set __ret_add = a + b
+  FrameSet { offset: 1, value: a + b }
+  PopFrame { slots: local_count }
   stop this script
 ```
 
 This convention is implemented entirely inside
 `crates/scratcharch-scratchgraph/src/lower.rs` and does not affect SAIR, the
-interpreter, or the VM backend.
+interpreter, or the VM backend. See
+[`docs/specification/SCRATCH_ABI.md`](../specification/SCRATCH_ABI.md) for the
+full frame layout.
 
-### Limitations
+### Re-entrancy
 
-The hidden-variable convention is **not re-entrant**. If a function calls
-itself recursively, or if multiple scripts call the same function concurrently,
-they all share the same `__ret_<name>` slot. Later writes overwrite earlier
-ones before the caller can copy them. Re-entrant return values are left to
-future work (for example, per-call stack slots or a call frame list).
+The frame-based convention is **re-entrant**. Each recursive or nested call
+gets its own saved FP, return slot, and local slots, so later activations do
+not overwrite earlier ones. Concurrent calls from multiple scripts still share
+the single global stack list in v0.3; a future scheduler would provide
+per-thread stacks (see [`SCRATCH_SCHEDULER.md`](./SCRATCH_SCHEDULER.md)).
 
 ## Event-driven execution
 

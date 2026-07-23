@@ -1,6 +1,6 @@
 # ScratchArch Development Roadmap
 
-> Last updated: 2026-07-23 (Scratch Backend Foundation v0.2 completed)
+> Last updated: 2026-07-23 (Scratch Backend Foundation v0.3 completed)
 > Status: living document
 
 ## Legend
@@ -244,6 +244,29 @@
       `docs/design/SCRATCH_BACKEND_DESIGN.md`; new
       `docs/design/SCRATCH_RUNTIME_MODEL.md` and
       `docs/specification/SCRATCH_MEMORY.md`.
+
+### Scratch Backend Foundation v0.3 (`scratcharch-scratchgraph`)
+
+- [x] **Scratch Runtime ABI**: `docs/specification/SCRATCH_ABI.md` defines the
+      frame-based calling convention using `__scratcharch_stack` and
+      `__scratcharch_fp`.
+- [x] **Frame-based runtime model**: `Procedure::frame_size`,
+      `Stmt::EnterFrame`, `Stmt::PopFrame`, `Stmt::FrameSet`, `Expr::FrameBase`,
+      and `Expr::FrameGet` provide a reentrant call stack abstraction.
+- [x] **Recursive procedure support**: SAIR `Call` lowers to push frame, call,
+      copy return slot, restore frame pointer, pop frame; `Return` writes the
+      per-frame return slot and pops locals.
+- [x] **Scheduler design**: `docs/design/SCRATCH_SCHEDULER.md` outlines script
+      lifecycle, event dispatch, cooperative single-threaded scheduling, and
+      per-thread stack future work.
+- [x] **Roundtrip design**: `docs/design/SCRATCH_ROUNDTRIP.md` explains the
+      future `project.json → ScratchGraph → SAIR` path for decompilation.
+- [x] **Tests**: recursive factorial, recursive fibonacci, nested function
+      calls, frame-local variables, frame primitives JSON export, and existing
+      v0.2 regression tests.
+- [x] **Documentation updates**: `docs/specification/SCRATCHGRAPH.md` v0.3,
+      `docs/design/SCRATCH_BACKEND_DESIGN.md`, `docs/design/SCRATCH_RUNTIME_MODEL.md`,
+      and `docs/design/ROADMAP.md`.
 
 ### Testing
 
