@@ -20,6 +20,10 @@ EXPECTED[factorial]=120
 EXPECTED[fib]=55
 EXPECTED[array]=42
 EXPECTED[struct]=30
+EXPECTED[pointer]=42
+EXPECTED[string]=5
+EXPECTED[memory]=6
+EXPECTED[recursion]=15
 
 HAS_CLANG=false
 if command -v clang &>/dev/null; then
@@ -42,7 +46,7 @@ pass=0
 fail=0
 skipped=0
 
-for prog in hello add factorial fib array struct; do
+for prog in hello add factorial fib array struct pointer string memory recursion; do
     ll_file="$C_DIR/$prog.ll"
     c_file="$C_DIR/$prog.c"
 
@@ -66,10 +70,7 @@ for prog in hello add factorial fib array struct; do
 
     # Use the Rust test infrastructure directly via cargo test
     # We pattern-match on the test name which includes the program name
-    test_name="test_c_${prog}"
-    if [ "$prog" = "hello" ]; then
-        test_name="test_return_constant"
-    fi
+    test_name="test_pipeline_${prog}"
 
     output=$(cd "$PROJECT_DIR" && cargo test -p scratcharch-llvm -- "$test_name" --nocapture 2>&1 || true)
 

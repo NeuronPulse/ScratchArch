@@ -83,3 +83,43 @@ fn test_pipeline_struct() {
         other => panic!("struct.ll: expected I32(30), got {:?}", other),
     }
 }
+
+#[test]
+fn test_pipeline_pointer() {
+    let path = c_programs_dir().join("pointer.ll");
+    let result = run_llvm_file(path.to_str().unwrap()).expect("pipeline failed");
+    match result {
+        Some(RuntimeValue::I32(v)) => assert_eq!(v, 42),
+        other => panic!("pointer.ll: expected I32(42), got {:?}", other),
+    }
+}
+
+#[test]
+fn test_pipeline_string() {
+    let path = c_programs_dir().join("string.ll");
+    let result = run_llvm_file(path.to_str().unwrap()).expect("pipeline failed");
+    match result {
+        Some(RuntimeValue::I32(v)) => assert_eq!(v, 5),
+        other => panic!("string.ll: expected I32(5), got {:?}", other),
+    }
+}
+
+#[test]
+fn test_pipeline_memory() {
+    let path = c_programs_dir().join("memory.ll");
+    let result = run_llvm_file(path.to_str().unwrap()).expect("pipeline failed");
+    match result {
+        Some(RuntimeValue::I32(v)) => assert_eq!(v, 6),
+        other => panic!("memory.ll: expected I32(6), got {:?}", other),
+    }
+}
+
+#[test]
+fn test_pipeline_recursion() {
+    let path = c_programs_dir().join("recursion.ll");
+    let result = run_llvm_file(path.to_str().unwrap()).expect("pipeline failed");
+    match result {
+        Some(RuntimeValue::I32(v)) => assert_eq!(v, 15),
+        other => panic!("recursion.ll: expected I32(15), got {:?}", other),
+    }
+}
