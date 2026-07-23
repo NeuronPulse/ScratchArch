@@ -526,7 +526,27 @@ stack before the recursive call and restored after.
 
 ---
 
-## 12. Future extensions
+## 12. Known limitations for v0.1
+
+The v0.1 reference implementation realizes the calling convention described
+above with the following restrictions:
+
+- **Hidden parameters** (`!return.address`, `!fnptr`, `!vararg.ptr`) are
+  specified in §5.3 and §8.2 but are not yet emitted or consumed by the v0.1
+  toolchain. Direct calls, single-return-site calls, and non-variadic functions
+  work without them; indirect calls, multi-site return-address dispatch, and
+  varargs are reserved for v0.2.
+- **Function pointers** are specified as virtual addresses in §8 but are not
+  yet supported by the LLVM translator or SAIR interpreter.
+- **Variadic functions** (§9) are not yet supported.
+- **Aggregate arguments** are passed as opaque pointer values in the current
+  test programs; full cell-by-cell decomposition per §5.4 is not yet enforced
+  by the translator.
+
+These limitations describe the current implementation surface; they do not
+change the ABI semantics.
+
+## 13. Future extensions
 
 - **Tail calls.** Formal tail-call optimization: a `ret` immediately following
   a `call` to the same function (or a function with an equivalent frame) may

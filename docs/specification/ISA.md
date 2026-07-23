@@ -428,7 +428,33 @@ and `trap`. Everything else is an extension.
 
 ---
 
-## 9. Future extensions
+## 9. Known limitations for v0.1
+
+The architecture specification above describes the full ScratchArch instruction
+set. The v0.1 reference implementation (`scratcharch-ir`, `scratcharch-llvm`,
+`scratcharch-sair-interpreter`) supports the following subset:
+
+- **Types:** `i1`, `i8`, `i16`, `i32`, `f64`, `ptr`, `void`. Other types from
+  the grammar (`half`, `float`, `fp128`, arrays of non-primitives, structs as
+  first-class values, vectors, function types) are reserved for v0.2.
+- **Integer arithmetic:** `add`, `sub`, `mul`, `div`, `rem`. The single `div`/
+  `rem` instruction follows signed semantics in the interpreter; separate
+  `udiv`/`sdiv`/`urem`/`srem` are not yet emitted by the LLVM translator.
+- **Bitwise and shift:** not yet in the SAIR instruction set.
+- **Comparisons:** `eq`, `lt`, `gt`. Other LLVM `icmp` predicates are
+  translated by combining these three.
+- **Conversions:** not yet supported.
+- **Aggregate/selection:** `phi` is supported; `select`, `extractvalue`,
+  `insertvalue`, and `freeze` are not.
+- **Terminators:** `br`, `cond_br`, `ret`. `switch` and `unreachable` are
+  reserved for v0.2.
+- **Intrinsics:** see §8. The reference runtime implements only the memory,
+  string, and panic/abort routines listed in [`RUNTIME.md`](./RUNTIME.md).
+
+These limitations do not change the architecture; they describe the
+implemented surface of the v0.1 toolchain.
+
+## 10. Future extensions
 
 - **Vectors (`<M x T>`).** Present in the type grammar but not yet given elementwise
   instruction semantics; reserved for v0.2. (The prototype parsed but never lowered them.)
@@ -445,7 +471,7 @@ and `trap`. Everything else is an extension.
 
 ---
 
-## 10. Frozen decisions (v0.1)
+## 11. Frozen decisions (v0.1)
 
 These are proposed **frozen** for v0.1 (rationale consolidated in [`README.md`](./README.md)):
 
