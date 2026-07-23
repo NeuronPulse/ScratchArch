@@ -1,0 +1,10 @@
+[package]
+name = "scratcharch-ir"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+scratcharch-core = { path = "../scratcharch-core" }
+
+[dev-dependencies]
+scratcharch-vm = { path = "../scratcharch-vm" }
