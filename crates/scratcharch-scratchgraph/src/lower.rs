@@ -6,12 +6,13 @@
 use std::collections::{HashMap, HashSet};
 
 use scratcharch_ir::function::IrFunction;
-use scratcharch_ir::instruction::{Instruction as SairInstr, Terminator};
+use scratcharch_ir::instruction::{GepIndex, Instruction as SairInstr, Terminator};
 use scratcharch_ir::r#module::IrModule;
 use scratcharch_ir::value::{Constant, ValueId};
 
 use crate::ir::{
-    Expr, Hat, Procedure, ProcedureParam, Project, Script, Stage, Stmt, StopOption, Variable,
+    Expr, Hat, List, Procedure, ProcedureParam, Project, Script, Stage, Stmt, StopOption,
+    Variable, VariableScope,
 };
 
 /// Lowers a SAIR module to a ScratchGraph project.
@@ -35,6 +36,25 @@ impl ScratchGraphLowerer {
                 let var_name = value_name(func, id);
                 stage.add_variable(Variable::new(var_name.clone(), var_name));
             }
+        }
+
+        // If any SAIR function uses memory instructions, model memory as a
+        // single stage-backed heap list.
+        let needs_heap = module.functions.iter().any(|f| {
+            f.blocks.iter().any(|b| {
+                b.instructions.iter().any(|i| {
+                    matches!(
+                        i,
+                        SairInstr::Alloca { .. }
+                            | SairInstr::Load { .. }
+                            | SairInstr::Store { .. }
+                            | SairInstr::Gep { .. }
+                    )
+                })
+            })
+        });
+        if needs_heap {
+            stage.add_list(List::new("__scratcharch_heap", "__scratcharch_heap"));
         }
 
         let mut procedures = Vec::new();
@@ -64,6 +84,14 @@ impl ScratchGraphLowerer {
                     Stmt::Stop { option: StopOption::ThisScript },
                 ],
             ));
+        }
+
+        for proc in &procedures {
+            if let Some(ref ret_var) = proc.return_var {
+                stage.add_variable(
+                    Variable::new(ret_var.clone(), ret_var.clone()).with_scope(VariableScope::Temporary),
+                );
+            }
         }
 
         for proc in procedures {
@@ -112,7 +140,11 @@ fn lower_function(func: &IrFunction) -> Result<Procedure, LowerError> {
     let ctx = FuncLowerCtx::new(func);
     let body = lower_region(func, &ctx, func.entry_block.clone(), &HashSet::new())?;
 
-    Ok(Procedure::new(func.name.clone(), params, body))
+    let mut proc = Procedure::new(func.name.clone(), params, body);
+    if !func.return_ty.is_void() {
+        proc = proc.with_return_var(format!("__ret_{}", func.name));
+    }
+    Ok(proc)
 }
 
 struct FuncLowerCtx<'a> {
@@ -217,13 +249,20 @@ fn lower_region(
             if matches!(instr, SairInstr::Phi { .. }) {
                 continue;
             }
-            if let Some(stmt) = lower_instruction(func, ctx, &current, instr, idx)? {
-                stmts.push(stmt);
-            }
+            let instr_stmts = lower_instruction(func, ctx, &current, instr, idx)?;
+            stmts.extend(instr_stmts);
         }
 
         match &block.terminator {
-            Terminator::Return { .. } => {
+            Terminator::Return { value } => {
+                if let Some(v) = value {
+                    if !func.return_ty.is_void() {
+                        stmts.push(Stmt::SetVariable {
+                            var: format!("__ret_{}", func.name),
+                            value: lower_value(func, *v)?,
+                        });
+                    }
+                }
                 stmts.push(Stmt::Stop { option: StopOption::ThisScript });
                 break;
             }
@@ -239,21 +278,16 @@ fn lower_region(
                 true_target,
                 false_target,
             } => {
-                // Try to recognize a simple counted loop.
-                if let Some(loop_stmts) =
+                // Try to recognize a natural loop.
+                if let Some((loop_stmts, exit_label)) =
                     try_lower_simple_loop(func, ctx, &current, condition, true_target, false_target, &local_visited)?
                 {
                     stmts.extend(loop_stmts);
-                    // After a loop the control flow continues at the unique exit block.
-                    let exit = loop_exit(func, ctx, &current, true_target, false_target, &local_visited);
-                    if let Some(exit_label) = exit {
-                        if local_visited.contains(&exit_label) {
-                            break;
-                        }
-                        current = exit_label;
-                    } else {
+                    // After a loop the control flow continues at the exit block.
+                    if local_visited.contains(&exit_label) {
                         break;
                     }
+                    current = exit_label;
                     continue;
                 }
 
@@ -327,29 +361,13 @@ fn reachable(ctx: &FuncLowerCtx, start: &str, visited: &HashSet<String>) -> Hash
     result
 }
 
-fn loop_exit(
-    _func: &IrFunction,
-    _ctx: &FuncLowerCtx,
-    _header: &str,
-    true_target: &str,
-    false_target: &str,
-    visited: &HashSet<String>,
-) -> Option<String> {
-    // The exit is the successor of the header that is not a back edge target
-    // (i.e. not already visited by the enclosing region).
-    [true_target, false_target]
-        .iter()
-        .copied()
-        .find(|t| visited.iter().any(|v| v == t))
-        .map(|s| s.to_string())
-}
-
-/// Detect a simple counted loop and lower it to `repeat until`.
+/// Detect a natural loop whose header terminates with `cond_br` and lower it
+/// to `repeat until`.
 ///
 /// Pattern:
-/// - Header H terminates with cond_br condition, body B, exit E
-/// - Body B (possibly through a chain) ends with a branch back to H
-/// - E is not yet visited and not part of the loop
+/// - Header H terminates with `cond_br condition, B, E`
+/// - Body B can reach H again without passing through E or already-visited blocks
+/// - E is the exit (it does not reach H)
 fn try_lower_simple_loop(
     func: &IrFunction,
     ctx: &FuncLowerCtx,
@@ -358,85 +376,60 @@ fn try_lower_simple_loop(
     true_target: &str,
     false_target: &str,
     visited: &HashSet<String>,
-) -> Result<Option<Vec<Stmt>>, LowerError> {
-    // Identify body and exit targets. The body target is the one not visited
-    // (entering the loop), the exit target is the one already outside.
-    let (body_target, _exit_target) = if visited.contains(true_target) {
-        if visited.contains(false_target) {
+) -> Result<Option<(Vec<Stmt>, String)>, LowerError> {
+    // Determine which target is the loop body by checking reachability back to
+    // the header. The other target is the exit.
+    let (body_target, exit_target) =
+        if reaches_header(ctx, header, true_target, false_target, visited) {
+            (true_target, false_target)
+        } else if reaches_header(ctx, header, false_target, true_target, visited) {
+            (false_target, true_target)
+        } else {
+            // Neither branch loops back; this is an if/else, not a loop.
             return Ok(None);
-        }
-        (false_target, true_target)
-    } else if visited.contains(false_target) {
-        (true_target, false_target)
-    } else {
-        // Neither branch has been visited; this is an if/else, not a loop.
-        return Ok(None);
-    };
+        };
 
-    // Collect body blocks: reachable from body_target without going through
-    // visited blocks or the header.
-    let mut body_blocks = Vec::new();
-    let mut body_visited = HashSet::new();
-    let mut stack = vec![body_target.to_string()];
+    // Lower the body recursively. The header and already-visited blocks act as
+    // boundaries so the body stops at the back edge. This allows nested
+    // conditionals and nested natural loops inside the body.
+    let mut body_visited = visited.clone();
+    body_visited.insert(header.to_string());
+    let body_stmts = lower_region(func, ctx, body_target.to_string(), &body_visited)?;
+
+    // Emit `repeat until <exit_condition>`.
+    let exit_condition = negate(lower_value(func, *condition)?);
+    Ok(Some((
+        vec![Stmt::RepeatUntil {
+            condition: exit_condition,
+            body: body_stmts,
+        }],
+        exit_target.to_string(),
+    )))
+}
+
+/// Returns true if `start` can reach `header` without passing through `avoid`
+/// or any already-visited block (except `header` itself).
+fn reaches_header(
+    ctx: &FuncLowerCtx,
+    header: &str,
+    start: &str,
+    avoid: &str,
+    visited: &HashSet<String>,
+) -> bool {
+    let mut seen = HashSet::new();
+    let mut stack = vec![start.to_string()];
     while let Some(label) = stack.pop() {
-        if label == header || visited.contains(&label) || !body_visited.insert(label.clone()) {
+        if label == header {
+            return true;
+        }
+        if label == avoid || visited.contains(&label) || !seen.insert(label.clone()) {
             continue;
         }
-        body_blocks.push(label.clone());
         for succ in ctx.successors(&label) {
             stack.push(succ.clone());
         }
     }
-
-    if body_blocks.is_empty() {
-        return Ok(None);
-    }
-
-    // Lower the body. We start from body_target and stop at the back edge.
-    let mut body_stmts = Vec::new();
-    let mut body_local_visited = visited.clone();
-    body_local_visited.insert(header.to_string());
-    let mut current = body_target.to_string();
-    loop {
-        if current == header || body_local_visited.contains(&current) {
-            break;
-        }
-        body_local_visited.insert(current.clone());
-
-        let block = ctx.block(&current).ok_or_else(|| {
-            LowerError::Validation(format!(
-                "loop body block '{}' not found in function '{}'",
-                current, func.name
-            ))
-        })?;
-
-        for (idx, instr) in block.instructions.iter().enumerate() {
-            if matches!(instr, SairInstr::Phi { .. }) {
-                continue;
-            }
-            if let Some(stmt) = lower_instruction(func, ctx, &current, instr, idx)? {
-                body_stmts.push(stmt);
-            }
-        }
-
-        match &block.terminator {
-            Terminator::Branch { target } => {
-                current = target.clone();
-            }
-            Terminator::CondBranch { .. } => {
-                // Nested control flow inside a loop body is not supported in v0.1.
-                return Ok(None);
-            }
-            Terminator::Return { .. } => break,
-        }
-    }
-
-    // Emit `repeat until <exit_condition>`.
-    let exit_condition = negate(lower_value(func, *condition)?);
-    Ok(Some(vec![Stmt::RepeatUntil {
-        condition: exit_condition,
-        body: body_stmts,
-    }]))
+    false
 }
 
 fn negate(expr: Expr) -> Expr {
@@ -452,7 +445,7 @@ fn lower_instruction(
     block_label: &str,
     instr: &SairInstr,
     instr_idx: usize,
-) -> Result<Option<Stmt>, LowerError> {
+) -> Result<Vec<Stmt>, LowerError> {
     let result_id = ctx
         .result_id(block_label, instr_idx)
         .unwrap_or(func.params.len());
@@ -471,63 +464,102 @@ fn lower_instruction(
                 args: vec![lower_value(func, *lhs)?, lower_value(func, *rhs)?],
             };
             let var = value_name(func, result_id);
-            Ok(Some(Stmt::SetVariable { var, value }))
+            Ok(vec![Stmt::SetVariable { var, value }])
         }
         SairInstr::Const(c) => {
             let value = lower_const(c);
             let var = value_name(func, result_id);
-            Ok(Some(Stmt::SetVariable { var, value }))
+            Ok(vec![Stmt::SetVariable { var, value }])
         }
-        SairInstr::Alloca { .. } => {
-            // Alloca is represented as a stage variable holding a pointer/index.
-            // v0.1 uses a simple monotonic allocator modeled by the variable itself.
-            let value = Expr::number(0.0);
+        SairInstr::Alloca { ty, count } => {
+            let size = Expr::number((ty.size_in_bytes() * *count) as f64);
             let var = value_name(func, result_id);
-            Ok(Some(Stmt::SetVariable { var, value }))
+            Ok(vec![Stmt::HeapAlloc { result: var, size }])
         }
         SairInstr::Load { ty: _, addr } => {
-            let value = lower_value(func, *addr)?;
+            let value = Expr::HeapLoad {
+                addr: Box::new(lower_value(func, *addr)?),
+            };
             let var = value_name(func, result_id);
-            Ok(Some(Stmt::SetVariable { var, value }))
+            Ok(vec![Stmt::SetVariable { var, value }])
         }
         SairInstr::Store { value, addr, .. } => {
             let src = lower_value(func, *value)?;
-            let dst = lower_value(func, *addr)?;
-            // In v0.1 memory is modeled by variables: store copies src into dst.
-            match dst {
-                Expr::Variable(dst_var) => Ok(Some(Stmt::SetVariable { var: dst_var, value: src })),
-                _ => Ok(Some(Stmt::Expr(Expr::Operator {
-                    opcode: "operator_add".to_string(),
-                    args: vec![src, Expr::number(0.0)],
-                }))),
-            }
+            let addr_expr = lower_value(func, *addr)?;
+            // Scratch lists are 1-indexed; heap pointers are 0-based offsets.
+            let index = Expr::operator(
+                "operator_add",
+                vec![addr_expr, Expr::number(1.0)],
+            );
+            Ok(vec![Stmt::SetListItem {
+                list: "__scratcharch_heap".to_string(),
+                index,
+                value: src,
+            }])
         }
-        SairInstr::Call { callee, args, .. } => {
+        SairInstr::Call {
+            callee,
+            args,
+            return_ty,
+        } => {
             let call_args: Vec<Expr> = args
                 .iter()
                 .map(|a| lower_value(func, *a))
                 .collect::<Result<Vec<_>, _>>()?;
-            // Scratch custom blocks cannot return values in v0.1, so the
-            // result is unavailable. Future work can model return values as
-            // a dedicated global variable.
-            Ok(Some(Stmt::Call {
+            let mut stmts = vec![Stmt::Call {
                 proc: callee.clone(),
                 args: call_args,
-            }))
+            }];
+            // Scratch custom blocks cannot return values natively, so the callee
+            // stores its result in a hidden stage variable `__ret_<callee>`.
+            if !return_ty.is_void() {
+                let result_var = value_name(func, result_id);
+                stmts.push(Stmt::SetVariable {
+                    var: result_var,
+                    value: Expr::Variable(format!("__ret_{}", callee)),
+                });
+            }
+            Ok(stmts)
         }
         SairInstr::Phi { .. } => {
             // Phi values are handled by variable updates on incoming edges.
             // Direct phi emission is a no-op.
-            Ok(None)
+            Ok(vec![])
         }
-        SairInstr::Gep { .. } => {
-            // GEP is represented as a variable holding an index/pointer.
-            // v0.1 does not compute actual offsets.
+        SairInstr::Gep {
+            elem_ty,
+            base,
+            indices,
+            ..
+        } => {
+            // Compute the byte offset from the base pointer. Struct-field
+            // offsets are approximated using the element type size; full layout
+            // with padding is out of scope for v0.2.
+            let mut offset = Expr::number(0.0);
+            for idx in indices {
+                match idx {
+                    GepIndex::Dynamic(value_id) => {
+                        let index_expr = lower_value(func, *value_id)?;
+                        let elem_size = Expr::number(elem_ty.size_in_bytes() as f64);
+                        let term = Expr::operator(
+                            "operator_multiply",
+                            vec![index_expr, elem_size],
+                        );
+                        offset = Expr::operator("operator_add", vec![offset, term]);
+                    }
+                    GepIndex::StructField(field_idx) => {
+                        let field_offset =
+                            Expr::number((*field_idx * elem_ty.size_in_bytes()) as f64);
+                        offset = Expr::operator("operator_add", vec![offset, field_offset]);
+                    }
+                }
+            }
+            let value = Expr::HeapIndex {
+                base: Box::new(lower_value(func, *base)?),
+                offset: Box::new(offset),
+            };
             let var = value_name(func, result_id);
-            Ok(Some(Stmt::SetVariable {
-                var,
-                value: Expr::number(0.0),
-            }))
+            Ok(vec![Stmt::SetVariable { var, value }])
         }
     }
 }
