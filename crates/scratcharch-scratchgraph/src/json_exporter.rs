@@ -409,12 +409,12 @@ fn emit_stmt(stmt: &Stmt, state: &mut ExportState) -> String {
             "shadow": false,
             "topLevel": false,
         }),
-        Stmt::HeapAlloc { result, size } => {
-            // Semantic expansion: result = length of heap before allocation,
-            // then repeat `size` times appending 0 to the heap.
+        Stmt::HeapAlloc { result_offset, size } => {
+            // Semantic expansion: write the current heap length into the result
+            // frame slot, then repeat `size` times appending 0 to the heap.
             let alloc_stmts = vec![
-                Stmt::SetVariable {
-                    var: result.clone(),
+                Stmt::FrameSet {
+                    offset: *result_offset,
                     value: Expr::list_length("__scratcharch_heap"),
                 },
                 Stmt::Repeat {
@@ -427,6 +427,56 @@ fn emit_stmt(stmt: &Stmt, state: &mut ExportState) -> String {
             ];
             return emit_stmt_chain(&alloc_stmts, state);
         }
+        Stmt::EnterFrame { slots } => {
+            // Push the saved caller FP first, then zero-initialize the rest,
+            // then update the frame pointer to the new frame base.
+            let push_stmts = vec![
+                Stmt::AddToList {
+                    list: "__scratcharch_stack".to_string(),
+                    value: Expr::FrameBase,
+                },
+                Stmt::Repeat {
+                    times: Expr::operator(
+                        "operator_subtract",
+                        vec![Expr::number(*slots as f64), Expr::number(1.0)],
+                    ),
+                    body: vec![Stmt::AddToList {
+                        list: "__scratcharch_stack".to_string(),
+                        value: Expr::number(0.0),
+                    }],
+                },
+                Stmt::SetVariable {
+                    var: "__scratcharch_fp".to_string(),
+                    value: Expr::operator(
+                        "operator_subtract",
+                        vec![Expr::list_length("__scratcharch_stack"), Expr::number(*slots as f64)],
+                    ),
+                },
+            ];
+            return emit_stmt_chain(&push_stmts, state);
+        }
+        Stmt::PopFrame { slots } => {
+            let pop_stmts = vec![Stmt::Repeat {
+                times: Expr::number(*slots as f64),
+                body: vec![Stmt::DeleteListItem {
+                    list: "__scratcharch_stack".to_string(),
+                    index: Expr::list_length("__scratcharch_stack"),
+                }],
+            }];
+            return emit_stmt_chain(&pop_stmts, state);
+        }
+        Stmt::FrameSet { offset, value } => json!({
+            "opcode": "data_replaceitemoflist",
+            "next": null,
+            "parent": null,
+            "inputs": {
+                "INDEX": emit_input(&frame_index_expr(*offset), state),
+                "ITEM": emit_input(value, state),
+            },
+            "fields": { "LIST": ["__scratcharch_stack", null] },
+            "shadow": false,
+            "topLevel": false,
+        }),
         Stmt::Call { proc, args } => {
             let proccode = if args.is_empty() {
                 proc.clone()
@@ -560,6 +610,14 @@ fn emit_stmt(stmt: &Stmt, state: &mut ExportState) -> String {
     };
     state.add_block(id.clone(), block);
     id
+}
+
+/// Build the 1-indexed Scratch list index for a frame slot at `fp + offset`.
+fn frame_index_expr(offset: u32) -> Expr {
+    Expr::operator(
+        "operator_add",
+        vec![Expr::FrameBase, Expr::number(offset as f64 + 1.0)],
+    )
 }
 
 fn emit_expr_as_statement(expr: &Expr, state: &mut ExportState) -> (String, Map<String, Value>, Map<String, Value>) {
@@ -758,6 +816,31 @@ fn emit_input(expr: &Expr, state: &mut ExportState) -> Value {
                 }),
             );
             json!([2, id])
+        }
+        Expr::FrameBase => {
+            let id = state.fresh_id();
+            state.add_block(
+                id.clone(),
+                json!({
+                    "opcode": "data_variable",
+                    "next": null,
+                    "parent": null,
+                    "inputs": {},
+                    "fields": { "VARIABLE": ["__scratcharch_fp", null] },
+                    "shadow": false,
+                    "topLevel": false,
+                }),
+            );
+            json!([2, id])
+        }
+        Expr::FrameGet { offset } => {
+            emit_input(
+                &Expr::ListItem {
+                    list: "__scratcharch_stack".to_string(),
+                    index: Box::new(frame_index_expr(*offset)),
+                },
+                state,
+            )
         }
     }
 }
