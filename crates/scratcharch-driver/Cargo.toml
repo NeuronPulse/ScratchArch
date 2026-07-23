@@ -1,0 +1,15 @@
+[package]
+name = "scratcharch-driver"
+version = "0.1.0"
+edition = "2021"
+description = "Unified ScratchArch compilation driver"
+
+[dependencies]
+scratcharch-ir = { path = "../scratcharch-ir" }
+scratcharch-llvm = { path = "../scratcharch-llvm" }
+scratcharch-opt = { path = "../scratcharch-opt" }
+scratcharch-sair-interpreter = { path = "../scratcharch-sair-interpreter" }
+scratcharch-target = { path = "../scratcharch-target" }
+
+[dev-dependencies]
+scratcharch-runtime = { path = "../scratcharch-runtime" }
