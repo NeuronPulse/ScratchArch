@@ -17,33 +17,33 @@ before answering "How do we execute it?".
 
 ### The problem with direct LLVM→ISA lowering
 
-| Problem | Consequence |
+|Problem|Consequence|
 |---|---|
-| LLVM has hundreds of opcodes plus intrinsics | Direct lowering matches each individually, missing patterns |
-| LLVM poison/undef semantics | Must be resolved or carried through; SAIR commits to total wrapping early |
-| LLVM assumes native integer widths | SAIR can represent cell-aware decomposition explicitly |
-| LLVM struct/array GEP is complex | SAIR can decompose aggregates before lowering |
-| LLVM calling convention is host-ABI | SAIR uses ScratchArch ABI natively |
+|LLVM has hundreds of opcodes plus intrinsics|Direct lowering matches each individually, missing patterns|
+|LLVM poison/undef semantics|Must be resolved or carried through; SAIR commits to total wrapping early|
+|LLVM assumes native integer widths|SAIR can represent cell-aware decomposition explicitly|
+|LLVM struct/array GEP is complex|SAIR can decompose aggregates before lowering|
+|LLVM calling convention is host-ABI|SAIR uses ScratchArch ABI natively|
 
 ### What SAIR solves
 
-1. **Structural lowering**: SAIR statements map 1:1 to ISA instructions for simple cases
-2. **Type clarity**: SAIR preserves full type information in ScratchArch terms
-3. **Optimization boundary**: Passes (constant folding, DCE, phi elimination) run on SAIR
-4. **Independent verification**: SAIR modules validate independently of any LLVM frontend
+1. **Structural lowering**: SAIR statements map 1:1 to ISA instructions for simple cases.
+2. **Type clarity**: SAIR preserves full type information in ScratchArch terms.
+3. **Optimization boundary**: Passes (constant folding, DCE, phi elimination) run on SAIR.
+4. **Independent verification**: SAIR modules validate independently of any LLVM frontend.
 
 ### What SAIR does not solve
 
-1. **Runtime dispatch**: Block dispatch is a runtime concern (ISA.md §5.1)
-2. **Cell decomposition**: Multi-cell lowering is an SAIR→ISA pass concern
-3. **Register allocation**: SSA virtual registers are unbounded (ISA.md §2.5)
-4. **Scheduling**: Instruction reordering is future work
+1. **Runtime dispatch**: Block dispatch is a runtime concern (ISA.md §5.1).
+2. **Cell decomposition**: Multi-cell lowering is an SAIR→ISA pass concern.
+3. **Register allocation**: SSA virtual registers are unbounded (ISA.md §2.5).
+4. **Scheduling**: Instruction reordering is future work.
 
 ---
 
 ## 2. Comparison: LLVM IR → SAIR → ScratchArch ISA
 
-```
+```text
 Layer          Purpose                         Values              Control flow
 ─────          ───────                         ──────              ────────────
 LLVM IR        Language-independent optimizer   SSA + poison/undef  Blocks + terminators + phi
@@ -62,6 +62,7 @@ vm)
 ### SAIR is not an LLVM clone
 
 LLVM IR tracks poison, undef, `nsw`/`nuw`. SAIR commits to ScratchArch's simpler model:
+
 - **All arithmetic is wrapping** (ISA.md §2.3). No poison flags.
 - **All values are unsigned storage** with signed operations (ISA.md §2.3).
 - **Cell model** is external; SAIR operates on logical typed values.
@@ -85,6 +86,7 @@ LLVM IR tracks poison, undef, `nsw`/`nuw`. SAIR commits to ScratchArch's simpler
 SAIR preserves SSA to make LLVM lowering straightforward and enable SSA-based optimizations.
 
 **Rejected alternatives**:
+
 - *Stack-based IR*: Too far from LLVM; loses SSA information needed for optimization.
 - *Fixed register file*: ScratchArch has unbounded virtual registers (§2.5). Fixed
   registers require premature allocation.
@@ -128,50 +130,50 @@ lowering via edge assignments.
 
 ### Arithmetic (all wrapping per ISA.md §2.3)
 
-| SAIR | Semantics |
+|SAIR|Semantics|
 |---|---|
-| `%d = add iN %a, %b` | `(⟦a⟧ + ⟦b⟧) mod 2^N` |
-| `%d = sub iN %a, %b` | `(⟦a⟧ − ⟦b⟧) mod⁺ 2^N` |
-| `%d = mul iN %a, %b` | `(⟦a⟧ · ⟦b⟧) mod 2^N` |
-| `%d = div iN %a, %b` | `floor(⟦a⟧ / ⟦b⟧)`; `⟦b⟧=0` is undefined |
-| `%d = rem iN %a, %b` | `⟦a⟧ − ⟦b⟧·floor(⟦a⟧/⟦b⟧)` |
+|`%d = add iN %a, %b`|`(⟦a⟧ + ⟦b⟧) mod 2^N`|
+|`%d = sub iN %a, %b`|`(⟦a⟧ − ⟦b⟧) mod⁺ 2^N`|
+|`%d = mul iN %a, %b`|`(⟦a⟧ · ⟦b⟧) mod 2^N`|
+|`%d = div iN %a, %b`|`floor(⟦a⟧ / ⟦b⟧)`; `⟦b⟧=0` is undefined|
+|`%d = rem iN %a, %b`|`⟦a⟧ − ⟦b⟧·floor(⟦a⟧/⟦b⟧)`|
 
 ### Comparison (produce i1)
 
-| SAIR | Semantics |
+|SAIR|Semantics|
 |---|---|
-| `%d = eq iN %a, %b` | `⟦a⟧ == ⟦b⟧` |
-| `%d = lt iN %a, %b` | `⟦a⟧ < ⟦b⟧` (unsigned) |
-| `%d = gt iN %a, %b` | `⟦a⟧ > ⟦b⟧` (unsigned) |
+|`%d = eq iN %a, %b`|`⟦a⟧ == ⟦b⟧`|
+|`%d = lt iN %a, %b`|`⟦a⟧ < ⟦b⟧` (unsigned)|
+|`%d = gt iN %a, %b`|`⟦a⟧ > ⟦b⟧` (unsigned)|
 
 ### Memory (per MEMORY.md §5)
 
-| SAIR | Semantics |
+|SAIR|Semantics|
 |---|---|
-| `%d = alloca T` | Allocate `sizeof(T)` bytes, return address |
-| `%d = load T, ptr %p` | Read `sizeof(T)` LE bytes from `%p` |
-| `store T %v, ptr %p` | Write `%v` as `sizeof(T)` LE bytes to `%p` |
+|`%d = alloca T`|Allocate `sizeof(T)` bytes, return address|
+|`%d = load T, ptr %p`|Read `sizeof(T)` LE bytes from `%p`|
+|`store T %v, ptr %p`|Write `%v` as `sizeof(T)` LE bytes to `%p`|
 
 ### Control flow
 
-| SAIR | Description |
+|SAIR|Description|
 |---|---|
-| `br label %bb` | Unconditional branch |
-| `br i1 %c, label %t, label %f` | Conditional branch |
-| `ret T %v` | Return value |
-| `ret void` | Return void |
+|`br label %bb`|Unconditional branch|
+|`br i1 %c, label %t, label %f`|Conditional branch|
+|`ret T %v`|Return value|
+|`ret void`|Return void|
 
 ### Function call
 
-| SAIR | Description |
+|SAIR|Description|
 |---|---|
-| `%d = call @f(T %a, ...)` | Call function, capture return value |
+|`%d = call @f(T %a, ...)`|Call function, capture return value|
 
 ### Phi
 
-| SAIR | Description |
+|SAIR|Description|
 |---|---|
-| `%d = phi T [%v1, %bb1], ...` | Select value by incoming edge |
+|`%d = phi T [%v1, %bb1], ...`|Select value by incoming edge|
 
 ---
 
@@ -179,75 +181,94 @@ lowering via edge assignments.
 
 ### 5.1 Approach
 
-Lowering converts SSA form to stack operations. The reference lowerer handles
-single-block functions with the operand stack as primary value carrier.
+The reference lowerer (`IsaLowerer` in `crates/scratcharch-ir/src/lower.rs`)
+converts SAIR into `scratcharch-core` ISA programs. It handles multi-block
+functions, phi nodes, GEP, function calls, and returns using a **local-slot
+model**: every SSA value is assigned one or more frame-local slots, and
+instructions load operands from / store results to those slots.
 
-For the common case of straight-line code with each value used exactly once,
-the lowering is a direct stack transformation:
-- Each instruction pops its operands and pushes its result
+The local-slot model is the VM realization of the SSA virtual registers
+ described in [`ISA.md`](../specification/ISA.md) §2.5. It makes multi-block
+lowering straightforward because values can survive across block boundaries
+without requiring a predictable operand-stack shape at every block entry.
 
-For multi-use values, `DUP` is emitted before the second use.
+### 5.2 Lowering pipeline
 
-For cross-block values (phi), future work will add frame-allocation-based lowering.
+1. **Validate** the SAIR module.
+2. **Allocate slots** for parameters and every result-producing instruction,
+   using the target profile to compute cell counts.
+3. **Split critical edges** so that each phi copy sequence has a unique
+   placement.
+4. **Collect and place phi copies** on each edge.
+5. **Resolve parallel copies**, breaking cycles with a reserved temp slot.
+6. **Emit ISA instructions** block by block, including prologue, phi copies,
+   non-phi instructions, and terminators.
 
-### 5.2 Instruction lowering table
+See [`BACKEND_DESIGN.md`](./BACKEND_DESIGN.md) and [`PHI_LOWERING.md`](./PHI_LOWERING.md)
+for the full design.
 
-| SAIR | ISA lowering |
+### 5.3 Instruction lowering table
+
+|SAIR|ISA lowering|
 |---|---|
-| `%d = add T %a, %b` | `I32_ADD` (operands already on stack) |
-| `%d = sub T %a, %b` | `I32_SUB` |
-| `%d = mul T %a, %b` | `I32_MUL` |
-| `%d = div T %a, %b` | `I32_DIV` |
-| `%d = rem T %a, %b` | `I32_REM` |
-| `%d = eq T %a, %b` | `EQ` |
-| `%d = lt T %a, %b` | `LT` |
-| `%d = gt T %a, %b` | `GT` |
-| `%d = alloca T` | `CONST size; ALLOC` |
-| `%d = load T, %p` | `LOAD` (addr already on stack) |
-| `store T %v, %p` | `STORE` (val then addr on stack) |
-| `br label %bb` | `JUMP bb` |
-| `br i1 %c, t, f` | `BRANCH t, f` (cond on stack) |
-| `ret T %v` | `RETURN` |
-| `%d = call @f(...)` | `CALL @f` (args on stack) |
+|`%d = add T %a, %b`|`local.get a; local.get b; i32.add; local.set d`|
+|`%d = sub/mul/div/rem/eq/lt/gt`|analogous to `add`|
+|`%d = const T v`|push constant; `local.set d`|
+|`%d = alloca T`|`const_i32 sizeof(T); alloc; local.set d`|
+|`%d = load T, %p`|`local.get p; load; local.set d`|
+|`store T %v, %p`|`local.get p; local.get v; store`|
+|`br label %bb`|`jump %bb`|
+|`br i1 %c, t, f`|`local.get c; branch t f`|
+|`ret T %v`|`local.get v; return`|
+|`%d = call @f(...)`|evaluate args; `call @f`; `local.set d` (if non-void)|
+|`%d = gep T, %base, %idx`|`local.get base; local.get idx; const_i32 sizeof(T); i32.mul; i32.add; local.set d`|
+|`%d = phi T [...]`|lowered via edge copies; no direct instruction|
 
-### 5.3 Phi lowering (future)
+### 5.4 Phi lowering
 
-See [`PHI_LOWERING.md`](./PHI_LOWERING.md) for the detailed design.
+Phi nodes are lowered by **edge-based copy insertion**. For each incoming edge
+to a phi block, the lowerer emits `local.get`/`local.set` copies from the
+operand slot(s) to the phi result slot(s). Critical edges are split with
+trampoline blocks so that each edge has a unique copy location. Cyclic phi
+operands are resolved using a temp slot so that all source values are read
+before any destination is written. See [`PHI_LOWERING.md`](./PHI_LOWERING.md)
+for details.
 
-Phi nodes will be lowered by edge assignments: before the terminator of each
-predecessor block, emit the phi operand value to a shared slot. The successor
-block loads from that slot at its start. The interpreter (`scratcharch-sair-interpreter`,
-see [`SAIR_INTERPRETER.md`](./SAIR_INTERPRETER.md)) already implements this
-semantics directly.
-
-### 5.4 Calling convention
+### 5.5 Calling convention
 
 Per ABI.md §5:
-- Arguments pushed onto the operand stack before `CALL`
-- Return value is on the stack after `CALL`
-- Caller-save: live values are preserved via stack discipline
+
+- Arguments pushed onto the operand stack before `CALL`.
+- Return value cells are on the stack after `CALL`.
+- The callee prologue pops parameter cells into local slots.
+- Caller-save: live values are preserved via local slots.
 
 ---
 
 ## 6. Known limitations (v0.1)
 
-1. **Phi lowering not yet implemented**: Single-block functions only for ISA
-   lowering. Multi-block/phi/GEP programs are rejected with clear errors.
-   The interpreter handles these fully; the ISA side awaits slot-based lowering.
-2. **i32-only ISA arithmetic**: SAIR types support i1/i8/i16/i32/f64/ptr, but
-   the ISA instruction set only implements i32 operations. Narrower types are
-   truncated/extended during lowering; wider types are deferred.
-3. **No struct/array types**: Aggregates are reserved for future work.
-4. **No optimization passes**: Constant folding, DCE, phi elimination are future work.
-5. **No cell decomposition**: i64 values on sa48 are not yet split into cells.
+1. **Single-cell execution only**: The ISA lowerer supports multi-cell *metadata*
+   (slot counts, parameter/return decomposition) via the target profile, but
+   arithmetic and load/store operations currently require `cell_count == 1`.
+   Multi-cell integer operations (e.g. `i64` on `sa48`) are rejected with a
+   clear error; the generic decomposition path is verified with artificial
+   profiles.
+2. **No struct/array types as SAIR values**: Aggregates can be manipulated
+   through pointers and GEP, but they are not first-class SAIR value types.
+3. **Runtime intrinsics are interpreter-only**: `__scratcharch_memcpy`,
+   `__scratcharch_strlen`, and other runtime routines are dispatched by the SAIR
+   interpreter. The VM backend does not yet lower or link calls to them.
+4. **No native code emission**: The backend emits `scratcharch-core` ISA, not
+   host machine code or TurboWarp blocks.
 
 ---
 
 ## 7. Future work
 
-1. **Slot-based multi-block lowering**: Use frame pointer (Pick) + frame-relative
-   addressing to lower phi/GEP/multi-block functions to ISA.
-2. **Struct/array types**: Decompose aggregates during lowering.
-3. **Cell decomposition**: Profile-aware multi-cell lowering for sa48.
-4. **Optimization passes**: Constant folding, dead code elimination, phi elimination.
-5. **Intrinsic lowering**: Map `memcpy`/`memset` etc. to reference expansions.
+1. **Multi-cell arithmetic**: Expand the instruction-lowering table to emit
+   multi-cell add/sub/mul/div and load/store for types wider than a cell.
+2. **Struct/array types**: Decompose aggregates into cells during lowering.
+3. **Intrinsic lowering**: Map runtime intrinsics to ISA call sequences or
+   reference expansions in the VM backend.
+4. **Native backends**: Reuse the lowerer's slot allocation and phi destruction
+   while emitting host code or TurboWarp blocks instead of `local.get`/`local.set`.

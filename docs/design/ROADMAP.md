@@ -1,6 +1,6 @@
 # ScratchArch Development Roadmap
 
-> Last updated: 2026-07-23 (toolchain integration v0.1 completed)
+> Last updated: 2026-07-23 (backend foundation v0.1 completed)
 > Status: living document
 
 ## Legend
@@ -175,26 +175,45 @@
       `ISA.md` and `ABI.md` documenting gaps between the frozen architecture
       and the v0.1 implementation.
 
+### Backend Foundation v0.1 (`scratcharch-ir` / `scratcharch-vm` / `scratcharch-driver`)
+
+- [x] **Local-slot ISA instructions**: `local.get <slot>` / `local.set <slot>`
+      in `scratcharch-core`, with VM frame support (`locals` vector) and
+      function metadata (`param_cells`, `local_count`, `return_cells`).
+- [x] **Multi-block SAIR lowering**: `IsaLowerer` lowers functions with
+      multiple basic blocks, branch/conditional-branch terminators, and
+      label resolution.
+- [x] **SSA phi elimination**: edge-based copy insertion, critical-edge
+      splitting into trampoline blocks, parallel-copy resolution with a temp
+      slot for cyclic operands.
+- [x] **Function call and return lowering**: argument/return value movement
+      between operand stack and local slots, frame prologue/epilogue.
+- [x] **GEP lowering**: dynamic index lowering to pointer arithmetic; struct
+      fields deferred until type layout is available.
+- [x] **Target-aware lowering**: `TargetProfile::cells_for_type` drives slot
+      allocation; parameter and return value decomposition verified with an
+      artificial `sa16` profile.
+- [x] **End-to-end VM backend tests**: driver pipeline `LLVM IR → SAIR →
+      optimization → ISA → VM` exercised for `hello`, `add`, `factorial`,
+      `fib`, `recursion`, `array`, and `pointer` C compatibility programs.
+- [x] **Backend documentation**: `docs/design/BACKEND_DESIGN.md`, updates to
+      `PHI_LOWERING.md`, `SAIR_DESIGN.md`, `ROADMAP.md`, and
+      `EXECUTION_MODEL.md`.
+
 ### Testing
 
 - [x] All tests pass with 0 warnings and 0 clippy errors
-- [x] Test breakdown: 6 pipeline + 10 runtime pipeline + 23 translator + 24 IR + 23 interpreter + 20 VM + 12 target + 20 opt + 21 runtime = 159
+- [x] Test breakdown: 12 driver + 9 VM backend + 2 IR unit + 28 IR integration +
+      11 SAIR text round-trip + 10 pipeline + 10 runtime pipeline + 23 translator +
+      20 opt + 21 runtime + 23 interpreter + 7 target unit + 5 target integration +
+      26 VM = 207
 
 ## In Progress
-
-- [ ] Multi-block lowering in `lower.rs` (slot-based with frame pointer)
-- [ ] Cell decomposition for `sa48` profile (i64 → 2 × i48)
 
 ## Future (v0.2+)
 
 ### Short-term
 
-- [ ] **Advanced optimization passes**
-  - Function inlining
-  - mem2reg / promote memory to registers
-  - Loop optimization
-  - Strength reduction
-  - SSA construction improvements
 - [ ] **Extended LLVM IR support**
   - Signed comparison predicates with sign-aware lowering
   - Division/remainder lowering
@@ -202,28 +221,24 @@
   - Phi node parsing and translation
   - Global variable support
   - Indirect function calls
-
-- [ ] **Multi-block ISA lowering**
-  - Slot-based lowerer using frame pointer (Pick + frame-relative addressing)
-  - Phi edge-copy stores at predecessor block ends
-  - GEP lowering with pointer arithmetic
-  - Stack depth tracking for consistent block entry/exit
-
-- [ ] **Cell decomposition**
-  - Profile-aware value splitting (i64 → 2 cells on sa48)
+- [ ] **Multi-cell arithmetic execution**
+  - Expand ISA lowering for `i64` and wider types on `sa48`
+  - Multi-cell add/sub/mul/div and load/store
   - Low/high part extraction and recombination
-  - Multi-cell load/store in memory model
+- [ ] **VM backend runtime linking**
+  - Lower or link calls to `__scratcharch_*` runtime intrinsics
+  - Reference expansions for `memcpy`, `memmove`, `memset`
 
 ### Medium-term
 
-- [ ] **Optimization passes**
-  - Constant folding and propagation
-  - Dead code elimination
-  - Phi elimination (DemoteRegToStack)
+- [ ] **Advanced optimization passes**
+  - Function inlining
+  - mem2reg / promote memory to registers
+  - Loop optimization
+  - Strength reduction
   - Common subexpression elimination
 
 - [ ] **Intrinsic lowering**
-  - memcpy, memmove, memset (reference expansions)
   - ctpop, ctlz, cttz
   - bswap
   - saturating arithmetic
