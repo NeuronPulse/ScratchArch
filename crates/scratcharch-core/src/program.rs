@@ -6,6 +6,12 @@ pub struct Function {
     pub name: FunctionName,
     pub instructions: Vec<(Option<Label>, Instruction)>,
     label_map: HashMap<Label, usize>,
+    /// Number of argument cells the callee pops from the operand stack on entry.
+    pub param_cells: u32,
+    /// Total number of local slots allocated for this function (includes parameters).
+    pub local_count: u32,
+    /// Number of cells this function returns (0 for void).
+    pub return_cells: u32,
 }
 
 impl Function {
@@ -14,6 +20,9 @@ impl Function {
             name: name.into(),
             instructions: Vec::new(),
             label_map: HashMap::new(),
+            param_cells: 0,
+            local_count: 0,
+            return_cells: 1,
         }
     }
 
