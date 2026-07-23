@@ -1,6 +1,6 @@
 # ScratchArch Development Roadmap
 
-> Last updated: 2026-07-23 (backend foundation v0.1 completed)
+> Last updated: 2026-07-23 (Scratch Backend Foundation v0.2 completed)
 > Status: living document
 
 ## Legend
@@ -221,17 +221,38 @@
 - [x] **Documentation**: `docs/design/SCRATCH_BACKEND_DESIGN.md` and
       `docs/specification/SCRATCHGRAPH.md`.
 
+### Scratch Backend Foundation v0.2 (`scratcharch-scratchgraph`)
+
+- [x] **Semantic IR extensions**: event hats (`GreenFlag`, `KeyPressed`,
+      `SpriteClicked`, `BroadcastReceived`, `CloneStart`), concurrent scripts per
+      sprite/stage, scoped variables (`Global`, `SpriteLocal`, `Temporary`),
+      scoped lists (`Global`, `SpriteLocal`), list operations, and a heap
+      abstraction (`HeapAlloc`, `HeapLoad`, `HeapIndex`).
+- [x] **Procedure return values**: hidden stage variable convention
+      (`__ret_<func>`) so SAIR functions with return types lower to Scratch
+      custom blocks without modifying SAIR or core.
+- [x] **Memory abstraction**: SAIR `alloca`/`load`/`store`/`gep` lower to a
+      single stage-backed heap list (`__scratcharch_heap`) with 0-based pointers
+      in ScratchGraph and 1-based indexing at the JSON boundary.
+- [x] **Improved lowering**: support for multiple procedures, functions with
+      return values, global variable declarations, basic loops, and nested
+      conditionals inside loop bodies.
+- [x] **Tests**: event hats, variable scopes, list operations, procedure return
+      values, multi-script sprites, nested conditionals inside loops, and heap
+      memory lowering.
+- [x] **Documentation**: updated `docs/specification/SCRATCHGRAPH.md` and
+      `docs/design/SCRATCH_BACKEND_DESIGN.md`; new
+      `docs/design/SCRATCH_RUNTIME_MODEL.md` and
+      `docs/specification/SCRATCH_MEMORY.md`.
+
 ### Testing
 
 - [x] All tests pass with 0 warnings and 0 clippy errors
-- [x] Test breakdown: 12 driver + 9 VM backend + 2 IR unit + 28 IR integration +
-      11 SAIR text round-trip + 10 pipeline + 10 runtime pipeline + 23 translator +
-      20 opt + 21 runtime + 23 interpreter + 7 target unit + 5 target integration +
-      26 VM + 6 scratchgraph = 213
+- [x] Test breakdown: see final verification output for the current total.
 
 ## In Progress
 
-## Future (v0.2+)
+## Future (v0.3+)
 
 ### Short-term
 

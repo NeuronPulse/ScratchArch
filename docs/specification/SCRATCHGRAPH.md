@@ -70,7 +70,8 @@ pub struct Project {
 ### Stage and Sprite
 
 Both stage and sprite contain scripts, procedures, variables, and lists. Only
-the stage can hold broadcasts in Scratch, so broadcasts live on the stage.
+the stage can hold broadcasts in Scratch, so broadcasts live on the stage. A
+sprite may own multiple independent scripts, each with its own event hat.
 
 ```rust
 pub struct Stage {
@@ -93,34 +94,75 @@ pub struct Sprite {
 
 ### Scripts and Hats
 
-A script is a stack of statements triggered by an event hat.
+A script is a stack of statements triggered by an event hat. The optional
+`name` field is metadata for the compiler and is not serialized to
+`project.json`.
 
 ```rust
 pub struct Script {
     pub hat: Hat,
+    pub name: Option<String>,
     pub body: Vec<Stmt>,
 }
 
 pub enum Hat {
     GreenFlag,
+    KeyPressed(String),
+    SpriteClicked,
     BroadcastReceived(String),
+    CloneStart,
     Procedure { name: String },
 }
 ```
 
 ### Procedures
 
-A procedure is a reusable block definition with named parameters.
+A procedure is a reusable block definition with named parameters. Scratch
+custom blocks cannot return values natively; ScratchGraph models a return value
+through an optional hidden stage variable.
 
 ```rust
 pub struct Procedure {
     pub prototype: ProcedurePrototype,
     pub body: Vec<Stmt>,
+    /// Hidden stage variable used to communicate the return value, if any.
+    pub return_var: Option<String>,
 }
 
 pub struct ProcedurePrototype {
     pub name: String,
     pub params: Vec<ProcedureParam>,
+}
+```
+
+### Variables and Lists
+
+Variables and lists carry a scope so exporters know which target owns them.
+Compiler-generated temporaries are typically stored on the stage for
+convenience but are marked as `Temporary`.
+
+```rust
+pub enum VariableScope {
+    Global,
+    SpriteLocal,
+    Temporary,
+}
+
+pub struct Variable {
+    pub id: String,
+    pub name: String,
+    pub scope: VariableScope,
+}
+
+pub enum ListScope {
+    Global,
+    SpriteLocal,
+}
+
+pub struct List {
+    pub id: String,
+    pub name: String,
+    pub scope: ListScope,
 }
 ```
 
@@ -135,6 +177,11 @@ pub enum Stmt {
     ChangeVariable { var: String, delta: Expr },
     AddToList { list: String, value: Expr },
     DeleteAllOfList { list: String },
+    SetListItem { list: String, index: Expr, value: Expr },
+    DeleteListItem { list: String, index: Expr },
+    InsertListItem { list: String, index: Expr, value: Expr },
+    Broadcast { message: Expr },
+    HeapAlloc { result: String, size: Expr },
     Call { proc: String, args: Vec<Expr> },
     If { condition: Expr, then_body: Vec<Stmt>, else_body: Vec<Stmt> },
     Repeat { times: Expr, body: Vec<Stmt> },
@@ -153,8 +200,12 @@ pub enum Expr {
     Literal(Value),
     Variable(String),
     List(String),
+    ListItem { list: String, index: Box<Expr> },
+    ListLength { list: String },
     ProcedureParam(String),
     Operator { opcode: String, args: Vec<Expr> },
+    HeapLoad { addr: Box<Expr> },
+    HeapIndex { base: Box<Expr>, offset: Box<Expr> },
 }
 
 pub enum Value {
@@ -180,5 +231,5 @@ Each exporter implements the `ScratchExporter` trait and operates only on a
 
 ## Version
 
-This specification describes ScratchGraph v0.1 as implemented in the
-ScratchArch Scratch Backend Foundation v0.1 milestone.
+This specification describes ScratchGraph v0.2 as implemented in the
+ScratchArch Scratch Backend Foundation v0.2 milestone.

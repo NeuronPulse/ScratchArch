@@ -1,9 +1,9 @@
 # ScratchArch Scratch Backend Design
 
 This document describes the Scratch-specific backend layer introduced in
-**ScratchArch Scratch Backend Foundation v0.1**. The goal of this layer is to
-target Scratch without coupling Scratch serialization formats to the compiler
-core.
+**ScratchArch Scratch Backend Foundation v0.1** and extended in **v0.2**. The
+goal of this layer is to target Scratch without coupling Scratch serialization
+formats to the compiler core.
 
 ## Architecture
 
@@ -53,6 +53,26 @@ No crate below `scratcharch-scratchgraph` may depend on Scratch concepts.
 See [`docs/specification/SCRATCHGRAPH.md`](../specification/SCRATCHGRAPH.md) for
 the full data model and rationale.
 
+### Concurrent scripts
+
+A Scratch program is not a single control-flow graph. Each sprite (and the
+stage) may contain multiple independent scripts, each triggered by its own
+event hat:
+
+```text
+Project
+└── Sprite
+    ├── Script { hat: GreenFlag, ... }
+    ├── Script { hat: KeyPressed("space"), ... }
+    └── Script { hat: BroadcastReceived("go"), ... }
+```
+
+ScratchGraph models this directly: `Sprite::scripts` is a vector of `Script`
+values. The SAIR→ScratchGraph lowerer currently emits only the entry function
+as a green-flag script on the stage; future frontends can populate additional
+sprite scripts by constructing `Project` values directly or extending the
+lowering pipeline.
+
 ## Lowering boundary: SAIR → ScratchGraph
 
 ### Functions → procedures
@@ -79,18 +99,29 @@ architecture tests but will be extended later.
 SAIR module.entry  -->  Script { hat: GreenFlag, body: [Call entry, Stop] }
 ```
 
-### Variables → Scratch stage variables
+### Variables → Scratch variables
 
 SAIR is SSA form: each `ValueId` represents a single definition. ScratchGraph
-maps every non-parameter SSA value to a stage variable. The variable name is
-`v{id}` by default, or the value's debug name if present.
+maps every non-parameter SSA value to a variable. The variable name is `v{id}`
+by default, or the value's debug name if present. Because SAIR currently has no
+module-level globals, these compiler-generated values are placed on the stage
+and marked `Global` for now.
 
 ```text
 SAIR value %5  -->  Stage variable "v5"
 ```
 
-This is intentionally simple. Phi nodes and stores become variable updates,
-which aligns with Scratch's variable-centric execution model.
+ScratchGraph also distinguishes variable scope so future frontends can place
+variables on sprites:
+
+| Scope         | Owner            | Typical use                              |
+| ------------- | ---------------- | ---------------------------------------- |
+| `Global`      | Stage            | Shared across all sprites and the stage  |
+| `SpriteLocal` | A single sprite  | Owned by one sprite                      |
+| `Temporary`   | Stage (usually)  | Compiler-generated hidden state          |
+
+Phi nodes and stores become variable updates, which aligns with Scratch's
+variable-centric execution model.
 
 ### Calls → custom block calls
 
@@ -98,12 +129,22 @@ A SAIR `Call` instruction becomes a `Stmt::Call` to the corresponding
 procedure.
 
 ```text
-%r = call @add(%a, %b)  -->  Stmt::Call { proc: "add", args: [a, b] }
+%r = call @add(%a, %b)
+  -->  Stmt::Call { proc: "add", args: [a, b] }
+       Stmt::SetVariable { var: "%r", value: Variable("__ret_add") }
 ```
 
-Scratch custom blocks do not return values in v0.1, so the result value is
-not used by the caller. Future work can model return values through a
-dedicated global variable.
+Scratch custom blocks do not return values natively. v0.2 models return values
+with a hidden stage variable named `__ret_<func>`:
+
+- The callee writes its return value to `__ret_<func>` immediately before
+  `Stop`.
+- The caller copies `__ret_<func>` into its own result SSA variable right
+  after the `Call`.
+
+This convention is purely a ScratchGraph concern and does not leak into SAIR.
+It is not re-entrant: recursion or concurrent calls to the same function will
+overwrite the slot.
 
 ### Control flow → Scratch control blocks
 
@@ -117,31 +158,36 @@ dedicated global variable.
 The lowerer performs structural analysis on the SAIR CFG:
 
 1. Walk blocks starting from the entry block.
-2. On a conditional branch, first attempt to recognize a counted loop by
-   checking whether one target has already been visited (a back edge).
-3. If it is not a loop, treat it as an `if/else`. Recursively lower each
+2. On a conditional branch, attempt to recognize a natural loop by checking
+   whether one successor can reach the current block again (the back edge)
+   without passing through the other successor or already-visited blocks.
+3. If a loop is found, recursively lower the loop body with the header added
+   to the visited set. This allows nested `if/else` and nested natural loops
+   inside the body.
+4. If it is not a loop, treat it as an `if/else`. Recursively lower each
    branch and find the common merge block.
-4. Phi nodes are skipped during direct instruction emission; their values are
+5. Phi nodes are skipped during direct instruction emission; their values are
    materialized through variable updates on the incoming edges.
 
-This approach is intentionally limited in v0.1. Nested control flow inside
-loops and arbitrary irreducible CFGs are not supported.
+Irreducible CFGs and loops with multiple exits remain unsupported.
 
 ### Memory and runtime features
 
-Memory operations are modeled with stage variables in v0.1:
+v0.2 introduces a ScratchGraph heap abstraction backed by a single stage list
+named `__scratcharch_heap`. Pointers are 0-based indices into this list;
+Scratch's list blocks are 1-indexed, so the exporter adds one at the boundary.
 
-| SAIR instruction | ScratchGraph representation                                  |
-| ---------------- | ------------------------------------------------------------ |
-| `alloca`         | Create a variable initialized to `0` (pointer placeholder)   |
-| `load`           | Read a variable                                              |
-| `store`          | Write a variable                                             |
-| `gep`            | Variable holding an index/pointer (offsets not computed)     |
+| SAIR instruction | ScratchGraph representation                                           |
+| ---------------- | --------------------------------------------------------------------- |
+| `alloca T, N`    | `HeapAlloc` of `size_in_bytes(T) * N` cells; result = old heap length |
+| `load`           | `HeapLoad` at pointer                                                 |
+| `store`          | `SetListItem` on `__scratcharch_heap` at pointer + 1                  |
+| `gep`            | `HeapIndex` adding byte offsets                                       |
 
-This is a placeholder mapping. A real memory model will require a Scratch
-heap implemented as a list or a set of indexed variables.
+See [`docs/specification/SCRATCH_MEMORY.md`](../specification/SCRATCH_MEMORY.md)
+for the full memory model and its limitations.
 
-Runtime library functions (memcpy, strlen, etc.) are ordinary SAIR functions
+Runtime library functions (`memcpy`, `strlen`, etc.) are ordinary SAIR functions
 and lower to procedures like any other function. They are not special-cased in
 the backend.
 
@@ -168,11 +214,10 @@ mutation fields.
 
 ## Future work
 
-- Loop recognition for arbitrary natural loops.
-- Proper memory model (heap as list, pointers as indices).
-- Procedure return values via a dedicated result variable or Scratch
-  extension blocks.
 - Sprite-level procedures and variables instead of placing everything on the
   stage.
 - Integration with the driver crate so users can run
   `LLVM IR → SAIR → ScratchGraph → project.json` in one command.
+- Re-entrant procedure return values (e.g. per-call frame slots or a stack).
+- Full C memory model with alignment, padding, `free`, and `realloc`.
+- Additional exporters (`sb3`, `scratchblocks`).
