@@ -518,7 +518,7 @@ fn test_lower_and_run_fib() {
     builder.start_function("fib", IrType::I32);
     let n = builder.add_param(IrType::I32, "n");
     builder.new_block("entry");
-    let zero = builder.const_i32(0);
+    let _zero = builder.const_i32(0);
     let one = builder.const_i32(1);
     let two = builder.const_i32(2);
     let cond = builder.lt(IrType::I32, n, two);
