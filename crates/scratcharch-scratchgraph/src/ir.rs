@@ -103,8 +103,8 @@ pub enum Hat {
 pub struct Procedure {
     pub prototype: ProcedurePrototype,
     pub body: Vec<Stmt>,
-    /// Hidden stage variable used to communicate the return value, if any.
-    pub return_var: Option<String>,
+    /// Total frame size = 2 (saved FP + return slot) + local_count.
+    pub frame_size: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -140,10 +140,16 @@ pub enum Stmt {
     InsertListItem { list: String, index: Expr, value: Expr },
     /// Broadcast a message.
     Broadcast { message: Expr },
-    /// Allocate heap memory; result variable receives the pointer.
-    HeapAlloc { result: String, size: Expr },
+    /// Allocate heap memory; result frame slot receives the pointer.
+    HeapAlloc { result_offset: u32, size: Expr },
     /// Call a custom block.
     Call { proc: String, args: Vec<Expr> },
+    /// Push a new frame of `slots` cells onto the runtime stack.
+    EnterFrame { slots: u32 },
+    /// Pop `slots` cells from the end of the runtime stack.
+    PopFrame { slots: u32 },
+    /// Write a value into the current frame at `fp + offset`.
+    FrameSet { offset: u32, value: Expr },
     /// If/then/else.
     If {
         condition: Expr,
@@ -182,6 +188,10 @@ pub enum Expr {
     HeapLoad { addr: Box<Expr> },
     /// Compute a pointer offset.
     HeapIndex { base: Box<Expr>, offset: Box<Expr> },
+    /// Read the current frame pointer `__scratcharch_fp`.
+    FrameBase,
+    /// Read `__scratcharch_stack[fp + offset]`.
+    FrameGet { offset: u32 },
 }
 
 /// Literal value.
@@ -295,12 +305,12 @@ impl Procedure {
                 params,
             },
             body,
-            return_var: None,
+            frame_size: 0,
         }
     }
 
-    pub fn with_return_var(mut self, var: impl Into<String>) -> Self {
-        self.return_var = Some(var.into());
+    pub fn with_frame_size(mut self, frame_size: u32) -> Self {
+        self.frame_size = frame_size;
         self
     }
 }
