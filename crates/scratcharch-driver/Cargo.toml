@@ -5,11 +5,13 @@ edition = "2021"
 description = "Unified ScratchArch compilation driver"
 
 [dependencies]
+scratcharch-core = { path = "../scratcharch-core" }
 scratcharch-ir = { path = "../scratcharch-ir" }
 scratcharch-llvm = { path = "../scratcharch-llvm" }
 scratcharch-opt = { path = "../scratcharch-opt" }
 scratcharch-sair-interpreter = { path = "../scratcharch-sair-interpreter" }
 scratcharch-target = { path = "../scratcharch-target" }
+scratcharch-vm = { path = "../scratcharch-vm" }
 
 [dev-dependencies]
 scratcharch-runtime = { path = "../scratcharch-runtime" }

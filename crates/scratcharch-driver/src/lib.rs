@@ -4,16 +4,16 @@
 //!
 //! ```text
 //! LLVM IR text → LLVM translator → SAIR module → optimization passes → interpreter
+//!                                                                    ↘ VM (lower to ISA)
 //! ```
 //!
-//! The driver is intentionally backend-agnostic at the API level: only the
-//! interpreter backend is wired up in v0.1 because the VM backend still supports
-//! only single-block functions.
+//! The driver is backend-agnostic at the API level: the interpreter is the
+//! default, and the VM backend can be selected via `CompileConfig::backend`.
 
 pub mod config;
 pub mod driver;
 pub mod error;
 
-pub use config::{CompileConfig, OptLevel};
+pub use config::{CompileConfig, ExecutionBackend, OptLevel};
 pub use driver::{CompileDriver, CompiledModule, ExecutionValue};
 pub use error::DriverError;

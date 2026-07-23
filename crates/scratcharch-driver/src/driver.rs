@@ -1,21 +1,28 @@
 use std::path::Path;
 
+use scratcharch_core::value::Value as IsaValue;
+use scratcharch_ir::lower::IsaLowerer;
 use scratcharch_ir::r#module::IrModule;
 use scratcharch_opt::manager::PassManager;
 use scratcharch_opt::{cfg_simplify::CfgSimplify, constant_fold::ConstantFold, dce::DeadCodeElimination};
 use scratcharch_sair_interpreter::Interpreter;
 use scratcharch_target::profile::TargetProfile;
+use scratcharch_vm::vm::Vm;
 
 pub use scratcharch_sair_interpreter::RuntimeValue as ExecutionValue;
 
-use crate::config::{CompileConfig, OptLevel};
+use crate::config::{CompileConfig, ExecutionBackend, OptLevel};
 use crate::error::DriverError;
 
 /// A ScratchArch compilation driver.
 ///
-/// The driver ties the LLVM frontend, SAIR optimizer, and SAIR interpreter into
-/// a single pipeline. The VM backend can be added later without changing the
-/// public API.
+/// The driver ties the LLVM frontend, SAIR optimizer, and one of two execution
+/// backends into a single pipeline:
+///
+/// ```text
+/// LLVM IR text → LLVM translator → SAIR module → optimization passes → interpreter
+///                                                                    ↘ VM (lower to ISA)
+/// ```
 #[derive(Debug, Clone)]
 pub struct CompileDriver {
     config: CompileConfig,
@@ -57,6 +64,16 @@ impl CompileDriver {
 
     /// Execute a compiled module and return its exit value.
     pub fn execute(&self, compiled: CompiledModule) -> Result<Option<ExecutionValue>, DriverError> {
+        match self.config.backend {
+            ExecutionBackend::Interpreter => self.execute_interpreter(compiled),
+            ExecutionBackend::Vm => self.execute_vm(compiled),
+        }
+    }
+
+    fn execute_interpreter(
+        &self,
+        compiled: CompiledModule,
+    ) -> Result<Option<ExecutionValue>, DriverError> {
         let mut interp = Interpreter::new(
             compiled.module,
             self.config.memory_size,
@@ -66,6 +83,18 @@ impl CompileDriver {
         interp
             .run()
             .map_err(|e| DriverError::Execution(format!("{:?}", e)))
+    }
+
+    fn execute_vm(&self, compiled: CompiledModule) -> Result<Option<ExecutionValue>, DriverError> {
+        let lowerer = IsaLowerer::with_profile(compiled.profile);
+        let program = lowerer
+            .lower(&compiled.module)
+            .map_err(|e| DriverError::Vm(format!("lowering failed: {:?}", e)))?;
+        let mut vm = Vm::new(self.config.memory_size, self.config.stack_limit);
+        vm.load_program(&program)
+            .map_err(|e| DriverError::Vm(format!("load failed: {}", e)))?;
+        vm.run().map_err(|e| DriverError::Vm(format!("execution failed: {}", e)))?;
+        Ok(vm.stack.peek().ok().map(convert_vm_value))
     }
 
     /// Compile LLVM IR text and immediately run it.
@@ -87,6 +116,17 @@ impl CompileDriver {
 impl Default for CompileDriver {
     fn default() -> Self {
         Self::new(CompileConfig::default())
+    }
+}
+
+fn convert_vm_value(value: &IsaValue) -> ExecutionValue {
+    match *value {
+        IsaValue::I1(v) => ExecutionValue::I1(v),
+        IsaValue::I8(v) => ExecutionValue::I8(v),
+        IsaValue::I16(v) => ExecutionValue::I16(v),
+        IsaValue::I32(v) => ExecutionValue::I32(v),
+        IsaValue::F64(v) => ExecutionValue::F64(v),
+        IsaValue::Pointer(v) => ExecutionValue::Pointer(v),
     }
 }
 

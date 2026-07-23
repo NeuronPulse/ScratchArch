@@ -9,6 +9,8 @@ pub enum DriverError {
     Validation(String),
     /// Interpretation failed.
     Execution(String),
+    /// VM load or execution failed.
+    Vm(String),
     /// An I/O operation failed.
     Io(String),
 }
@@ -19,6 +21,7 @@ impl fmt::Display for DriverError {
             DriverError::Llvm(msg) => write!(f, "llvm error: {}", msg),
             DriverError::Validation(msg) => write!(f, "validation error: {}", msg),
             DriverError::Execution(msg) => write!(f, "execution error: {}", msg),
+            DriverError::Vm(msg) => write!(f, "vm error: {}", msg),
             DriverError::Io(msg) => write!(f, "io error: {}", msg),
         }
     }

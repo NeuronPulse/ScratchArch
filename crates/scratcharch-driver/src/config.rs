@@ -12,6 +12,15 @@ pub enum OptLevel {
     Aggressive,
 }
 
+/// Execution backend selected for a compiled module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionBackend {
+    /// Execute SAIR directly using the SAIR interpreter.
+    Interpreter,
+    /// Lower SAIR to ISA and execute on the stack-based VM.
+    Vm,
+}
+
 /// Configuration for the ScratchArch compilation driver.
 #[derive(Debug, Clone)]
 pub struct CompileConfig {
@@ -25,6 +34,8 @@ pub struct CompileConfig {
     pub max_frames: usize,
     /// Target profile for the compilation.
     pub profile: TargetProfile,
+    /// Execution backend used to run compiled modules.
+    pub backend: ExecutionBackend,
 }
 
 impl Default for CompileConfig {
@@ -35,6 +46,7 @@ impl Default for CompileConfig {
             stack_limit: 4096,
             max_frames: 1024,
             profile: TargetProfile::sa48(),
+            backend: ExecutionBackend::Interpreter,
         }
     }
 }
