@@ -461,7 +461,7 @@ impl Parser {
         self.parse_value_of_type_opt(Some(ty))
     }
 
-    fn parse_params(&mut self) -> Result<Vec<(LlvmType, String)>, LlvmError> {
+    fn parse_params(&mut self, names_required: bool) -> Result<Vec<(LlvmType, String)>, LlvmError> {
         let mut params = Vec::new();
         self.expect(&Token::OpenParen)?;
         while self.current != Token::CloseParen {
@@ -472,7 +472,15 @@ impl Parser {
                     self.advance();
                     name
                 }
-                _ => return Err(LlvmError::Parse(format!("expected local id, got {:?}", self.current))),
+                _ => {
+                    if names_required {
+                        return Err(LlvmError::Parse(format!(
+                            "expected local id, got {:?}",
+                            self.current
+                        )));
+                    }
+                    String::new()
+                }
             };
             params.push((ty, name));
             if self.current == Token::Comma {
@@ -785,7 +793,7 @@ impl Parser {
                 )))
             }
         };
-        let params = self.parse_params()?;
+        let params = self.parse_params(true)?;
         self.expect(&Token::OpenBrace)?;
 
         let mut blocks = Vec::new();
@@ -850,7 +858,7 @@ impl Parser {
                 )))
             }
         };
-        let params = self.parse_params()?;
+        let params = self.parse_params(false)?;
         Ok(LlvmFunction {
             name,
             return_ty,
