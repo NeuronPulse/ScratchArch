@@ -8,6 +8,7 @@ use crate::callstack::CallStack;
 pub enum Code {
     ConstI32(u32),
     ConstF64(f64),
+    ConstI1(bool),
     Drop,
     Dup,
     I32Add,
@@ -31,12 +32,22 @@ pub enum Code {
     Call(usize),
     Return,
     Pick(u32),
+    LocalGet(u32),
+    LocalSet(u32),
 }
 
 pub type FuncCode = Vec<Code>;
 
+#[derive(Debug, Clone)]
+pub struct FunctionMeta {
+    pub param_cells: u32,
+    pub return_cells: u32,
+    pub local_count: u32,
+}
+
 pub struct Vm {
     pub functions: Vec<FuncCode>,
+    pub function_meta: Vec<FunctionMeta>,
     pub current_func: usize,
     pub pc: usize,
     pub stack: OperandStack,
@@ -56,6 +67,7 @@ pub enum VmError {
     UndefinedFunction(String),
     UndefinedLabel(String),
     InvalidAddress,
+    InvalidLocal(u32),
 }
 
 impl core::fmt::Display for VmError {
@@ -71,6 +83,7 @@ impl core::fmt::Display for VmError {
             VmError::UndefinedFunction(name) => write!(f, "undefined function: {name}"),
             VmError::UndefinedLabel(label) => write!(f, "undefined label: {label}"),
             VmError::InvalidAddress => write!(f, "invalid address"),
+            VmError::InvalidLocal(slot) => write!(f, "invalid local slot: {slot}"),
         }
     }
 }
@@ -79,6 +92,7 @@ impl Vm {
     pub fn new(memory_size: u32, stack_base: u32) -> Self {
         Vm {
             functions: Vec::new(),
+            function_meta: Vec::new(),
             current_func: 0,
             pc: 0,
             stack: OperandStack::new(),
@@ -87,6 +101,26 @@ impl Vm {
             sp: memory_size,
             running: false,
         }
+    }
+
+    fn ensure_function_slot(&mut self, func_idx: usize) {
+        if self.functions.len() <= func_idx {
+            self.functions.resize(func_idx + 1, Vec::new());
+        }
+        if self.function_meta.len() <= func_idx {
+            self.function_meta.resize(
+                func_idx + 1,
+                FunctionMeta {
+                    param_cells: 0,
+                    return_cells: 1,
+                    local_count: 0,
+                },
+            );
+        }
+    }
+
+    pub fn func_meta(&self, func_idx: usize) -> &FunctionMeta {
+        &self.function_meta[func_idx]
     }
 
     pub fn load_program(&mut self, program: &Program) -> Result<(), VmError> {
@@ -100,6 +134,7 @@ impl Vm {
                 let c = match instr {
                     Instruction::ConstI32(v) => Code::ConstI32(*v),
                     Instruction::ConstF64(v) => Code::ConstF64(*v),
+                    Instruction::ConstI1(v) => Code::ConstI1(*v),
                     Instruction::Drop => Code::Drop,
                     Instruction::Dup => Code::Dup,
                     Instruction::I32Add => Code::I32Add,
@@ -137,17 +172,26 @@ impl Vm {
                     }
                     Instruction::Return => Code::Return,
                     Instruction::Pick(n) => Code::Pick(*n),
+                    Instruction::LocalGet(n) => Code::LocalGet(*n),
+                    Instruction::LocalSet(n) => Code::LocalSet(*n),
                 };
                 code.push(c);
             }
-            if self.functions.len() <= func_idx {
-                self.functions.resize(func_idx + 1, Vec::new());
-            }
+            self.ensure_function_slot(func_idx);
             self.functions[func_idx] = code;
+            self.function_meta[func_idx] = FunctionMeta {
+                param_cells: func.param_cells,
+                return_cells: func.return_cells,
+                local_count: func.local_count,
+            };
         }
 
         self.current_func = entry_idx;
         self.pc = 0;
+        let entry_meta = self.func_meta(entry_idx);
+        self.call_stack
+            .push(entry_idx, 0, self.sp, self.stack.len(), entry_meta.local_count)
+            .map_err(|_| VmError::CallStackEmpty)?;
         self.running = true;
         Ok(())
     }

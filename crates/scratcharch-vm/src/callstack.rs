@@ -1,9 +1,12 @@
+use scratcharch_core::value::Value;
+
 #[derive(Debug, Clone)]
 pub struct Frame {
     pub return_func: usize,
     pub return_pc: usize,
     pub saved_sp: u32,
     pub saved_stack_len: usize,
+    pub locals: Vec<Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -41,7 +44,14 @@ impl CallStack {
         }
     }
 
-    pub fn push(&mut self, func: usize, pc: usize, sp: u32, stack_len: usize) -> Result<(), CallStackError> {
+    pub fn push(
+        &mut self,
+        func: usize,
+        pc: usize,
+        sp: u32,
+        stack_len: usize,
+        local_count: u32,
+    ) -> Result<(), CallStackError> {
         if self.frames.len() >= Self::MAX_DEPTH {
             return Err(CallStackError::MaxDepthReached);
         }
@@ -50,6 +60,7 @@ impl CallStack {
             return_pc: pc,
             saved_sp: sp,
             saved_stack_len: stack_len,
+            locals: vec![Value::I32(0); local_count as usize],
         });
         Ok(())
     }
@@ -60,5 +71,13 @@ impl CallStack {
 
     pub fn depth(&self) -> usize {
         self.frames.len()
+    }
+
+    pub fn current(&self) -> Option<&Frame> {
+        self.frames.last()
+    }
+
+    pub fn current_mut(&mut self) -> Option<&mut Frame> {
+        self.frames.last_mut()
     }
 }

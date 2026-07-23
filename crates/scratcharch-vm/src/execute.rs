@@ -22,6 +22,9 @@ impl Vm {
             Code::ConstF64(v) => {
                 self.stack.push(Value::F64(v));
             }
+            Code::ConstI1(v) => {
+                self.stack.push(Value::I1(v));
+            }
             Code::Drop => {
                 self.stack.pop().map_err(|StackError::Underflow| VmError::StackUnderflow)?;
             }
@@ -30,18 +33,18 @@ impl Vm {
                 self.stack.push(*v);
             }
             Code::I32Add => {
-                let b = self.pop_i32()?;
-                let a = self.pop_i32()?;
+                let b = self.pop_u32()?;
+                let a = self.pop_u32()?;
                 self.stack.push(Value::I32(Value::i32_wrapping_add(a, b)));
             }
             Code::I32Sub => {
-                let b = self.pop_i32()?;
-                let a = self.pop_i32()?;
+                let b = self.pop_u32()?;
+                let a = self.pop_u32()?;
                 self.stack.push(Value::I32(Value::i32_wrapping_sub(a, b)));
             }
             Code::I32Mul => {
-                let b = self.pop_i32()?;
-                let a = self.pop_i32()?;
+                let b = self.pop_u32()?;
+                let a = self.pop_u32()?;
                 self.stack.push(Value::I32(Value::i32_wrapping_mul(a, b)));
             }
             Code::I32Div => {
@@ -82,18 +85,18 @@ impl Vm {
                 self.stack.push(Value::I32(a >> (b & 31)));
             }
             Code::Eq => {
-                let b = self.pop_i32()?;
-                let a = self.pop_i32()?;
+                let b = self.pop_u32()?;
+                let a = self.pop_u32()?;
                 self.stack.push(Value::I1(a == b));
             }
             Code::Lt => {
-                let b = self.pop_i32()?;
-                let a = self.pop_i32()?;
+                let b = self.pop_u32()?;
+                let a = self.pop_u32()?;
                 self.stack.push(Value::I1(a < b));
             }
             Code::Gt => {
-                let b = self.pop_i32()?;
-                let a = self.pop_i32()?;
+                let b = self.pop_u32()?;
+                let a = self.pop_u32()?;
                 self.stack.push(Value::I1(a > b));
             }
             Code::Load => {
@@ -132,8 +135,14 @@ impl Vm {
                 self.pc = if cond { t_target } else { f_target };
             }
             Code::Call(func_idx) => {
-                let saved_len = self.stack.len();
-                self.call_stack.push(self.current_func, self.pc, self.sp, saved_len)
+                let meta = self.func_meta(func_idx);
+                let saved_len = self
+                    .stack
+                    .len()
+                    .checked_sub(meta.param_cells as usize)
+                    .ok_or(VmError::StackUnderflow)?;
+                self.call_stack
+                    .push(self.current_func, self.pc, self.sp, saved_len, meta.local_count)
                     .map_err(|e| match e {
                         CallStackError::MaxDepthReached => {
                             VmError::MemoryError("call stack overflow".to_string())
@@ -148,16 +157,50 @@ impl Vm {
                     .map_err(|StackError::Underflow| VmError::StackUnderflow)?;
                 self.stack.push(*v);
             }
+            Code::LocalGet(slot) => {
+                let frame = self.call_stack.current()
+                    .ok_or(VmError::CallStackEmpty)?;
+                let val = *frame.locals.get(slot as usize)
+                    .ok_or(VmError::InvalidLocal(slot))?;
+                self.stack.push(val);
+            }
+            Code::LocalSet(slot) => {
+                let val = self.stack.pop()
+                    .map_err(|StackError::Underflow| VmError::StackUnderflow)?;
+                let frame = self.call_stack.current_mut()
+                    .ok_or(VmError::CallStackEmpty)?;
+                let local = frame.locals.get_mut(slot as usize)
+                    .ok_or(VmError::InvalidLocal(slot))?;
+                *local = val;
+            }
             Code::Return => {
+                let meta = self.func_meta(self.current_func).clone();
                 match self.call_stack.pop() {
                     Ok(frame) => {
-                        let return_value = self.stack.pop()
-                            .map_err(|StackError::Underflow| VmError::StackUnderflow)?;
-                        self.current_func = frame.return_func;
-                        self.pc = frame.return_pc;
-                        self.sp = frame.saved_sp;
-                        self.stack.truncate(frame.saved_stack_len);
-                        self.stack.push(return_value);
+                        let mut cells = Vec::with_capacity(meta.return_cells as usize);
+                        for _ in 0..meta.return_cells {
+                            cells.push(
+                                self.stack.pop()
+                                    .map_err(|StackError::Underflow| VmError::StackUnderflow)?,
+                            );
+                        }
+                        cells.reverse();
+
+                        if self.call_stack.depth() == 0 {
+                            // Root frame: program ends; keep return value on stack.
+                            for cell in cells {
+                                self.stack.push(cell);
+                            }
+                            self.running = false;
+                        } else {
+                            self.current_func = frame.return_func;
+                            self.pc = frame.return_pc;
+                            self.sp = frame.saved_sp;
+                            self.stack.truncate(frame.saved_stack_len);
+                            for cell in cells {
+                                self.stack.push(cell);
+                            }
+                        }
                     }
                     Err(CallStackError::Empty) => {
                         self.running = false;
@@ -194,6 +237,16 @@ impl Vm {
             Value::I32(v) => Ok(v),
             other => Err(VmError::TypeMismatch {
                 expected: "i32",
+                found: other.to_string(),
+            }),
+        }
+    }
+
+    fn pop_u32(&mut self) -> Result<u32, VmError> {
+        match self.stack.pop().map_err(|StackError::Underflow| VmError::StackUnderflow)? {
+            Value::I32(v) | Value::Pointer(v) => Ok(v),
+            other => Err(VmError::TypeMismatch {
+                expected: "i32 or ptr",
                 found: other.to_string(),
             }),
         }
