@@ -1,0 +1,9 @@
+[package]
+name = "scratcharch-runtime"
+version = "0.1.0"
+edition = "2021"
+authors = ["ScratchArch Contributors"]
+description = "ScratchArch portable runtime library (SART)"
+license = "MIT"
+
+[dependencies]
