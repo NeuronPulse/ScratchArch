@@ -19,8 +19,8 @@ pub mod lower;
 
 pub use exporter::{Infallible, ScratchExporter};
 pub use ir::{
-    Broadcast, Expr, Hat, List, Procedure, ProcedureParam, ProcedurePrototype, Project, Script,
-    Sprite, Stage, Stmt, StopOption, Value, Variable,
+    Broadcast, Expr, Hat, List, ListScope, Procedure, ProcedureParam, ProcedurePrototype, Project,
+    Script, Sprite, Stage, Stmt, StopOption, Value, Variable, VariableScope,
 };
 pub use json_exporter::JsonExporter;
 pub use lower::{LowerError, ScratchGraphLowerer};

@@ -165,12 +165,45 @@ fn export_script(script: &Script, state: &mut ExportState) {
             "x": 0,
             "y": 0,
         }),
+        Hat::KeyPressed(key) => json!({
+            "opcode": "event_whenkeypressed",
+            "next": next_field_for_body(&script.body, state),
+            "parent": null,
+            "inputs": {},
+            "fields": { "KEY_OPTION": [key, null] },
+            "shadow": false,
+            "topLevel": true,
+            "x": 0,
+            "y": 0,
+        }),
+        Hat::SpriteClicked => json!({
+            "opcode": "event_whenthisspriteclicked",
+            "next": next_field_for_body(&script.body, state),
+            "parent": null,
+            "inputs": {},
+            "fields": {},
+            "shadow": false,
+            "topLevel": true,
+            "x": 0,
+            "y": 0,
+        }),
         Hat::BroadcastReceived(name) => json!({
             "opcode": "event_whenbroadcastreceived",
             "next": next_field_for_body(&script.body, state),
             "parent": null,
             "inputs": {},
             "fields": { "BROADCAST_OPTION": [name, null] },
+            "shadow": false,
+            "topLevel": true,
+            "x": 0,
+            "y": 0,
+        }),
+        Hat::CloneStart => json!({
+            "opcode": "event_whencloned",
+            "next": next_field_for_body(&script.body, state),
+            "parent": null,
+            "inputs": {},
+            "fields": {},
             "shadow": false,
             "topLevel": true,
             "x": 0,
@@ -334,6 +367,66 @@ fn emit_stmt(stmt: &Stmt, state: &mut ExportState) -> String {
             "shadow": false,
             "topLevel": false,
         }),
+        Stmt::SetListItem { list, index, value } => json!({
+            "opcode": "data_replaceitemoflist",
+            "next": null,
+            "parent": null,
+            "inputs": {
+                "INDEX": emit_input(index, state),
+                "ITEM": emit_input(value, state),
+            },
+            "fields": { "LIST": [list, null] },
+            "shadow": false,
+            "topLevel": false,
+        }),
+        Stmt::DeleteListItem { list, index } => json!({
+            "opcode": "data_deleteoflist",
+            "next": null,
+            "parent": null,
+            "inputs": { "INDEX": emit_input(index, state) },
+            "fields": { "LIST": [list, null] },
+            "shadow": false,
+            "topLevel": false,
+        }),
+        Stmt::InsertListItem { list, index, value } => json!({
+            "opcode": "data_insertatlist",
+            "next": null,
+            "parent": null,
+            "inputs": {
+                "INDEX": emit_input(index, state),
+                "ITEM": emit_input(value, state),
+            },
+            "fields": { "LIST": [list, null] },
+            "shadow": false,
+            "topLevel": false,
+        }),
+        Stmt::Broadcast { message } => json!({
+            "opcode": "event_broadcast",
+            "next": null,
+            "parent": null,
+            "inputs": { "BROADCAST_INPUT": emit_input(message, state) },
+            "fields": {},
+            "shadow": false,
+            "topLevel": false,
+        }),
+        Stmt::HeapAlloc { result, size } => {
+            // Semantic expansion: result = length of heap before allocation,
+            // then repeat `size` times appending 0 to the heap.
+            let alloc_stmts = vec![
+                Stmt::SetVariable {
+                    var: result.clone(),
+                    value: Expr::list_length("__scratcharch_heap"),
+                },
+                Stmt::Repeat {
+                    times: size.clone(),
+                    body: vec![Stmt::AddToList {
+                        list: "__scratcharch_heap".to_string(),
+                        value: Expr::number(0.0),
+                    }],
+                },
+            ];
+            return emit_stmt_chain(&alloc_stmts, state);
+        }
         Stmt::Call { proc, args } => {
             let proccode = if args.is_empty() {
                 proc.clone()
@@ -565,6 +658,41 @@ fn emit_input(expr: &Expr, state: &mut ExportState) -> Value {
             );
             json!([2, id])
         }
+        Expr::ListItem { list, index } => {
+            let index_input = emit_input(index, state);
+            let id = state.fresh_id();
+            state.add_block(
+                id.clone(),
+                json!({
+                    "opcode": "data_itemoflist",
+                    "next": null,
+                    "parent": null,
+                    "inputs": {
+                        "INDEX": index_input,
+                    },
+                    "fields": { "LIST": [list, null] },
+                    "shadow": false,
+                    "topLevel": false,
+                }),
+            );
+            json!([2, id])
+        }
+        Expr::ListLength { list } => {
+            let id = state.fresh_id();
+            state.add_block(
+                id.clone(),
+                json!({
+                    "opcode": "data_lengthoflist",
+                    "next": null,
+                    "parent": null,
+                    "inputs": {},
+                    "fields": { "LIST": [list, null] },
+                    "shadow": false,
+                    "topLevel": false,
+                }),
+            );
+            json!([2, id])
+        }
         Expr::ProcedureParam(name) => {
             let id = state.fresh_id();
             state.add_block(
@@ -575,6 +703,36 @@ fn emit_input(expr: &Expr, state: &mut ExportState) -> Value {
                     "parent": null,
                     "inputs": {},
                     "fields": { "VALUE": [name, null] },
+                    "shadow": false,
+                    "topLevel": false,
+                }),
+            );
+            json!([2, id])
+        }
+        Expr::HeapLoad { addr } => {
+            // Scratch lists are 1-indexed; heap pointers are 0-based offsets.
+            let index = Expr::operator(
+                "operator_add",
+                vec![Expr::number(1.0), (**addr).clone()],
+            );
+            emit_input(&Expr::ListItem {
+                list: "__scratcharch_heap".to_string(),
+                index: Box::new(index),
+            }, state)
+        }
+        Expr::HeapIndex { base, offset } => {
+            let id = state.fresh_id();
+            let mut inputs = Map::new();
+            inputs.insert("0".to_string(), emit_input(base, state));
+            inputs.insert("1".to_string(), emit_input(offset, state));
+            state.add_block(
+                id.clone(),
+                json!({
+                    "opcode": "operator_add",
+                    "next": null,
+                    "parent": null,
+                    "inputs": inputs,
+                    "fields": {},
                     "shadow": false,
                     "topLevel": false,
                 }),

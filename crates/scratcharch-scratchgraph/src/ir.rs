@@ -1,8 +1,9 @@
 //! ScratchGraph IR: a semantic representation of Scratch programs.
 //!
 //! ScratchGraph is intentionally independent of `project.json` serialization.
-//! It models sprites, scripts, procedures, variables, and control flow as
-//! nested structures; exporters flatten these into concrete Scratch formats.
+//! It models sprites, scripts, procedures, variables, lists, broadcasts,
+//! control flow, and memory as nested structures; exporters flatten these into
+//! concrete Scratch formats.
 
 /// A Scratch project.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -32,11 +33,34 @@ pub struct Sprite {
     pub procedures: Vec<Procedure>,
 }
 
+/// Scope of a Scratch variable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum VariableScope {
+    /// Visible to every sprite and the stage.
+    #[default]
+    Global,
+    /// Owned by a single sprite.
+    SpriteLocal,
+    /// Compiler-generated temporary, typically global for convenience.
+    Temporary,
+}
+
 /// A named variable.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Variable {
     pub id: String,
     pub name: String,
+    pub scope: VariableScope,
+}
+
+/// Scope of a Scratch list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ListScope {
+    /// Visible to every sprite and the stage.
+    #[default]
+    Global,
+    /// Owned by a single sprite.
+    SpriteLocal,
 }
 
 /// A named list.
@@ -44,6 +68,7 @@ pub struct Variable {
 pub struct List {
     pub id: String,
     pub name: String,
+    pub scope: ListScope,
 }
 
 /// A named broadcast.
@@ -57,6 +82,7 @@ pub struct Broadcast {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Script {
     pub hat: Hat,
+    pub name: Option<String>,
     pub body: Vec<Stmt>,
 }
 
@@ -64,7 +90,10 @@ pub struct Script {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Hat {
     GreenFlag,
+    KeyPressed(String),
+    SpriteClicked,
     BroadcastReceived(String),
+    CloneStart,
     /// Procedure definition trigger; the body is the procedure implementation.
     Procedure { name: String },
 }
@@ -74,6 +103,8 @@ pub enum Hat {
 pub struct Procedure {
     pub prototype: ProcedurePrototype,
     pub body: Vec<Stmt>,
+    /// Hidden stage variable used to communicate the return value, if any.
+    pub return_var: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -101,6 +132,16 @@ pub enum Stmt {
     AddToList { list: String, value: Expr },
     /// Delete all items of a list.
     DeleteAllOfList { list: String },
+    /// Set a list item at an index to a value.
+    SetListItem { list: String, index: Expr, value: Expr },
+    /// Delete a list item at an index.
+    DeleteListItem { list: String, index: Expr },
+    /// Insert a value into a list at an index.
+    InsertListItem { list: String, index: Expr, value: Expr },
+    /// Broadcast a message.
+    Broadcast { message: Expr },
+    /// Allocate heap memory; result variable receives the pointer.
+    HeapAlloc { result: String, size: Expr },
     /// Call a custom block.
     Call { proc: String, args: Vec<Expr> },
     /// If/then/else.
@@ -131,8 +172,16 @@ pub enum Expr {
     Literal(Value),
     Variable(String),
     List(String),
+    /// Read a single item from a list.
+    ListItem { list: String, index: Box<Expr> },
+    /// Length of a list.
+    ListLength { list: String },
     ProcedureParam(String),
     Operator { opcode: String, args: Vec<Expr> },
+    /// Read from the heap at the given address.
+    HeapLoad { addr: Box<Expr> },
+    /// Compute a pointer offset.
+    HeapIndex { base: Box<Expr>, offset: Box<Expr> },
 }
 
 /// Literal value.
@@ -170,6 +219,10 @@ impl Stage {
         self.variables.push(var);
     }
 
+    pub fn add_list(&mut self, list: List) {
+        self.lists.push(list);
+    }
+
     pub fn add_script(&mut self, script: Script) {
         self.scripts.push(script);
     }
@@ -186,6 +239,22 @@ impl Sprite {
             ..Default::default()
         }
     }
+
+    pub fn add_variable(&mut self, var: Variable) {
+        self.variables.push(var);
+    }
+
+    pub fn add_list(&mut self, list: List) {
+        self.lists.push(list);
+    }
+
+    pub fn add_script(&mut self, script: Script) {
+        self.scripts.push(script);
+    }
+
+    pub fn add_procedure(&mut self, proc: Procedure) {
+        self.procedures.push(proc);
+    }
 }
 
 impl Variable {
@@ -193,7 +262,28 @@ impl Variable {
         Self {
             id: id.into(),
             name: name.into(),
+            scope: VariableScope::Global,
         }
+    }
+
+    pub fn with_scope(mut self, scope: VariableScope) -> Self {
+        self.scope = scope;
+        self
+    }
+}
+
+impl List {
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            scope: ListScope::Global,
+        }
+    }
+
+    pub fn with_scope(mut self, scope: ListScope) -> Self {
+        self.scope = scope;
+        self
     }
 }
 
@@ -205,7 +295,13 @@ impl Procedure {
                 params,
             },
             body,
+            return_var: None,
         }
+    }
+
+    pub fn with_return_var(mut self, var: impl Into<String>) -> Self {
+        self.return_var = Some(var.into());
+        self
     }
 }
 
@@ -220,7 +316,16 @@ impl ProcedureParam {
 
 impl Script {
     pub fn new(hat: Hat, body: Vec<Stmt>) -> Self {
-        Self { hat, body }
+        Self {
+            hat,
+            name: None,
+            body,
+        }
+    }
+
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
     }
 }
 
@@ -245,6 +350,30 @@ impl Expr {
         Expr::Operator {
             opcode: opcode.into(),
             args,
+        }
+    }
+
+    pub fn list_item(list: impl Into<String>, index: Expr) -> Self {
+        Expr::ListItem {
+            list: list.into(),
+            index: Box::new(index),
+        }
+    }
+
+    pub fn list_length(list: impl Into<String>) -> Self {
+        Expr::ListLength { list: list.into() }
+    }
+
+    pub fn heap_load(addr: Expr) -> Self {
+        Expr::HeapLoad {
+            addr: Box::new(addr),
+        }
+    }
+
+    pub fn heap_index(base: Expr, offset: Expr) -> Self {
+        Expr::HeapIndex {
+            base: Box::new(base),
+            offset: Box::new(offset),
         }
     }
 }
