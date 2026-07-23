@@ -1,0 +1,7 @@
+[package]
+name = "scratcharch-target"
+version = "0.1.0"
+edition = "2021"
+description = "ScratchArch target profile definitions"
+
+[dependencies]
