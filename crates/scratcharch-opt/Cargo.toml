@@ -1,0 +1,12 @@
+[package]
+name = "scratcharch-opt"
+version = "0.1.0"
+edition = "2021"
+description = "SAIR optimization framework"
+
+[dependencies]
+scratcharch-ir = { path = "../scratcharch-ir" }
+
+[dev-dependencies]
+scratcharch-llvm = { path = "../scratcharch-llvm" }
+scratcharch-sair-interpreter = { path = "../scratcharch-sair-interpreter" }
