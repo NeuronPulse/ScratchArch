@@ -14,9 +14,11 @@
 
 pub mod exporter;
 pub mod ir;
+pub mod lower;
 
 pub use exporter::{Infallible, ScratchExporter};
 pub use ir::{
     Broadcast, Expr, Hat, List, Procedure, ProcedureParam, ProcedurePrototype, Project, Script,
     Sprite, Stage, Stmt, StopOption, Value, Variable,
 };
+pub use lower::{LowerError, ScratchGraphLowerer};
