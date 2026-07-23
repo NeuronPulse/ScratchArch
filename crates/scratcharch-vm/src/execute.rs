@@ -1,0 +1,222 @@
+use scratcharch_core::value::Value;
+use scratcharch_core::types::Type;
+use crate::vm::{Vm, Code, VmError};
+use crate::callstack::CallStackError;
+use crate::stack::StackError;
+
+impl Vm {
+    pub fn step(&mut self) -> Result<(), VmError> {
+        let code = &self.functions[self.current_func];
+        if self.pc >= code.len() {
+            self.running = false;
+            return Ok(());
+        }
+
+        let instr = &code[self.pc];
+        self.pc += 1;
+
+        match *instr {
+            Code::ConstI32(v) => {
+                self.stack.push(Value::I32(v));
+            }
+            Code::ConstF64(v) => {
+                self.stack.push(Value::F64(v));
+            }
+            Code::Drop => {
+                self.stack.pop().map_err(|StackError::Underflow| VmError::StackUnderflow)?;
+            }
+            Code::Dup => {
+                let v = self.stack.peek().map_err(|StackError::Underflow| VmError::StackUnderflow)?;
+                self.stack.push(*v);
+            }
+            Code::I32Add => {
+                let b = self.pop_i32()?;
+                let a = self.pop_i32()?;
+                self.stack.push(Value::I32(Value::i32_wrapping_add(a, b)));
+            }
+            Code::I32Sub => {
+                let b = self.pop_i32()?;
+                let a = self.pop_i32()?;
+                self.stack.push(Value::I32(Value::i32_wrapping_sub(a, b)));
+            }
+            Code::I32Mul => {
+                let b = self.pop_i32()?;
+                let a = self.pop_i32()?;
+                self.stack.push(Value::I32(Value::i32_wrapping_mul(a, b)));
+            }
+            Code::I32Div => {
+                let b = self.pop_i32()?;
+                let a = self.pop_i32()?;
+                let result = Value::i32_div(a, b).ok_or(VmError::DivisionByZero)?;
+                self.stack.push(Value::I32(result));
+            }
+            Code::I32Rem => {
+                let b = self.pop_i32()?;
+                let a = self.pop_i32()?;
+                let result = Value::i32_rem(a, b).ok_or(VmError::DivisionByZero)?;
+                self.stack.push(Value::I32(result));
+            }
+            Code::And => {
+                let b = self.pop_i32()?;
+                let a = self.pop_i32()?;
+                self.stack.push(Value::I32(a & b));
+            }
+            Code::Or => {
+                let b = self.pop_i32()?;
+                let a = self.pop_i32()?;
+                self.stack.push(Value::I32(a | b));
+            }
+            Code::Xor => {
+                let b = self.pop_i32()?;
+                let a = self.pop_i32()?;
+                self.stack.push(Value::I32(a ^ b));
+            }
+            Code::Shl => {
+                let b = self.pop_i32()?;
+                let a = self.pop_i32()?;
+                self.stack.push(Value::I32(a << (b & 31)));
+            }
+            Code::Shr => {
+                let b = self.pop_i32()?;
+                let a = self.pop_i32()?;
+                self.stack.push(Value::I32(a >> (b & 31)));
+            }
+            Code::Eq => {
+                let b = self.pop_i32()?;
+                let a = self.pop_i32()?;
+                self.stack.push(Value::I1(a == b));
+            }
+            Code::Lt => {
+                let b = self.pop_i32()?;
+                let a = self.pop_i32()?;
+                self.stack.push(Value::I1(a < b));
+            }
+            Code::Gt => {
+                let b = self.pop_i32()?;
+                let a = self.pop_i32()?;
+                self.stack.push(Value::I1(a > b));
+            }
+            Code::Load => {
+                let addr = self.pop_address()?;
+                let bytes = self.memory.read(addr, Type::I32)
+                    .map_err(|e| VmError::MemoryError(e.to_string()))?;
+                let val = u32::from_le_bytes(bytes.try_into().unwrap());
+                self.stack.push(Value::I32(val));
+            }
+            Code::Store => {
+                let val = match self.stack.pop().map_err(|StackError::Underflow| VmError::StackUnderflow)? {
+                    Value::I32(v) => v,
+                    Value::Pointer(v) => v,
+                    other => return Err(VmError::TypeMismatch {
+                        expected: "i32 or ptr",
+                        found: other.to_string(),
+                    }),
+                };
+                let addr = self.pop_address()?;
+                let bytes = val.to_le_bytes();
+                self.memory.write(addr, &bytes)
+                    .map_err(|e| VmError::MemoryError(e.to_string()))?;
+            }
+            Code::Alloc => {
+                let size = self.pop_i32()?;
+                let new_sp = self.memory.alloc_stack(size, self.sp)
+                    .map_err(|e| VmError::MemoryError(e.to_string()))?;
+                self.sp = new_sp;
+                self.stack.push(Value::Pointer(new_sp));
+            }
+            Code::Jump(target) => {
+                self.pc = target;
+            }
+            Code::Branch(t_target, f_target) => {
+                let cond = self.pop_i1()?;
+                self.pc = if cond { t_target } else { f_target };
+            }
+            Code::Call(func_idx) => {
+                let saved_len = self.stack.len();
+                self.call_stack.push(self.current_func, self.pc, self.sp, saved_len)
+                    .map_err(|e| match e {
+                        CallStackError::MaxDepthReached => {
+                            VmError::MemoryError("call stack overflow".to_string())
+                        }
+                        CallStackError::Empty => VmError::CallStackEmpty,
+                    })?;
+                self.current_func = func_idx;
+                self.pc = 0;
+            }
+            Code::Pick(n) => {
+                let v = self.stack.get(n as usize)
+                    .map_err(|StackError::Underflow| VmError::StackUnderflow)?;
+                self.stack.push(*v);
+            }
+            Code::Return => {
+                match self.call_stack.pop() {
+                    Ok(frame) => {
+                        let return_value = self.stack.pop()
+                            .map_err(|StackError::Underflow| VmError::StackUnderflow)?;
+                        self.current_func = frame.return_func;
+                        self.pc = frame.return_pc;
+                        self.sp = frame.saved_sp;
+                        self.stack.truncate(frame.saved_stack_len);
+                        self.stack.push(return_value);
+                    }
+                    Err(CallStackError::Empty) => {
+                        self.running = false;
+                    }
+                    Err(CallStackError::MaxDepthReached) => unreachable!(),
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn run(&mut self) -> Result<(), VmError> {
+        self.running = true;
+        while self.running {
+            self.step()?;
+        }
+        Ok(())
+    }
+
+    pub fn run_with_limit(&mut self, max_steps: u64) -> Result<(), VmError> {
+        self.running = true;
+        for _ in 0..max_steps {
+            if !self.running {
+                break;
+            }
+            self.step()?;
+        }
+        Ok(())
+    }
+
+    fn pop_i32(&mut self) -> Result<u32, VmError> {
+        match self.stack.pop().map_err(|StackError::Underflow| VmError::StackUnderflow)? {
+            Value::I32(v) => Ok(v),
+            other => Err(VmError::TypeMismatch {
+                expected: "i32",
+                found: other.to_string(),
+            }),
+        }
+    }
+
+    fn pop_i1(&mut self) -> Result<bool, VmError> {
+        match self.stack.pop().map_err(|StackError::Underflow| VmError::StackUnderflow)? {
+            Value::I1(v) => Ok(v),
+            other => Err(VmError::TypeMismatch {
+                expected: "i1",
+                found: other.to_string(),
+            }),
+        }
+    }
+
+    fn pop_address(&mut self) -> Result<u32, VmError> {
+        match self.stack.pop().map_err(|StackError::Underflow| VmError::StackUnderflow)? {
+            Value::Pointer(v) => Ok(v),
+            Value::I32(v) => Ok(v),
+            other => Err(VmError::TypeMismatch {
+                expected: "ptr or i32",
+                found: other.to_string(),
+            }),
+        }
+    }
+}
