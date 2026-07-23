@@ -1,7 +1,9 @@
 //! SAIR → ScratchGraph lowering.
 //!
-//! Maps SAIR functions to Scratch custom blocks, SSA values to Scratch
-//! variables, and SAIR control flow to Scratch control blocks.
+//! Maps SAIR functions to Scratch custom blocks and SSA values to frame slots
+//! inside a runtime call stack. The Scratch target ABI uses a hidden stage list
+//! `__scratcharch_stack` and a frame pointer `__scratcharch_fp` so that calls
+//! are reentrant.
 
 use std::collections::{HashMap, HashSet};
 
@@ -30,13 +32,18 @@ impl ScratchGraphLowerer {
         let mut project = Project::new();
         let mut stage = Stage::new("Stage");
 
-        // Collect all global variables needed for SSA values.
-        for func in &module.functions {
-            for id in func.params.len()..func.values.len() {
-                let var_name = value_name(func, id);
-                stage.add_variable(Variable::new(var_name.clone(), var_name));
-            }
-        }
+        // Compute frame sizes for all functions before lowering any calls.
+        let frame_sizes: HashMap<String, u32> = module
+            .functions
+            .iter()
+            .map(|f| (f.name.clone(), compute_frame_size(f)))
+            .collect();
+
+        // Every module uses the runtime call stack.
+        stage.add_list(List::new("__scratcharch_stack", "__scratcharch_stack"));
+        stage.add_variable(
+            Variable::new("__scratcharch_fp", "__scratcharch_fp").with_scope(VariableScope::Temporary),
+        );
 
         // If any SAIR function uses memory instructions, model memory as a
         // single stage-backed heap list.
@@ -57,45 +64,53 @@ impl ScratchGraphLowerer {
             stage.add_list(List::new("__scratcharch_heap", "__scratcharch_heap"));
         }
 
-        let mut procedures = Vec::new();
         for func in &module.functions {
-            let proc = lower_function(func)?;
-            procedures.push(proc);
+            let proc = lower_function(func, &frame_sizes)?;
+            stage.add_procedure(proc);
         }
 
-        // Entry script calls the entry procedure.
+        // Entry script calls the entry procedure inside a frame.
         if let Some(entry_func) = module.functions.iter().find(|f| f.name == module.entry) {
             let entry_proc_name = entry_func.name.clone();
+            let entry_frame_size = frame_sizes
+                .get(&entry_proc_name)
+                .copied()
+                .unwrap_or(2);
             let arg_count = entry_func.params.len();
             let call_args: Vec<Expr> = if arg_count == 0 {
                 vec![]
             } else {
-                // Entry with arguments is not representable as a green-flag script
-                // without initialization; pass zero literals for now.
                 vec![Expr::number(0.0); arg_count]
             };
             stage.add_script(Script::new(
                 Hat::GreenFlag,
                 vec![
+                    Stmt::DeleteAllOfList {
+                        list: "__scratcharch_stack".to_string(),
+                    },
+                    Stmt::SetVariable {
+                        var: "__scratcharch_fp".to_string(),
+                        value: Expr::number(0.0),
+                    },
+                    Stmt::EnterFrame {
+                        slots: entry_frame_size,
+                    },
                     Stmt::Call {
                         proc: entry_proc_name,
                         args: call_args,
                     },
-                    Stmt::Stop { option: StopOption::ThisScript },
+                    Stmt::SetVariable {
+                        var: "__scratcharch_fp".to_string(),
+                        value: Expr::FrameGet { offset: 0 },
+                    },
+                    Stmt::PopFrame {
+                        slots: entry_frame_size,
+                    },
+                    Stmt::Stop {
+                        option: StopOption::ThisScript,
+                    },
                 ],
             ));
-        }
-
-        for proc in &procedures {
-            if let Some(ref ret_var) = proc.return_var {
-                stage.add_variable(
-                    Variable::new(ret_var.clone(), ret_var.clone()).with_scope(VariableScope::Temporary),
-                );
-            }
-        }
-
-        for proc in procedures {
-            stage.add_procedure(proc);
         }
 
         project.stage = stage;
@@ -122,7 +137,12 @@ impl core::fmt::Display for LowerError {
     }
 }
 
-fn lower_function(func: &IrFunction) -> Result<Procedure, LowerError> {
+fn compute_frame_size(func: &IrFunction) -> u32 {
+    let local_count = func.value_counter().saturating_sub(func.params.len());
+    2u32.saturating_add(local_count as u32)
+}
+
+fn lower_function(func: &IrFunction, frame_sizes: &HashMap<String, u32>) -> Result<Procedure, LowerError> {
     let params: Vec<ProcedureParam> = func
         .params
         .iter()
@@ -137,14 +157,11 @@ fn lower_function(func: &IrFunction) -> Result<Procedure, LowerError> {
         })
         .collect();
 
-    let ctx = FuncLowerCtx::new(func);
+    let ctx = FuncLowerCtx::new(func, frame_sizes.clone());
     let body = lower_region(func, &ctx, func.entry_block.clone(), &HashSet::new())?;
 
-    let mut proc = Procedure::new(func.name.clone(), params, body);
-    if !func.return_ty.is_void() {
-        proc = proc.with_return_var(format!("__ret_{}", func.name));
-    }
-    Ok(proc)
+    let frame_size = compute_frame_size(func);
+    Ok(Procedure::new(func.name.clone(), params, body).with_frame_size(frame_size))
 }
 
 struct FuncLowerCtx<'a> {
@@ -154,10 +171,11 @@ struct FuncLowerCtx<'a> {
     succ_map: HashMap<String, Vec<String>>,
     /// Maps (block_label, instruction_index) to the global SSA value id.
     result_ids: HashMap<(String, usize), ValueId>,
+    frame_sizes: HashMap<String, u32>,
 }
 
 impl<'a> FuncLowerCtx<'a> {
-    fn new(func: &'a IrFunction) -> Self {
+    fn new(func: &'a IrFunction, frame_sizes: HashMap<String, u32>) -> Self {
         let mut result_ids = HashMap::new();
         let mut next_id = func.params.len();
         for block in &func.blocks {
@@ -173,6 +191,7 @@ impl<'a> FuncLowerCtx<'a> {
             pred_map: build_pred_map(func),
             succ_map: build_succ_map(func),
             result_ids,
+            frame_sizes,
         }
     }
 
@@ -191,6 +210,10 @@ impl<'a> FuncLowerCtx<'a> {
 
     fn successors(&self, label: &str) -> &[String] {
         self.succ_map.get(label).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    fn callee_frame_size(&self, name: &str) -> u32 {
+        self.frame_sizes.get(name).copied().unwrap_or(2)
     }
 }
 
@@ -241,7 +264,10 @@ fn lower_region(
         local_visited.insert(current.clone());
 
         let block = ctx.block(&current).ok_or_else(|| {
-            LowerError::Validation(format!("block '{}' not found in function '{}'", current, func.name))
+            LowerError::Validation(format!(
+                "block '{}' not found in function '{}'",
+                current, func.name
+            ))
         })?;
 
         // Emit non-phi instructions.
@@ -257,13 +283,19 @@ fn lower_region(
             Terminator::Return { value } => {
                 if let Some(v) = value {
                     if !func.return_ty.is_void() {
-                        stmts.push(Stmt::SetVariable {
-                            var: format!("__ret_{}", func.name),
+                        stmts.push(Stmt::FrameSet {
+                            offset: 1,
                             value: lower_value(func, *v)?,
                         });
                     }
                 }
-                stmts.push(Stmt::Stop { option: StopOption::ThisScript });
+                let local_count = func.value_counter().saturating_sub(func.params.len());
+                stmts.push(Stmt::PopFrame {
+                    slots: local_count as u32,
+                });
+                stmts.push(Stmt::Stop {
+                    option: StopOption::ThisScript,
+                });
                 break;
             }
             Terminator::Branch { target } => {
@@ -271,6 +303,7 @@ fn lower_region(
                     // Back edge: end of a loop body. Stop here.
                     break;
                 }
+                emit_phi_copies(func, ctx, &current, target, &mut stmts)?;
                 current = target.clone();
             }
             Terminator::CondBranch {
@@ -279,11 +312,16 @@ fn lower_region(
                 false_target,
             } => {
                 // Try to recognize a natural loop.
-                if let Some((loop_stmts, exit_label)) =
-                    try_lower_simple_loop(func, ctx, &current, condition, true_target, false_target, &local_visited)?
-                {
+                if let Some((loop_stmts, exit_label)) = try_lower_simple_loop(
+                    func,
+                    ctx,
+                    &current,
+                    condition,
+                    true_target,
+                    false_target,
+                    &local_visited,
+                )? {
                     stmts.extend(loop_stmts);
-                    // After a loop the control flow continues at the exit block.
                     if local_visited.contains(&exit_label) {
                         break;
                     }
@@ -292,8 +330,19 @@ fn lower_region(
                 }
 
                 // Diamond if/else: both branches merge at a common successor.
-                let then_body = lower_branch_body(func, ctx, true_target, &local_visited)?;
-                let else_body = lower_branch_body(func, ctx, false_target, &local_visited)?;
+                let merge = find_merge(func, ctx, true_target, false_target, &local_visited);
+                let mut branch_visited = local_visited.clone();
+                if let Some(ref merge_label) = merge {
+                    branch_visited.insert(merge_label.clone());
+                }
+
+                let mut then_body = lower_branch_body(func, ctx, true_target, &branch_visited)?;
+                let mut else_body = lower_branch_body(func, ctx, false_target, &branch_visited)?;
+
+                if let Some(ref merge_label) = merge {
+                    emit_phi_copies(func, ctx, true_target, merge_label, &mut then_body)?;
+                    emit_phi_copies(func, ctx, false_target, merge_label, &mut else_body)?;
+                }
 
                 stmts.push(Stmt::If {
                     condition: lower_value(func, *condition)?,
@@ -301,8 +350,6 @@ fn lower_region(
                     else_body,
                 });
 
-                // Continue at the merge block, if any.
-                let merge = find_merge(func, ctx, true_target, false_target, &local_visited);
                 if let Some(merge_label) = merge {
                     if local_visited.contains(&merge_label) {
                         break;
@@ -439,6 +486,44 @@ fn negate(expr: Expr) -> Expr {
     }
 }
 
+/// Emit `FrameSet` statements that copy phi operands from `src_block` into the
+/// corresponding phi result slots in `dst_block`. This realizes phi nodes by
+/// edge-selected copies.
+fn emit_phi_copies(
+    func: &IrFunction,
+    ctx: &FuncLowerCtx,
+    src_block: &str,
+    dst_block: &str,
+    stmts: &mut Vec<Stmt>,
+) -> Result<(), LowerError> {
+    let block = ctx.block(dst_block).ok_or_else(|| {
+        LowerError::Validation(format!(
+            "phi target block '{}' not found in function '{}'",
+            dst_block, func.name
+        ))
+    })?;
+    for (idx, instr) in block.instructions.iter().enumerate() {
+        if let SairInstr::Phi { incoming, .. } = instr {
+            let incoming_value = incoming
+                .iter()
+                .find(|(_, label)| label == src_block)
+                .map(|(value, _)| *value)
+                .ok_or_else(|| {
+                    LowerError::Validation(format!(
+                        "phi in block '{}' has no incoming value from '{}'",
+                        dst_block, src_block
+                    ))
+                })?;
+            let result_id = ctx.result_id(dst_block, idx).expect("phi instruction has a result");
+            stmts.push(Stmt::FrameSet {
+                offset: frame_offset(func, result_id),
+                value: lower_value(func, incoming_value)?,
+            });
+        }
+    }
+    Ok(())
+}
+
 fn lower_instruction(
     func: &IrFunction,
     ctx: &FuncLowerCtx,
@@ -463,34 +548,39 @@ fn lower_instruction(
                 opcode: opcode.to_string(),
                 args: vec![lower_value(func, *lhs)?, lower_value(func, *rhs)?],
             };
-            let var = value_name(func, result_id);
-            Ok(vec![Stmt::SetVariable { var, value }])
+            Ok(vec![Stmt::FrameSet {
+                offset: frame_offset(func, result_id),
+                value,
+            }])
         }
         SairInstr::Const(c) => {
             let value = lower_const(c);
-            let var = value_name(func, result_id);
-            Ok(vec![Stmt::SetVariable { var, value }])
+            Ok(vec![Stmt::FrameSet {
+                offset: frame_offset(func, result_id),
+                value,
+            }])
         }
         SairInstr::Alloca { ty, count } => {
             let size = Expr::number((ty.size_in_bytes() * *count) as f64);
-            let var = value_name(func, result_id);
-            Ok(vec![Stmt::HeapAlloc { result: var, size }])
+            Ok(vec![Stmt::HeapAlloc {
+                result_offset: frame_offset(func, result_id),
+                size,
+            }])
         }
         SairInstr::Load { ty: _, addr } => {
             let value = Expr::HeapLoad {
                 addr: Box::new(lower_value(func, *addr)?),
             };
-            let var = value_name(func, result_id);
-            Ok(vec![Stmt::SetVariable { var, value }])
+            Ok(vec![Stmt::FrameSet {
+                offset: frame_offset(func, result_id),
+                value,
+            }])
         }
         SairInstr::Store { value, addr, .. } => {
             let src = lower_value(func, *value)?;
             let addr_expr = lower_value(func, *addr)?;
             // Scratch lists are 1-indexed; heap pointers are 0-based offsets.
-            let index = Expr::operator(
-                "operator_add",
-                vec![addr_expr, Expr::number(1.0)],
-            );
+            let index = Expr::operator("operator_add", vec![addr_expr, Expr::number(1.0)]);
             Ok(vec![Stmt::SetListItem {
                 list: "__scratcharch_heap".to_string(),
                 index,
@@ -506,19 +596,29 @@ fn lower_instruction(
                 .iter()
                 .map(|a| lower_value(func, *a))
                 .collect::<Result<Vec<_>, _>>()?;
-            let mut stmts = vec![Stmt::Call {
-                proc: callee.clone(),
-                args: call_args,
-            }];
-            // Scratch custom blocks cannot return values natively, so the callee
-            // stores its result in a hidden stage variable `__ret_<callee>`.
+            let callee_frame_size = ctx.callee_frame_size(callee);
+            let mut stmts = vec![
+                Stmt::EnterFrame {
+                    slots: callee_frame_size,
+                },
+                Stmt::Call {
+                    proc: callee.clone(),
+                    args: call_args,
+                },
+            ];
             if !return_ty.is_void() {
-                let result_var = value_name(func, result_id);
-                stmts.push(Stmt::SetVariable {
-                    var: result_var,
-                    value: Expr::Variable(format!("__ret_{}", callee)),
+                stmts.push(Stmt::FrameSet {
+                    offset: frame_offset(func, result_id),
+                    value: Expr::FrameGet { offset: 1 },
                 });
             }
+            stmts.push(Stmt::SetVariable {
+                var: "__scratcharch_fp".to_string(),
+                value: Expr::FrameGet { offset: 0 },
+            });
+            stmts.push(Stmt::PopFrame {
+                slots: callee_frame_size,
+            });
             Ok(stmts)
         }
         SairInstr::Phi { .. } => {
@@ -534,7 +634,7 @@ fn lower_instruction(
         } => {
             // Compute the byte offset from the base pointer. Struct-field
             // offsets are approximated using the element type size; full layout
-            // with padding is out of scope for v0.2.
+            // with padding is out of scope for v0.3.
             let mut offset = Expr::number(0.0);
             for idx in indices {
                 match idx {
@@ -558,8 +658,10 @@ fn lower_instruction(
                 base: Box::new(lower_value(func, *base)?),
                 offset: Box::new(offset),
             };
-            let var = value_name(func, result_id);
-            Ok(vec![Stmt::SetVariable { var, value }])
+            Ok(vec![Stmt::FrameSet {
+                offset: frame_offset(func, result_id),
+                value,
+            }])
         }
     }
 }
@@ -578,16 +680,30 @@ fn binary_opcode(instr: &SairInstr) -> &'static str {
     }
 }
 
+fn param_name(func: &IrFunction, id: ValueId) -> String {
+    let name = &func.params[id].1;
+    if name.is_empty() {
+        format!("arg{id}")
+    } else {
+        name.clone()
+    }
+}
+
+fn local_offset(func: &IrFunction, id: ValueId) -> u32 {
+    id.saturating_sub(func.params.len()) as u32
+}
+
+fn frame_offset(func: &IrFunction, id: ValueId) -> u32 {
+    2u32.saturating_add(local_offset(func, id))
+}
+
 fn lower_value(func: &IrFunction, id: ValueId) -> Result<Expr, LowerError> {
     if id < func.params.len() {
-        let name = if func.params[id].1.is_empty() {
-            format!("arg{id}")
-        } else {
-            func.params[id].1.clone()
-        };
-        return Ok(Expr::ProcedureParam(name));
+        return Ok(Expr::ProcedureParam(param_name(func, id)));
     }
-    Ok(Expr::Variable(value_name(func, id)))
+    Ok(Expr::FrameGet {
+        offset: frame_offset(func, id),
+    })
 }
 
 fn lower_const(c: &Constant) -> Expr {
@@ -598,19 +714,4 @@ fn lower_const(c: &Constant) -> Expr {
         Constant::I32(v) => Expr::number(*v as f64),
         Constant::F64(v) => Expr::number(*v),
     }
-}
-
-fn value_name(func: &IrFunction, id: ValueId) -> String {
-    if id < func.params.len() {
-        let name = func.params[id].1.clone();
-        return if name.is_empty() { format!("arg{id}") } else { name };
-    }
-    if let Some(value) = func.get_value(id) {
-        if let Some(name) = &value.name {
-            if !name.is_empty() {
-                return name.clone();
-            }
-        }
-    }
-    format!("v{id}")
 }
