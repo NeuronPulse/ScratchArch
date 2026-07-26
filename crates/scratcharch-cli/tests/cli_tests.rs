@@ -211,3 +211,65 @@ fn test_cli_pipeline_dump() {
     assert!(dump_dir.join("stage0-input.json").exists(), "dump dir missing stage0");
     assert!(dump_dir.join("stage2-sair.txt").exists(), "dump dir missing stage2");
 }
+
+fn write_sb3_project_json() -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let sb3_path = dir.path().join("test.sb3");
+
+    // Use scratcharch-sb3 to create a minimal archive
+    let stage = scratcharch_scratchgraph::Stage::new("Stage");
+    let project = scratcharch_scratchgraph::Project::new().with_stage(stage);
+    let writer = scratcharch_sb3::Sb3Writer::new();
+    let archive = writer.write(&project);
+    let bytes = archive.to_bytes().unwrap();
+    std::fs::write(&sb3_path, &bytes).unwrap();
+    (dir, sb3_path)
+}
+
+#[test]
+fn test_cli_sb3_unpack() {
+    let (_dir, sb3_path) = write_sb3_project_json();
+    let out_dir = std::env::temp_dir().join("cli_test_sb3_unpack_out");
+    let _ = std::fs::remove_dir_all(&out_dir);
+
+    let (ok, output) = run_cmd(&[
+        "sb3",
+        "unpack",
+        sb3_path.to_str().unwrap(),
+        "-o",
+        out_dir.to_str().unwrap(),
+    ]);
+    assert!(ok, "sb3 unpack failed: {}", output);
+    assert!(out_dir.join("project.json").exists(), "project.json not created");
+}
+
+#[test]
+fn test_cli_sb3_inspect() {
+    let (_dir, sb3_path) = write_sb3_project_json();
+
+    let (ok, output) = run_cmd(&["sb3", "inspect", sb3_path.to_str().unwrap()]);
+    assert!(ok, "sb3 inspect failed: {}", output);
+    assert!(output.contains("Stage"), "output: {}", output);
+    assert!(output.contains("Targets"), "output: {}", output);
+}
+
+#[test]
+fn test_cli_sb3_build() {
+    let (_dir, sb3_path) = write_sb3_project_json();
+    let out_path = std::env::temp_dir().join("cli_test_sb3_build_out.sb3");
+
+    let (ok, output) = run_cmd(&[
+        "sb3",
+        "build",
+        sb3_path.to_str().unwrap(),
+        "-o",
+        out_path.to_str().unwrap(),
+    ]);
+    assert!(ok, "sb3 build failed: {}", output);
+    assert!(out_path.exists(), "output sb3 not created: {:?}", out_path);
+
+    // Verify the output is a valid sb3 archive
+    let bytes = std::fs::read(&out_path).unwrap();
+    let archive = scratcharch_sb3::Sb3Archive::from_bytes(&bytes).unwrap();
+    assert_eq!(archive.project.targets.len(), 1);
+}
