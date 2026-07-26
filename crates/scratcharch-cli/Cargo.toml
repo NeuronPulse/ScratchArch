@@ -12,6 +12,7 @@ path = "src/main.rs"
 scratcharch-driver = { path = "../scratcharch-driver" }
 scratcharch-scratchgraph = { path = "../scratcharch-scratchgraph" }
 scratcharch-analyzer = { path = "../scratcharch-analyzer" }
+scratcharch-explorer = { path = "../scratcharch-explorer" }
 scratcharch-ir = { path = "../scratcharch-ir" }
 clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }

@@ -57,10 +57,13 @@ enum Command {
         #[arg(short, long)]
         output: Option<String>,
     },
-    /// Display project structure summary
+    /// Display project or SAIR module structure summary
     Inspect {
-        /// Input Scratch project (.json or .sb3)
+        /// Input file (.json, .sb3, or .sair)
         input: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Semantic diff between two Scratch projects
     Diff {
@@ -72,6 +75,14 @@ enum Command {
         #[arg(short, long, default_value = "text")]
         format: String,
     },
+    /// Debug: trace SAIR <-> ScratchGraph <-> project.json mappings
+    Debug {
+        /// Input Scratch project (.json or .sb3)
+        input: String,
+        /// Optional SAIR file for cross-reference
+        #[arg(short, long)]
+        sair: Option<String>,
+    },
 }
 
 fn main() {
@@ -81,11 +92,39 @@ fn main() {
         Command::Analyze { input, format, output } => analyze_cmd::run(input, format, output),
         Command::Decompile { input, output } => decompile::run(input, output),
         Command::Graph { input, kind, output } => graph::run(input, kind, output),
-        Command::Inspect { input } => inspect::run(input),
+        Command::Inspect { input, json } => inspect::run(input, *json),
         Command::Diff { a, b, format } => diff::run(a, b, format),
+        Command::Debug { input, sair } => debug_cmd::run(input, sair.as_deref()),
     };
     if let Err(e) = result {
         eprintln!("error: {}", e);
         std::process::exit(1);
+    }
+}
+
+/// Placeholder debug subcommand module.
+mod debug_cmd {
+    use scratcharch_scratchgraph::SourceMapBuilder;
+
+    pub fn run(input: &str, _sair: Option<&str>) -> Result<(), String> {
+        let raw = std::fs::read_to_string(input).map_err(|e| e.to_string())?;
+        let value: serde_json::Value =
+            serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+
+        let mut builder = SourceMapBuilder::new();
+        let _project: scratcharch_scratchgraph::ir::Project =
+            builder.parse(&value).map_err(|e: scratcharch_scratchgraph::ParseError| e.to_string())?;
+
+        println!("Source map for: {}", input);
+        for target in &builder.source_map {
+            println!("  target: {}", target.target_name);
+            for block in &target.blocks {
+                println!(
+                    "    {} opcode={} top={} parent={:?}",
+                    block.block_id, block.opcode, block.is_top_level, block.parent
+                );
+            }
+        }
+        Ok(())
     }
 }

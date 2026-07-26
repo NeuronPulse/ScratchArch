@@ -107,3 +107,46 @@ fn test_cli_decompile_minimal() {
     let content = std::fs::read_to_string(&out).unwrap();
     assert!(content.contains("decompiled from Scratch"), "content: {}", content);
 }
+
+#[test]
+fn test_cli_inspect_json_minimal() {
+    let json = minimal_project_json_str();
+    let tmp = std::env::temp_dir().join("cli_test_inspect_json_min.json");
+    std::fs::write(&tmp, &json).unwrap();
+
+    let (ok, output) = run_cmd(&["inspect", tmp.to_str().unwrap(), "--json"]);
+    assert!(ok, "inspect --json failed: {}", output);
+    assert!(output.contains("project_name"), "output: {}", output);
+    assert!(output.contains("targets"), "output: {}", output);
+}
+
+#[test]
+fn test_cli_inspect_sair() {
+    let sair_text = r#"sair 0.1
+entry "main"
+
+func @main -> i32 entry "entry" {
+  block "entry":
+    %0 = const i32 42
+    ret i32 %0
+}
+"#;
+    let tmp = std::env::temp_dir().join("cli_test_inspect_sair.sair");
+    std::fs::write(&tmp, sair_text).unwrap();
+
+    let (ok, output) = run_cmd(&["inspect", tmp.to_str().unwrap()]);
+    assert!(ok, "inspect sair failed: {}", output);
+    assert!(output.contains("SAIR Module"), "output: {}", output);
+    assert!(output.contains("main"), "output: {}", output);
+}
+
+#[test]
+fn test_cli_debug_source_map() {
+    let json = minimal_project_json_str();
+    let tmp = std::env::temp_dir().join("cli_test_debug_src.json");
+    std::fs::write(&tmp, &json).unwrap();
+
+    let (ok, output) = run_cmd(&["debug", tmp.to_str().unwrap()]);
+    assert!(ok, "debug failed: {}", output);
+    assert!(output.contains("Source map"), "output: {}", output);
+}
