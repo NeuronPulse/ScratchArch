@@ -33,6 +33,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "scratcharch-analyzer"
+version = "0.1.0"
+dependencies = [
+ "scratcharch-scratchgraph",
+]
+
+[[package]]
 name = "scratcharch-core"
 version = "0.1.0"
 

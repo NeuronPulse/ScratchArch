@@ -1,0 +1,8 @@
+[package]
+name = "scratcharch-analyzer"
+version = "0.1.0"
+edition = "2021"
+description = "Static analysis tools for ScratchGraph programs"
+
+[dependencies]
+scratcharch-scratchgraph = { path = "../scratcharch-scratchgraph" }
