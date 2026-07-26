@@ -150,3 +150,64 @@ fn test_cli_debug_source_map() {
     assert!(ok, "debug failed: {}", output);
     assert!(output.contains("Source map"), "output: {}", output);
 }
+
+#[test]
+fn test_cli_pipeline_roundtrip() {
+    let json = minimal_project_json_str();
+    let tmp = std::env::temp_dir().join("cli_test_pipeline_roundtrip.json");
+    let out = std::env::temp_dir().join("cli_test_pipeline_roundtrip_out.json");
+    std::fs::write(&tmp, &json).unwrap();
+
+    let (ok, output) = run_cmd(&[
+        "pipeline",
+        tmp.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--mode",
+        "roundtrip",
+    ]);
+    assert!(ok, "pipeline roundtrip failed: {}", output);
+    assert!(out.exists(), "output file not created: {:?}", out);
+}
+
+#[test]
+fn test_cli_pipeline_decompile() {
+    let json = minimal_project_json_str();
+    let tmp = std::env::temp_dir().join("cli_test_pipeline_decompile.json");
+    let out = std::env::temp_dir().join("cli_test_pipeline_decompile_out.sair");
+    std::fs::write(&tmp, &json).unwrap();
+
+    let (ok, output) = run_cmd(&[
+        "pipeline",
+        tmp.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--mode",
+        "decompile",
+    ]);
+    assert!(ok, "pipeline decompile failed: {}", output);
+    assert!(out.exists(), "output file not created: {:?}", out);
+    let content = std::fs::read_to_string(&out).unwrap();
+    assert!(content.contains("sair 0.1"), "output: {}", content);
+}
+
+#[test]
+fn test_cli_pipeline_dump() {
+    let json = minimal_project_json_str();
+    let tmp = std::env::temp_dir().join("cli_test_pipeline_dump.json");
+    let dump_dir = std::env::temp_dir().join("cli_test_pipeline_dump_out");
+    std::fs::write(&tmp, &json).unwrap();
+
+    let (ok, output) = run_cmd(&[
+        "pipeline",
+        tmp.to_str().unwrap(),
+        "--dump",
+        dump_dir.to_str().unwrap(),
+        "--mode",
+        "decompile",
+    ]);
+    assert!(ok, "pipeline dump failed: {}", output);
+    // Should have created dump dir with intermediate files
+    assert!(dump_dir.join("stage0-input.json").exists(), "dump dir missing stage0");
+    assert!(dump_dir.join("stage2-sair.txt").exists(), "dump dir missing stage2");
+}
