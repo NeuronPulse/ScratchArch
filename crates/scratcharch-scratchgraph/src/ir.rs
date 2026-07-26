@@ -81,21 +81,26 @@ pub struct Broadcast {
 /// A script triggered by an event hat.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Script {
-    pub hat: Hat,
+    pub entry: ScriptEntry,
+}
+
+/// A clear entry point for a script: an event hat plus its body.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScriptEntry {
+    pub hat: EventHat,
     pub name: Option<String>,
     pub body: Vec<Stmt>,
 }
 
-/// Event hats.
+/// Event hats. These are distinct from procedure definitions, which are
+/// modeled by [`Procedure`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Hat {
+pub enum EventHat {
     GreenFlag,
     KeyPressed(String),
     SpriteClicked,
     BroadcastReceived(String),
     CloneStart,
-    /// Procedure definition trigger; the body is the procedure implementation.
-    Procedure { name: String },
 }
 
 /// A custom block definition.
@@ -325,7 +330,32 @@ impl ProcedureParam {
 }
 
 impl Script {
-    pub fn new(hat: Hat, body: Vec<Stmt>) -> Self {
+    pub fn new(hat: EventHat, body: Vec<Stmt>) -> Self {
+        Self {
+            entry: ScriptEntry {
+                hat,
+                name: None,
+                body,
+            },
+        }
+    }
+
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.entry.name = Some(name.into());
+        self
+    }
+
+    pub fn hat(&self) -> &EventHat {
+        &self.entry.hat
+    }
+
+    pub fn body(&self) -> &[Stmt] {
+        &self.entry.body
+    }
+}
+
+impl ScriptEntry {
+    pub fn new(hat: EventHat, body: Vec<Stmt>) -> Self {
         Self {
             hat,
             name: None,

@@ -7,7 +7,7 @@ use serde_json::{json, Map, Value};
 
 use crate::exporter::{Infallible, ScratchExporter};
 use crate::ir::{
-    Expr, Hat, Procedure, Project, Script, Stage, Stmt, StopOption, Value as SgValue,
+    EventHat, Expr, Procedure, Project, Script, Stage, Stmt, StopOption, Value as SgValue,
 };
 
 /// Scratch 3 JSON exporter.
@@ -153,10 +153,10 @@ fn base_target(name: &str, is_stage: bool) -> Map<String, Value> {
 
 fn export_script(script: &Script, state: &mut ExportState) {
     let hat_id = state.fresh_id();
-    let hat_block = match &script.hat {
-        Hat::GreenFlag => json!({
+    let hat_block = match &script.entry.hat {
+        EventHat::GreenFlag => json!({
             "opcode": "event_whenflagclicked",
-            "next": next_field_for_body(&script.body, state),
+            "next": next_field_for_body(&script.entry.body, state),
             "parent": null,
             "inputs": {},
             "fields": {},
@@ -165,9 +165,9 @@ fn export_script(script: &Script, state: &mut ExportState) {
             "x": 0,
             "y": 0,
         }),
-        Hat::KeyPressed(key) => json!({
+        EventHat::KeyPressed(key) => json!({
             "opcode": "event_whenkeypressed",
-            "next": next_field_for_body(&script.body, state),
+            "next": next_field_for_body(&script.entry.body, state),
             "parent": null,
             "inputs": {},
             "fields": { "KEY_OPTION": [key, null] },
@@ -176,9 +176,9 @@ fn export_script(script: &Script, state: &mut ExportState) {
             "x": 0,
             "y": 0,
         }),
-        Hat::SpriteClicked => json!({
+        EventHat::SpriteClicked => json!({
             "opcode": "event_whenthisspriteclicked",
-            "next": next_field_for_body(&script.body, state),
+            "next": next_field_for_body(&script.entry.body, state),
             "parent": null,
             "inputs": {},
             "fields": {},
@@ -187,9 +187,9 @@ fn export_script(script: &Script, state: &mut ExportState) {
             "x": 0,
             "y": 0,
         }),
-        Hat::BroadcastReceived(name) => json!({
+        EventHat::BroadcastReceived(name) => json!({
             "opcode": "event_whenbroadcastreceived",
-            "next": next_field_for_body(&script.body, state),
+            "next": next_field_for_body(&script.entry.body, state),
             "parent": null,
             "inputs": {},
             "fields": { "BROADCAST_OPTION": [name, null] },
@@ -198,9 +198,9 @@ fn export_script(script: &Script, state: &mut ExportState) {
             "x": 0,
             "y": 0,
         }),
-        Hat::CloneStart => json!({
+        EventHat::CloneStart => json!({
             "opcode": "event_whencloned",
-            "next": next_field_for_body(&script.body, state),
+            "next": next_field_for_body(&script.entry.body, state),
             "parent": null,
             "inputs": {},
             "fields": {},
@@ -209,14 +209,9 @@ fn export_script(script: &Script, state: &mut ExportState) {
             "x": 0,
             "y": 0,
         }),
-        Hat::Procedure { .. } => {
-            // Procedure definitions are emitted separately; a script with a
-            // procedure hat should not appear as a standalone script.
-            unreachable!("procedure hats are handled by export_procedure_definition")
-        }
     };
     state.add_block(hat_id.clone(), hat_block);
-    emit_body(&hat_id, &script.body, state);
+    emit_body(&hat_id, &script.entry.body, state);
 }
 
 fn export_procedure_definition(proc: &Procedure, state: &mut ExportState) {

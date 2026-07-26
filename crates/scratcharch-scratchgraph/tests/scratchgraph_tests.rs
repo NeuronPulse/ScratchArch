@@ -7,7 +7,7 @@
 use scratcharch_ir::builder::IrBuilder;
 use scratcharch_ir::types::IrType;
 use scratcharch_scratchgraph::{
-    Expr, Hat, JsonExporter, List, ListScope, Project, ScratchExporter, ScratchGraphLowerer,
+    EventHat, Expr, JsonExporter, List, ListScope, Project, ScratchExporter, ScratchGraphLowerer,
     Script, Sprite, Stage, Stmt, StopOption, Value, Variable, VariableScope,
 };
 
@@ -229,9 +229,9 @@ fn test_sair_to_scratchgraph_procedure_call() {
 
     // The entry script should call the entry procedure.
     assert_eq!(stage.scripts.len(), 1);
-    assert!(matches!(stage.scripts[0].hat, Hat::GreenFlag));
+    assert!(matches!(&stage.scripts[0].entry.hat, EventHat::GreenFlag));
     assert!(stage.scripts[0]
-        .body
+        .entry.body
         .iter()
         .any(|s| matches!(s, Stmt::Call { proc, .. } if proc == "main")));
 
@@ -279,7 +279,7 @@ fn test_scratchgraph_loop_exporter() {
             option: StopOption::ThisScript,
         },
     ];
-    stage.add_script(scratcharch_scratchgraph::Script::new(Hat::GreenFlag, body));
+    stage.add_script(scratcharch_scratchgraph::Script::new(EventHat::GreenFlag, body));
 
     let project = Project::new().with_stage(stage);
     let json = export_json(&project);
@@ -321,14 +321,14 @@ fn test_sair_loop_lowering_does_not_crash() {
 #[test]
 fn test_scratchgraph_event_hats() {
     let mut stage = Stage::new("Stage");
-    stage.add_script(Script::new(Hat::GreenFlag, vec![]));
-    stage.add_script(Script::new(Hat::KeyPressed("space".to_string()), vec![]));
-    stage.add_script(Script::new(Hat::SpriteClicked, vec![]));
+    stage.add_script(Script::new(EventHat::GreenFlag, vec![]));
+    stage.add_script(Script::new(EventHat::KeyPressed("space".to_string()), vec![]));
+    stage.add_script(Script::new(EventHat::SpriteClicked, vec![]));
     stage.add_script(Script::new(
-        Hat::BroadcastReceived("hello".to_string()),
+        EventHat::BroadcastReceived("hello".to_string()),
         vec![],
     ));
-    stage.add_script(Script::new(Hat::CloneStart, vec![]));
+    stage.add_script(Script::new(EventHat::CloneStart, vec![]));
 
     let project = Project::new().with_stage(stage);
     let json = export_json(&project);
@@ -419,7 +419,7 @@ fn test_scratchgraph_list_operations() {
             value: Expr::list_length("nums"),
         },
     ];
-    stage.add_script(Script::new(Hat::GreenFlag, body));
+    stage.add_script(Script::new(EventHat::GreenFlag, body));
 
     let project = Project::new().with_stage(stage);
     let json = export_json(&project);
@@ -500,11 +500,11 @@ fn test_scratchgraph_multi_script_sprite() {
     let stage = Stage::new("Stage");
 
     let mut sprite = Sprite::new("Sprite1");
-    sprite.add_script(Script::new(Hat::GreenFlag, vec![Stmt::Stop {
+    sprite.add_script(Script::new(EventHat::GreenFlag, vec![Stmt::Stop {
         option: StopOption::ThisScript,
     }]));
     sprite.add_script(Script::new(
-        Hat::KeyPressed("space".to_string()),
+        EventHat::KeyPressed("space".to_string()),
         vec![Stmt::Stop {
             option: StopOption::ThisScript,
         }],

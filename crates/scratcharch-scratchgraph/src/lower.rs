@@ -13,7 +13,7 @@ use scratcharch_ir::r#module::IrModule;
 use scratcharch_ir::value::{Constant, ValueId};
 
 use crate::ir::{
-    Expr, Hat, List, Procedure, ProcedureParam, Project, Script, Stage, Stmt, StopOption,
+    EventHat, Expr, List, Procedure, ProcedureParam, Project, Script, Stage, Stmt, StopOption,
     Variable, VariableScope,
 };
 
@@ -83,7 +83,7 @@ impl ScratchGraphLowerer {
                 vec![Expr::number(0.0); arg_count]
             };
             stage.add_script(Script::new(
-                Hat::GreenFlag,
+                EventHat::GreenFlag,
                 vec![
                     Stmt::DeleteAllOfList {
                         list: "__scratcharch_stack".to_string(),
