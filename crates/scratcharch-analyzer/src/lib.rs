@@ -12,6 +12,7 @@
 //! - `reachability`: find scripts that cannot be reached from any event hat.
 //! - `variables`: compute variable read/write usage.
 
+pub mod cache;
 pub mod callgraph;
 pub mod cfg;
 pub mod diff;
@@ -21,6 +22,7 @@ pub mod reachability;
 pub mod report;
 pub mod variables;
 
+pub use cache::{AnalysisCache, ProjectHash};
 pub use callgraph::{CallGraph, CallGraphAnalysis, RecursionKind};
 pub use cfg::{CfgAnalysis, CfgEdge, CfgNode, ControlFlowGraph};
 pub use diff::{semantic_diff, DiffEntry, DiffFormat, DiffResult};

@@ -1,8 +1,40 @@
+use scratcharch_scratchgraph::debug::SourceLocation;
+
 use crate::callgraph::CallGraph;
 use crate::cfg::ControlFlowGraph;
 
 pub trait DotOutput {
     fn to_dot(&self, name: &str) -> String;
+}
+
+pub trait DotOutputRich: DotOutput {
+    fn to_dot_with_metadata(&self, name: &str, source_map: &[SourceLocation]) -> String;
+}
+
+/// Enhanced DOT metadata for a CFG node.
+pub struct CfgNodeMeta {
+    pub block_id_prefix: Option<String>,
+    pub statement_count: usize,
+}
+
+impl ControlFlowGraph {
+    /// Compute node metadata for DOT enrichment.
+    pub fn node_metadata(&self) -> Vec<CfgNodeMeta> {
+        self
+            .nodes
+            .iter()
+            .map(|n| match n {
+                crate::CfgNode::Entry | crate::CfgNode::Exit => CfgNodeMeta {
+                    block_id_prefix: None,
+                    statement_count: 0,
+                },
+                crate::CfgNode::Statement { body_index } => CfgNodeMeta {
+                    block_id_prefix: Some(format!("s{}", body_index)),
+                    statement_count: 1,
+                },
+            })
+            .collect()
+    }
 }
 
 impl DotOutput for ControlFlowGraph {
@@ -12,15 +44,25 @@ impl DotOutput for ControlFlowGraph {
         lines.push(format!("  label=\"CFG: {}\";", name));
         lines.push("  node [shape=box];".to_string());
 
+        let meta = self.node_metadata();
         let node_labels: Vec<String> = self
             .nodes
             .iter()
             .enumerate()
-            .map(|(i, n)| match n {
-                crate::CfgNode::Entry => format!("  n{} [label=\"Entry\", shape=oval];", i),
-                crate::CfgNode::Exit => format!("  n{} [label=\"Exit\", shape=oval];", i),
-                crate::CfgNode::Statement { body_index } => {
-                    format!("  n{} [label=\"Stmt {} \\n({:?})\"];", i, body_index, n)
+            .map(|(i, n)| {
+                let m = &meta[i];
+                match n {
+                    crate::CfgNode::Entry =>
+                        format!("  n{} [label=\"Entry\", shape=oval, tooltip=\"entry point\"];", i),
+                    crate::CfgNode::Exit =>
+                        format!("  n{} [label=\"Exit\", shape=oval, tooltip=\"exit point\"];", i),
+                    crate::CfgNode::Statement { body_index } => {
+                        let prefix = m.block_id_prefix.as_deref().unwrap_or("");
+                        format!(
+                            "  n{} [label=\"Stmt {}\\n({})\", tooltip=\"body_index={} stmts={}\"];",
+                            i, body_index, prefix, body_index, m.statement_count
+                        )
+                    }
                 }
             })
             .collect();
@@ -56,12 +98,23 @@ impl DotOutput for CallGraph {
 
         for node in &self.nodes {
             let color = if self.is_recursive(node) { " style=filled fillcolor=lightcoral" } else { "" };
-            lines.push(format!("  \"{}\" [label=\"{}\"{}];", node, node, color));
+            let tooltip = if self.is_recursive(node) {
+                format!(" recursive: {:?}", self.recursive.get(node))
+            } else {
+                "non-recursive".to_string()
+            };
+            lines.push(format!(
+                "  \"{}\" [label=\"{}\", tooltip=\"{}\"{}];",
+                node, node, tooltip, color
+            ));
         }
 
         for edge in &self.edges {
             let style = if edge.caller == edge.callee { " style=bold" } else { "" };
-            lines.push(format!("  \"{}\" -> \"{}\"{};", edge.caller, edge.callee, style));
+            lines.push(format!(
+                "  \"{}\" -> \"{}\" [tooltip=\"{}\"{}];",
+                edge.caller, edge.callee, edge.callee, style
+            ));
         }
 
         lines.push("}".to_string());

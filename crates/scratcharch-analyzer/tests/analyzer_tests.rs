@@ -327,3 +327,113 @@ fn test_analysis_report_creation() {
     let json = serde_json::to_string_pretty(&report).unwrap();
     assert!(json.contains("project_name"));
 }
+
+#[test]
+fn test_analysis_cache_basic() {
+    use scratcharch_analyzer::AnalysisCache;
+
+    let mut cache = AnalysisCache::new();
+    let project = empty_project();
+
+    // Initially needs reanalysis.
+    assert!(cache.needs_reanalysis(&project));
+
+    let callgraph = CallGraphAnalysis::new().analyze(&project);
+    let unreachable = ReachabilityAnalysis::new().analyze(&project);
+    let usage = VariableUsageAnalyzer::new().analyze(&project);
+    cache.store(&project, callgraph, unreachable, usage);
+
+    // Same project should not need reanalysis.
+    assert!(!cache.needs_reanalysis(&project));
+}
+
+#[test]
+fn test_analysis_cache_changed_project() {
+    use scratcharch_analyzer::AnalysisCache;
+
+    let mut cache = AnalysisCache::new();
+    let mut a = empty_project();
+    let b = empty_project();
+
+    a.stage.scripts.push(Script {
+        entry: ScriptEntry::new(EventHat::GreenFlag, vec![]),
+    });
+
+    let callgraph = CallGraphAnalysis::new().analyze(&a);
+    let unreachable = ReachabilityAnalysis::new().analyze(&a);
+    let usage = VariableUsageAnalyzer::new().analyze(&a);
+    cache.store(&a, callgraph, unreachable, usage);
+
+    // Different project should trigger reanalysis.
+    assert!(cache.needs_reanalysis(&b));
+}
+
+#[test]
+fn test_analysis_cache_clear() {
+    use scratcharch_analyzer::AnalysisCache;
+
+    let mut cache = AnalysisCache::new();
+    let project = empty_project();
+
+    let callgraph = CallGraphAnalysis::new().analyze(&project);
+    let unreachable = ReachabilityAnalysis::new().analyze(&project);
+    let usage = VariableUsageAnalyzer::new().analyze(&project);
+    cache.store(&project, callgraph, unreachable, usage);
+
+    assert!(!cache.needs_reanalysis(&project));
+    cache.clear();
+    assert!(cache.needs_reanalysis(&project));
+}
+
+#[test]
+fn test_cfg_dot_node_metadata() {
+    let body = vec![
+        Stmt::SetVariable {
+            var: "x".to_string(),
+            value: Expr::Literal(SgValue::Number(1.0)),
+        },
+    ];
+    let cfg = CfgAnalysis::new().build(&body);
+    let meta = cfg.node_metadata();
+    // entry, exit, 1 statement
+    assert_eq!(meta.len(), 3);
+    assert!(meta[2].block_id_prefix.is_some());
+    assert_eq!(meta[2].statement_count, 1);
+}
+
+#[test]
+fn test_source_map_builder() {
+    use scratcharch_scratchgraph::SourceMapBuilder;
+
+    let json = serde_json::json!({
+        "targets": [{
+            "isStage": true,
+            "name": "Stage",
+            "variables": {},
+            "lists": {},
+            "broadcasts": {},
+            "blocks": {}
+        }]
+    });
+
+    let mut builder = SourceMapBuilder::new();
+    let project = builder.parse(&json).expect("parse failed");
+    assert_eq!(project.stage.name, "Stage");
+    assert_eq!(builder.source_map.len(), 1);
+    assert_eq!(builder.source_map[0].target_name, "Stage");
+}
+
+#[test]
+fn test_source_location_construction() {
+    use scratcharch_scratchgraph::SourceLocation;
+
+    let loc = SourceLocation::new("Sprite1")
+        .with_project_id("proj-123")
+        .with_script_id("script-1")
+        .with_block_id("block-abc")
+        .with_opcode("event_whenflagclicked");
+
+    assert_eq!(loc.sprite_name, "Sprite1");
+    assert_eq!(loc.project_id, Some("proj-123".to_string()));
+    assert_eq!(loc.block_id, Some("block-abc".to_string()));
+}
