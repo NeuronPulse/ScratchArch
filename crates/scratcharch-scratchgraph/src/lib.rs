@@ -16,6 +16,7 @@ pub mod exporter;
 pub mod ir;
 pub mod json_exporter;
 pub mod lower;
+pub mod parser;
 pub mod runtime;
 
 pub use exporter::{Infallible, ScratchExporter};
@@ -25,6 +26,7 @@ pub use ir::{
 };
 pub use json_exporter::JsonExporter;
 pub use lower::{LowerError, ScratchGraphLowerer};
+pub use parser::{parse_project_json, ParseError, ProjectParser};
 pub use runtime::{
     EventState, ExecutionStatus, GlobalState, ProgramCounter, RuntimeState, SchedulerState,
     ThreadContext, ThreadId, ThreadState, WaitReason,
