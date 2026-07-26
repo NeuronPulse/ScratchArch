@@ -12,6 +12,7 @@
 //! intentionally independent of `project.json` so that future format changes
 //! only affect exporters.
 
+pub mod debug;
 pub mod exporter;
 pub mod ir;
 pub mod json_exporter;
@@ -19,6 +20,7 @@ pub mod lower;
 pub mod parser;
 pub mod runtime;
 
+pub use debug::{BlockSourceEntry, SourceLocation, SourceMap, TargetSourceMap};
 pub use exporter::{Infallible, ScratchExporter};
 pub use ir::{
     Broadcast, EventHat, Expr, List, ListScope, Procedure, ProcedureParam, ProcedurePrototype,
@@ -26,7 +28,7 @@ pub use ir::{
 };
 pub use json_exporter::JsonExporter;
 pub use lower::{LowerError, ScratchGraphLowerer};
-pub use parser::{parse_project_json, ParseError, ProjectParser};
+pub use parser::{parse_project_json, ParseError, ProjectParser, SourceMapBuilder};
 pub use runtime::{
     EventState, ExecutionStatus, GlobalState, ProgramCounter, RuntimeState, SchedulerState,
     ThreadContext, ThreadId, ThreadState, WaitReason,

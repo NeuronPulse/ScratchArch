@@ -15,6 +15,7 @@
 
 use serde_json::{json, Value};
 
+use crate::debug::{BlockSourceEntry, SourceMap, TargetSourceMap};
 use crate::ir::{
     Broadcast, EventHat, Expr, List, ListScope, Procedure, ProcedureParam, ProcedurePrototype,
     Project, Script, ScriptEntry, Sprite, Stage, Stmt, StopOption, Value as SgValue, Variable,
@@ -595,6 +596,74 @@ impl ProjectParser {
             .and_then(Value::as_str)
             .map(|s| s.to_string())
             .ok_or(ParseError::InvalidInputShape)
+    }
+}
+
+/// Builds a [`SourceMap`] while parsing.
+///
+/// Call [`SourceMapBuilder::build`] after parsing to retrieve the mapping
+/// from JSON block IDs to source locations.
+#[derive(Debug, Clone, Default)]
+pub struct SourceMapBuilder {
+    pub source_map: SourceMap,
+}
+
+impl SourceMapBuilder {
+    pub fn new() -> Self {
+        Self { source_map: Vec::new() }
+    }
+
+    /// Parse a `serde_json::Value` and build source maps for all targets.
+    pub fn parse(&mut self, value: &Value) -> Result<Project, ParseError> {
+        let root = value.as_object().ok_or(ParseError::NotAnObject)?;
+        let targets = root.get("targets").and_then(Value::as_array).ok_or(ParseError::MissingTargets)?;
+        let mut stage = None;
+        let mut sprites = Vec::new();
+
+        for target in targets {
+            let target_obj = target.as_object().ok_or(ParseError::InvalidTarget)?;
+            let is_stage = target_obj.get("isStage").and_then(Value::as_bool).unwrap_or(false);
+            let name = target_obj.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+            let variables = ProjectParser::new().parse_variables(target_obj.get("variables"));
+            let lists = ProjectParser::new().parse_lists(target_obj.get("lists"));
+            let broadcasts = ProjectParser::new().parse_broadcasts(target_obj.get("broadcasts"));
+            let blocks = target_obj.get("blocks").cloned().unwrap_or(json!({}));
+
+            let mut target_map = TargetSourceMap::new(&name);
+            if let Some(block_obj) = blocks.as_object() {
+                for (block_id, block_val) in block_obj {
+                    if let Some(block) = block_val.as_object() {
+                        let opcode = block.get("opcode").and_then(Value::as_str).unwrap_or("").to_string();
+                        let is_top_level = block.get("topLevel").and_then(Value::as_bool).unwrap_or(false);
+                        let parent = block.get("parent").and_then(Value::as_str).map(String::from);
+                        target_map.blocks.push(BlockSourceEntry {
+                            block_id: block_id.clone(),
+                            opcode,
+                            is_top_level,
+                            parent,
+                        });
+                    }
+                }
+            }
+
+            let parser = &mut ProjectParser::new();
+            let (scripts, procedures) = parser.parse_scripts_and_procedures(&blocks)?;
+
+            if is_stage {
+                stage = Some(Stage { name, variables, lists, broadcasts, scripts, procedures });
+            } else {
+                sprites.push(Sprite { name, variables, lists, scripts, procedures });
+            }
+
+            self.source_map.push(target_map);
+        }
+
+        let stage = stage.unwrap_or_else(|| Stage {
+            name: "Stage".to_string(), variables: Vec::new(), lists: Vec::new(),
+            broadcasts: Vec::new(), scripts: Vec::new(), procedures: Vec::new(),
+        });
+
+        Ok(Project { stage, sprites })
     }
 }
 
