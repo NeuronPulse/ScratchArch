@@ -162,6 +162,7 @@ dependencies = [
  "clap",
  "scratcharch-analyzer",
  "scratcharch-driver",
+ "scratcharch-explorer",
  "scratcharch-ir",
  "scratcharch-scratchgraph",
  "serde",
@@ -184,6 +185,17 @@ dependencies = [
  "scratcharch-sair-interpreter",
  "scratcharch-target",
  "scratcharch-vm",
+]
+
+[[package]]
+name = "scratcharch-explorer"
+version = "0.1.0"
+dependencies = [
+ "scratcharch-analyzer",
+ "scratcharch-ir",
+ "scratcharch-scratchgraph",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
