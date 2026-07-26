@@ -1,7 +1,8 @@
 //! Tests for scratcharch-analyzer static analyses.
 
 use scratcharch_analyzer::{
-    CallGraphAnalysis, CfgAnalysis, ReachabilityAnalysis, RecursionKind, VariableUsageAnalyzer,
+    semantic_diff, CallGraphAnalysis, CfgAnalysis, ComplexityMetrics, DotOutput,
+    ReachabilityAnalysis, RecursionKind, Report, VariableUsageAnalyzer,
 };
 use scratcharch_scratchgraph::ir::{
     EventHat, Expr, Procedure, ProcedurePrototype, Project, Script, ScriptEntry, Sprite, Stage,
@@ -202,4 +203,127 @@ fn test_reachability_sprite_clicked_reachable_on_sprite() {
 
     let unreachable = ReachabilityAnalysis::new().analyze(&project);
     assert!(unreachable.is_empty());
+}
+
+#[test]
+fn test_dot_cfg_output() {
+    let cfg = CfgAnalysis::new().build(&[]);
+    let dot = cfg.to_dot("test");
+    assert!(dot.starts_with("digraph test {"));
+    assert!(dot.contains("Entry"));
+    assert!(dot.contains("Exit"));
+}
+
+#[test]
+fn test_dot_callgraph_output() {
+    let mut project = empty_project();
+    let a = make_proc(
+        "a",
+        vec![Stmt::Call {
+            proc: "b".to_string(),
+            args: vec![],
+        }],
+    );
+    let b = make_proc(
+        "b",
+        vec![Stmt::Call {
+            proc: "a".to_string(),
+            args: vec![],
+        }],
+    );
+    project.stage.procedures.push(a);
+    project.stage.procedures.push(b);
+
+    let callgraph = CallGraphAnalysis::new().analyze(&project);
+    let dot = callgraph.to_dot("callgraph");
+    assert!(dot.contains("digraph callgraph"));
+    assert!(dot.contains("a") && dot.contains("b"));
+}
+
+#[test]
+fn test_complexity_metrics() {
+    let mut project = empty_project();
+    let body = vec![
+        Stmt::SetVariable {
+            var: "x".to_string(),
+            value: Expr::Literal(SgValue::Number(1.0)),
+        },
+        Stmt::If {
+            condition: Expr::Literal(SgValue::Bool(true)),
+            then_body: vec![
+                Stmt::RepeatUntil {
+                    condition: Expr::Literal(SgValue::Bool(false)),
+                    body: vec![Stmt::Call {
+                        proc: "foo".to_string(),
+                        args: vec![],
+                    }],
+                },
+            ],
+            else_body: Vec::new(),
+        },
+    ];
+    project.stage.scripts.push(Script {
+        entry: ScriptEntry::new(EventHat::GreenFlag, body),
+    });
+
+    let metrics = ComplexityMetrics::new(&project);
+    assert_eq!(metrics.script_count, 1);
+    assert_eq!(metrics.total_statements, 2);
+    assert_eq!(metrics.call_count, 1);
+    assert!(metrics.max_nesting_depth >= 2);
+}
+
+#[test]
+fn test_semantic_diff_identical() {
+    let mut project = empty_project();
+    project.stage.scripts.push(Script {
+        entry: ScriptEntry::new(EventHat::GreenFlag, vec![Stmt::Stop {
+            option: StopOption::ThisScript,
+        }]),
+    });
+
+    let diffs = semantic_diff(&project, &project);
+    assert!(diffs.is_empty());
+}
+
+#[test]
+fn test_semantic_diff_different() {
+    let mut a = empty_project();
+    a.stage.scripts.push(Script {
+        entry: ScriptEntry::new(EventHat::GreenFlag, vec![]),
+    });
+
+    let mut b = empty_project();
+    b.stage.scripts.push(Script {
+        entry: ScriptEntry::new(EventHat::GreenFlag, vec![]),
+    });
+    b.stage.scripts.push(Script {
+        entry: ScriptEntry::new(EventHat::KeyPressed("space".to_string()), vec![]),
+    });
+
+    let diffs = semantic_diff(&a, &b);
+    assert!(!diffs.is_empty());
+}
+
+#[test]
+fn test_analysis_report_creation() {
+    let mut project = empty_project();
+    project.stage.scripts.push(Script {
+        entry: ScriptEntry::new(EventHat::GreenFlag, vec![Stmt::SetVariable {
+            var: "x".to_string(),
+            value: Expr::Literal(SgValue::Number(42.0)),
+        }]),
+    });
+
+    let callgraph = CallGraphAnalysis::new().analyze(&project);
+    let unreachable = ReachabilityAnalysis::new().analyze(&project);
+    let usage = VariableUsageAnalyzer::new().analyze(&project);
+    let report = Report::build(&project, &callgraph, &unreachable, &usage);
+
+    let text = report.to_text();
+    assert!(text.contains("Analysis Report"));
+    assert!(text.contains("Scripts: 1"));
+
+    let json = serde_json::to_string_pretty(&report).unwrap();
+    assert!(json.contains("project_name"));
 }

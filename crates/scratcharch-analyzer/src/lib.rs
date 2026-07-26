@@ -14,10 +14,18 @@
 
 pub mod callgraph;
 pub mod cfg;
+pub mod diff;
+pub mod dot;
+pub mod metrics;
 pub mod reachability;
+pub mod report;
 pub mod variables;
 
 pub use callgraph::{CallGraph, CallGraphAnalysis, RecursionKind};
 pub use cfg::{CfgAnalysis, CfgEdge, CfgNode, ControlFlowGraph};
+pub use diff::{semantic_diff, DiffEntry, DiffFormat, DiffResult};
+pub use dot::DotOutput;
+pub use metrics::ComplexityMetrics;
 pub use reachability::{ReachabilityAnalysis, UnreachableScript};
+pub use report::{AnalysisReport, Report};
 pub use variables::{VariableUsage, VariableUsageAnalysis, VariableUsageAnalyzer};
