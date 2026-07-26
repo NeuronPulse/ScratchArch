@@ -16,11 +16,16 @@ pub mod exporter;
 pub mod ir;
 pub mod json_exporter;
 pub mod lower;
+pub mod runtime;
 
 pub use exporter::{Infallible, ScratchExporter};
 pub use ir::{
-    Broadcast, Expr, Hat, List, ListScope, Procedure, ProcedureParam, ProcedurePrototype, Project,
-    Script, Sprite, Stage, Stmt, StopOption, Value, Variable, VariableScope,
+    Broadcast, EventHat, Expr, List, ListScope, Procedure, ProcedureParam, ProcedurePrototype,
+    Project, Script, ScriptEntry, Sprite, Stage, Stmt, StopOption, Value, Variable, VariableScope,
 };
 pub use json_exporter::JsonExporter;
 pub use lower::{LowerError, ScratchGraphLowerer};
+pub use runtime::{
+    EventState, ExecutionStatus, GlobalState, ProgramCounter, RuntimeState, SchedulerState,
+    ThreadContext, ThreadId, ThreadState, WaitReason,
+};
