@@ -96,22 +96,26 @@ pub struct Sprite {
 
 A script is a stack of statements triggered by an event hat. The optional
 `name` field is metadata for the compiler and is not serialized to
-`project.json`.
+`project.json`. v0.4 introduces `ScriptEntry` as the clear entry point for a
+script, separating event hats from procedure definitions.
 
 ```rust
 pub struct Script {
-    pub hat: Hat,
+    pub entry: ScriptEntry,
+}
+
+pub struct ScriptEntry {
+    pub hat: EventHat,
     pub name: Option<String>,
     pub body: Vec<Stmt>,
 }
 
-pub enum Hat {
+pub enum EventHat {
     GreenFlag,
     KeyPressed(String),
     SpriteClicked,
     BroadcastReceived(String),
     CloneStart,
-    Procedure { name: String },
 }
 ```
 
@@ -239,5 +243,5 @@ Each exporter implements the `ScratchExporter` trait and operates only on a
 
 ## Version
 
-This specification describes ScratchGraph v0.3 as implemented in the
-ScratchArch Scratch Backend Foundation v0.3 milestone.
+This specification describes ScratchGraph v0.4 as implemented in the
+ScratchArch Scratch Backend Foundation v0.4 milestone.

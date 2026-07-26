@@ -1,6 +1,6 @@
 # ScratchArch Development Roadmap
 
-> Last updated: 2026-07-23 (Scratch Backend Foundation v0.3 completed)
+> Last updated: 2026-07-23 (Scratch Backend Foundation v0.4 completed)
 > Status: living document
 
 ## Legend
@@ -267,6 +267,25 @@
 - [x] **Documentation updates**: `docs/specification/SCRATCHGRAPH.md` v0.3,
       `docs/design/SCRATCH_BACKEND_DESIGN.md`, `docs/design/SCRATCH_RUNTIME_MODEL.md`,
       and `docs/design/ROADMAP.md`.
+
+### Scratch Backend Foundation v0.4 (`scratcharch-scratchgraph` / `scratcharch-analyzer`)
+
+- [x] **Runtime abstraction**: `RuntimeState`, `SchedulerState`, `ThreadState`,
+      `EventState`, and `ThreadContext` model Scratch VM execution at the IR level.
+- [x] **Per-thread frame ABI**: `ThreadContext` owns a private stack and frame
+      pointer so future concurrent scripts do not share global `__scratcharch_stack`.
+- [x] **Event model**: `EventHat` and `ScriptEntry` provide a clear event-driven
+      entry point for scripts.
+- [x] **Basic roundtrip parser**: `ProjectParser` reads Scratch 3 `project.json`
+      into ScratchGraph AST for variables, lists, broadcasts, procedures,
+      arithmetic, and control blocks.
+- [x] **Analyzer crate**: `scratcharch-analyzer` provides CFG construction,
+      call-graph + recursion detection, unreachable-script detection, and
+      variable/list usage analysis.
+- [x] **Tests**: runtime model, event dispatch, roundtrip parser, and analyzer
+      tests.
+- [x] **Documentation**: `docs/design/SCRATCH_RUNTIME_IMPLEMENTATION.md` and
+      `docs/design/SCRATCH_ANALYZER.md`.
 
 ### Testing
 

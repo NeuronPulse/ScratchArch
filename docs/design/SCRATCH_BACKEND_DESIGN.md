@@ -1,9 +1,9 @@
 # ScratchArch Scratch Backend Design
 
 This document describes the Scratch-specific backend layer introduced in
-**ScratchArch Scratch Backend Foundation v0.1**, extended in **v0.2**, and
-matured in **v0.3**. The goal of this layer is to target Scratch without
-coupling Scratch serialization formats to the compiler core.
+**ScratchArch Scratch Backend Foundation v0.1**, extended in **v0.2** and
+**v0.3**, and matured in **v0.4**. The goal of this layer is to target Scratch
+without coupling Scratch serialization formats to the compiler core.
 
 ## Architecture
 
@@ -12,9 +12,11 @@ coupling Scratch serialization formats to the compiler core.
 │    SAIR     │ --> │   ScratchGraph IR    │ --> │ ScratchExporter impl│
 │  (generic)  │     │ (Scratch semantics)  │     │  (JSON / sb3 / ...) │
 └─────────────┘     └──────────────────────┘     └─────────────────────┘
-                                                            |
-                                                            v
-                                                    project.json / sb3
+        ^                      |                            |
+        |                      v                            v
+        |            scratcharch-analyzer           project.json / sb3
+        |                      |
+        +------ project.json -> ScratchGraph parser
 ```
 
 ### Why a dedicated backend layer?
@@ -34,7 +36,9 @@ coupling Scratch serialization formats to the compiler core.
 | `scratcharch-core`           | No             | ISA-level types and VM instructions                  |
 | `scratcharch-ir`             | No             | SAIR SSA IR, builder, validator, ISA lowerer         |
 | `scratcharch-vm`             | No             | Executes core ISA programs                           |
-| `scratcharch-scratchgraph`   | **Yes**        | Semantic Scratch IR and SAIR→ScratchGraph lowering   |
+| `scratcharch-scratchgraph`   | **Yes**        | Semantic Scratch IR, SAIR→ScratchGraph lowering,     |
+|                              |                | runtime abstraction, and project.json parser         |
+| `scratcharch-analyzer`       | **Yes**        | Static analyses over ScratchGraph                    |
 | exporter implementations     | **Yes**        | Translate ScratchGraph into concrete formats         |
 
 No crate below `scratcharch-scratchgraph` may depend on Scratch concepts.
@@ -237,3 +241,6 @@ mutation fields.
   yielding (see [`SCRATCH_SCHEDULER.md`](./SCRATCH_SCHEDULER.md)).
 - Roundtrip parsing: `project.json → ScratchGraph → SAIR` for decompilation
   (see [`SCRATCH_ROUNDTRIP.md`](./SCRATCH_ROUNDTRIP.md)).
+- Extend `ProjectParser` to cover more Scratch 3 blocks and mutation shapes.
+- Use `scratcharch-analyzer` passes to optimize ScratchGraph before export.
+- Implement a real Scratch VM interpreter on top of `RuntimeState`.
