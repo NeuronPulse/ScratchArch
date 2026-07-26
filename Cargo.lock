@@ -164,6 +164,7 @@ dependencies = [
  "scratcharch-driver",
  "scratcharch-explorer",
  "scratcharch-ir",
+ "scratcharch-pipeline",
  "scratcharch-scratchgraph",
  "serde",
  "serde_json",
@@ -222,6 +223,21 @@ dependencies = [
  "scratcharch-ir",
  "scratcharch-llvm",
  "scratcharch-sair-interpreter",
+]
+
+[[package]]
+name = "scratcharch-pipeline"
+version = "0.1.0"
+dependencies = [
+ "scratcharch-analyzer",
+ "scratcharch-driver",
+ "scratcharch-explorer",
+ "scratcharch-ir",
+ "scratcharch-llvm",
+ "scratcharch-opt",
+ "scratcharch-scratchgraph",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
