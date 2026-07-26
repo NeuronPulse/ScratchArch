@@ -7,7 +7,8 @@ use serde_json::{json, Map, Value};
 
 use crate::exporter::{Infallible, ScratchExporter};
 use crate::ir::{
-    EventHat, Expr, Procedure, Project, Script, Stage, Stmt, StopOption, Value as SgValue,
+    Costume, EventHat, Expr, Procedure, Project, Script, Sound, Stage, Stmt, StopOption,
+    Value as SgValue,
 };
 
 /// Scratch 3 JSON exporter.
@@ -92,6 +93,11 @@ fn export_stage(stage: &Stage, state: &mut ExportState) -> Value {
     }
     target.insert("broadcasts".to_string(), Value::Object(broadcasts));
 
+    target.insert("costumes".to_string(), Value::Array(export_costumes(&stage.costumes)));
+    target.insert("sounds".to_string(), Value::Array(export_sounds(&stage.sounds)));
+    target.insert("costumeCount".to_string(), json!(stage.costumes.len()));
+    target.insert("soundCount".to_string(), json!(stage.sounds.len()));
+
     for script in &stage.scripts {
         export_script(script, state);
     }
@@ -118,6 +124,17 @@ fn export_sprite(sprite: &crate::ir::Sprite, state: &mut ExportState) -> Value {
     }
     target.insert("lists".to_string(), Value::Object(lists));
 
+    let mut broadcasts = Map::new();
+    for b in &sprite.broadcasts {
+        broadcasts.insert(b.id.clone(), json!(b.name));
+    }
+    target.insert("broadcasts".to_string(), Value::Object(broadcasts));
+
+    target.insert("costumes".to_string(), Value::Array(export_costumes(&sprite.costumes)));
+    target.insert("sounds".to_string(), Value::Array(export_sounds(&sprite.sounds)));
+    target.insert("costumeCount".to_string(), json!(sprite.costumes.len()));
+    target.insert("soundCount".to_string(), json!(sprite.sounds.len()));
+
     for script in &sprite.scripts {
         export_script(script, state);
     }
@@ -141,14 +158,46 @@ fn base_target(name: &str, is_stage: bool) -> Map<String, Value> {
     target.insert("rotationStyle".to_string(), json!("all around"));
     target.insert("visible".to_string(), json!(true));
     target.insert("costumeIndex".to_string(), json!(0));
-    target.insert("costumeCount".to_string(), json!(1));
     target.insert("soundIndex".to_string(), json!(0));
-    target.insert("soundCount".to_string(), json!(0));
     target.insert("volume".to_string(), json!(100));
     target.insert("tempo".to_string(), json!(60));
     target.insert("videoTransparency".to_string(), json!(50));
     target.insert("videoState".to_string(), json!("off"));
     target
+}
+
+fn export_costumes(costumes: &[Costume]) -> Vec<Value> {
+    costumes
+        .iter()
+        .map(|c| {
+            json!({
+                "name": c.name,
+                "assetId": c.asset_id,
+                "md5ext": c.asset_id,
+                "dataFormat": c.asset_id.rsplit_once('.').map(|(_, ext)| ext).unwrap_or(""),
+                "bitmap": c.bitmap,
+                "rotationCenterX": c.rotation_center_x,
+                "rotationCenterY": c.rotation_center_y,
+            })
+        })
+        .collect()
+}
+
+fn export_sounds(sounds: &[Sound]) -> Vec<Value> {
+    sounds
+        .iter()
+        .map(|s| {
+            json!({
+                "name": s.name,
+                "assetId": s.asset_id,
+                "md5ext": s.asset_id,
+                "dataFormat": s.asset_id.rsplit_once('.').map(|(_, ext)| ext).unwrap_or(""),
+                "rate": s.rate,
+                "sampleCount": s.sample_count,
+                "format": s.format,
+            })
+        })
+        .collect()
 }
 
 fn export_script(script: &Script, state: &mut ExportState) {

@@ -108,6 +108,8 @@ fn empty_stage(name: &str) -> Stage {
         variables: Vec::new(),
         lists: Vec::new(),
         broadcasts: Vec::new(),
+        costumes: Vec::new(),
+        sounds: Vec::new(),
         scripts: Vec::new(),
         procedures: Vec::new(),
     }

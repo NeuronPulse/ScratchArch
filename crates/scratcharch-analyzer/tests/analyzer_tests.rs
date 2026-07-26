@@ -16,6 +16,8 @@ fn empty_project() -> Project {
             variables: Vec::new(),
             lists: Vec::new(),
             broadcasts: Vec::new(),
+            costumes: Vec::new(),
+            sounds: Vec::new(),
             scripts: Vec::new(),
             procedures: Vec::new(),
         },
@@ -194,6 +196,9 @@ fn test_reachability_sprite_clicked_reachable_on_sprite() {
         name: "Sprite1".to_string(),
         variables: Vec::new(),
         lists: Vec::new(),
+        broadcasts: Vec::new(),
+        costumes: Vec::new(),
+        sounds: Vec::new(),
         scripts: vec![Script {
             entry: ScriptEntry::new(EventHat::SpriteClicked, vec![]),
         }],

@@ -23,8 +23,9 @@ pub mod runtime;
 pub use debug::{BlockSourceEntry, SourceLocation, SourceMap, TargetSourceMap};
 pub use exporter::{Infallible, ScratchExporter};
 pub use ir::{
-    Broadcast, EventHat, Expr, List, ListScope, Procedure, ProcedureParam, ProcedurePrototype,
-    Project, Script, ScriptEntry, Sprite, Stage, Stmt, StopOption, Value, Variable, VariableScope,
+    Broadcast, Costume, EventHat, Expr, List, ListScope, Procedure, ProcedureParam,
+    ProcedurePrototype, Project, Script, ScriptEntry, Sound, Sprite, Stage, Stmt, StopOption,
+    Value, Variable, VariableScope,
 };
 pub use json_exporter::JsonExporter;
 pub use lower::{LowerError, ScratchGraphLowerer};

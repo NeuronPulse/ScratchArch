@@ -21,6 +21,8 @@ pub struct Stage {
     pub broadcasts: Vec<Broadcast>,
     pub scripts: Vec<Script>,
     pub procedures: Vec<Procedure>,
+    pub costumes: Vec<Costume>,
+    pub sounds: Vec<Sound>,
 }
 
 /// A Scratch sprite.
@@ -29,8 +31,11 @@ pub struct Sprite {
     pub name: String,
     pub variables: Vec<Variable>,
     pub lists: Vec<List>,
+    pub broadcasts: Vec<Broadcast>,
     pub scripts: Vec<Script>,
     pub procedures: Vec<Procedure>,
+    pub costumes: Vec<Costume>,
+    pub sounds: Vec<Sound>,
 }
 
 /// Scope of a Scratch variable.
@@ -76,6 +81,30 @@ pub struct List {
 pub struct Broadcast {
     pub id: String,
     pub name: String,
+}
+
+/// A Scratch costume or backdrop.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Costume {
+    pub name: String,
+    /// md5ext identifier (e.g. "abc123.svg").
+    pub asset_id: String,
+    /// Bitmap (true) or vector/SVG (false).
+    pub bitmap: bool,
+    pub rotation_center_x: f64,
+    pub rotation_center_y: f64,
+}
+
+/// A Scratch sound.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sound {
+    pub name: String,
+    /// md5ext identifier (e.g. "abc123.wav").
+    pub asset_id: String,
+    pub rate: u32,
+    pub sample_count: u32,
+    /// "wav", "mp3", or other format.
+    pub format: String,
 }
 
 /// A script triggered by an event hat.
@@ -238,12 +267,24 @@ impl Stage {
         self.lists.push(list);
     }
 
+    pub fn add_broadcast(&mut self, broadcast: Broadcast) {
+        self.broadcasts.push(broadcast);
+    }
+
     pub fn add_script(&mut self, script: Script) {
         self.scripts.push(script);
     }
 
     pub fn add_procedure(&mut self, proc: Procedure) {
         self.procedures.push(proc);
+    }
+
+    pub fn add_costume(&mut self, costume: Costume) {
+        self.costumes.push(costume);
+    }
+
+    pub fn add_sound(&mut self, sound: Sound) {
+        self.sounds.push(sound);
     }
 }
 
@@ -263,12 +304,24 @@ impl Sprite {
         self.lists.push(list);
     }
 
+    pub fn add_broadcast(&mut self, broadcast: Broadcast) {
+        self.broadcasts.push(broadcast);
+    }
+
     pub fn add_script(&mut self, script: Script) {
         self.scripts.push(script);
     }
 
     pub fn add_procedure(&mut self, proc: Procedure) {
         self.procedures.push(proc);
+    }
+
+    pub fn add_costume(&mut self, costume: Costume) {
+        self.costumes.push(costume);
+    }
+
+    pub fn add_sound(&mut self, sound: Sound) {
+        self.sounds.push(sound);
     }
 }
 

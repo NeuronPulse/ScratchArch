@@ -17,9 +17,9 @@ use serde_json::{json, Value};
 
 use crate::debug::{BlockSourceEntry, SourceMap, TargetSourceMap};
 use crate::ir::{
-    Broadcast, EventHat, Expr, List, ListScope, Procedure, ProcedureParam, ProcedurePrototype,
-    Project, Script, ScriptEntry, Sprite, Stage, Stmt, StopOption, Value as SgValue, Variable,
-    VariableScope,
+    Broadcast, Costume, EventHat, Expr, List, ListScope, Procedure, ProcedureParam,
+    ProcedurePrototype, Project, Script, ScriptEntry, Sound, Sprite, Stage, Stmt, StopOption,
+    Value as SgValue, Variable, VariableScope,
 };
 
 /// Errors that can occur while parsing a Scratch 3 project.json file.
@@ -91,6 +91,8 @@ impl ProjectParser {
             let variables = self.parse_variables(target_obj.get("variables"));
             let lists = self.parse_lists(target_obj.get("lists"));
             let broadcasts = self.parse_broadcasts(target_obj.get("broadcasts"));
+            let costumes = self.parse_costumes(target_obj.get("costumes"));
+            let sounds = self.parse_sounds(target_obj.get("sounds"));
             let blocks = target_obj.get("blocks").cloned().unwrap_or(json!({}));
             let (scripts, procedures) = self.parse_scripts_and_procedures(&blocks)?;
 
@@ -100,6 +102,8 @@ impl ProjectParser {
                     variables,
                     lists,
                     broadcasts,
+                    costumes,
+                    sounds,
                     scripts,
                     procedures,
                 });
@@ -108,6 +112,9 @@ impl ProjectParser {
                     name,
                     variables,
                     lists,
+                    broadcasts,
+                    costumes,
+                    sounds,
                     scripts,
                     procedures,
                 });
@@ -119,6 +126,8 @@ impl ProjectParser {
             variables: Vec::new(),
             lists: Vec::new(),
             broadcasts: Vec::new(),
+            costumes: Vec::new(),
+            sounds: Vec::new(),
             scripts: Vec::new(),
             procedures: Vec::new(),
         });
@@ -169,6 +178,46 @@ impl ProjectParser {
                 result.push(Broadcast {
                     id: id.clone(),
                     name,
+                });
+            }
+        }
+        result
+    }
+
+    fn parse_costumes(&mut self, value: Option<&Value>) -> Vec<Costume> {
+        let mut result = Vec::new();
+        if let Some(arr) = value.and_then(Value::as_array) {
+            for item in arr {
+                let obj = match item.as_object() {
+                    Some(o) => o,
+                    None => continue,
+                };
+                result.push(Costume {
+                    name: obj.get("name").and_then(Value::as_str).unwrap_or("").to_string(),
+                    asset_id: obj.get("assetId").and_then(Value::as_str).unwrap_or("").to_string(),
+                    bitmap: obj.get("bitmap").and_then(Value::as_bool).unwrap_or(false),
+                    rotation_center_x: obj.get("rotationCenterX").and_then(Value::as_f64).unwrap_or(0.0),
+                    rotation_center_y: obj.get("rotationCenterY").and_then(Value::as_f64).unwrap_or(0.0),
+                });
+            }
+        }
+        result
+    }
+
+    fn parse_sounds(&mut self, value: Option<&Value>) -> Vec<Sound> {
+        let mut result = Vec::new();
+        if let Some(arr) = value.and_then(Value::as_array) {
+            for item in arr {
+                let obj = match item.as_object() {
+                    Some(o) => o,
+                    None => continue,
+                };
+                result.push(Sound {
+                    name: obj.get("name").and_then(Value::as_str).unwrap_or("").to_string(),
+                    asset_id: obj.get("assetId").and_then(Value::as_str).unwrap_or("").to_string(),
+                    rate: obj.get("rate").and_then(Value::as_f64).unwrap_or(44100.0) as u32,
+                    sample_count: obj.get("sampleCount").and_then(Value::as_f64).unwrap_or(0.0) as u32,
+                    format: obj.get("format").and_then(Value::as_str).unwrap_or("").to_string(),
                 });
             }
         }
@@ -627,6 +676,8 @@ impl SourceMapBuilder {
             let variables = ProjectParser::new().parse_variables(target_obj.get("variables"));
             let lists = ProjectParser::new().parse_lists(target_obj.get("lists"));
             let broadcasts = ProjectParser::new().parse_broadcasts(target_obj.get("broadcasts"));
+            let costumes = ProjectParser::new().parse_costumes(target_obj.get("costumes"));
+            let sounds = ProjectParser::new().parse_sounds(target_obj.get("sounds"));
             let blocks = target_obj.get("blocks").cloned().unwrap_or(json!({}));
 
             let mut target_map = TargetSourceMap::new(&name);
@@ -650,9 +701,9 @@ impl SourceMapBuilder {
             let (scripts, procedures) = parser.parse_scripts_and_procedures(&blocks)?;
 
             if is_stage {
-                stage = Some(Stage { name, variables, lists, broadcasts, scripts, procedures });
+                stage = Some(Stage { name, variables, lists, broadcasts, costumes, sounds, scripts, procedures });
             } else {
-                sprites.push(Sprite { name, variables, lists, scripts, procedures });
+                sprites.push(Sprite { name, variables, lists, broadcasts, costumes, sounds, scripts, procedures });
             }
 
             self.source_map.push(target_map);
@@ -660,7 +711,8 @@ impl SourceMapBuilder {
 
         let stage = stage.unwrap_or_else(|| Stage {
             name: "Stage".to_string(), variables: Vec::new(), lists: Vec::new(),
-            broadcasts: Vec::new(), scripts: Vec::new(), procedures: Vec::new(),
+            broadcasts: Vec::new(), costumes: Vec::new(), sounds: Vec::new(),
+            scripts: Vec::new(), procedures: Vec::new(),
         });
 
         Ok(Project { stage, sprites })
