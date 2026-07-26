@@ -1,3 +1,3 @@
 [workspace]
-members = ["crates/scratcharch-core", "crates/scratcharch-ir", "crates/scratcharch-vm", "crates/scratcharch-sair-interpreter", "crates/scratcharch-llvm", "crates/scratcharch-target", "crates/scratcharch-opt", "crates/scratcharch-runtime", "crates/scratcharch-driver", "crates/scratcharch-scratchgraph", "crates/scratcharch-analyzer"]
+members = ["crates/scratcharch-core", "crates/scratcharch-ir", "crates/scratcharch-vm", "crates/scratcharch-sair-interpreter", "crates/scratcharch-llvm", "crates/scratcharch-target", "crates/scratcharch-opt", "crates/scratcharch-runtime", "crates/scratcharch-driver", "crates/scratcharch-scratchgraph", "crates/scratcharch-analyzer", "crates/scratcharch-cli"]
 resolver = "2"
