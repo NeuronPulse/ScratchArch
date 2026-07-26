@@ -8,6 +8,7 @@ mod diff;
 mod graph;
 mod inspect;
 mod pipeline_cmd;
+mod sb3_cmd;
 
 #[derive(Parser)]
 #[command(name = "scratcharch", version, about = "ScratchArch developer toolchain")]
@@ -99,6 +100,36 @@ enum Command {
         #[arg(short, long, default_value = "compile")]
         mode: String,
     },
+    /// SB3 archive operations: unpack, build, inspect
+    Sb3 {
+        #[command(subcommand)]
+        action: Sb3Action,
+    },
+}
+
+#[derive(Subcommand)]
+enum Sb3Action {
+    /// Unpack an sb3 archive into project.json and assets/
+    Unpack {
+        /// Input .sb3 file
+        input: String,
+        /// Output directory (default: <input> without .sb3)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Rebuild an sb3 archive from its unpacked contents
+    Build {
+        /// Input .sb3 file
+        input: String,
+        /// Output .sb3 file (default: <input>_out.sb3)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Inspect an sb3 archive structure in detail
+    Inspect {
+        /// Input .sb3 file
+        input: String,
+    },
 }
 
 fn main() {
@@ -114,6 +145,11 @@ fn main() {
         Command::Pipeline { input, output, dump, mode } => {
             pipeline_cmd::run(input, output, dump, mode)
         }
+        Command::Sb3 { action } => match action {
+            Sb3Action::Unpack { input, output } => sb3_cmd::run_unpack(input, output.as_deref()),
+            Sb3Action::Build { input, output } => sb3_cmd::run_build(input, output.as_deref()),
+            Sb3Action::Inspect { input } => sb3_cmd::run_inspect(input),
+        },
     };
     if let Err(e) = result {
         eprintln!("error: {}", e);
