@@ -25,7 +25,9 @@ pub mod variables;
 pub use cache::{AnalysisCache, ProjectHash};
 pub use callgraph::{CallGraph, CallGraphAnalysis, RecursionKind};
 pub use cfg::{CfgAnalysis, CfgEdge, CfgNode, ControlFlowGraph};
-pub use diff::{semantic_diff, DiffEntry, DiffFormat, DiffResult};
+pub use diff::{
+    semantic_diff, semantic_diff_normalized, DiffCategory, DiffEntry, DiffFormat, DiffResult,
+};
 pub use dot::DotOutput;
 pub use metrics::ComplexityMetrics;
 pub use reachability::{ReachabilityAnalysis, UnreachableScript};
