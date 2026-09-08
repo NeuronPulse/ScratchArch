@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 scratcharch-ir = { path = "../scratcharch-ir" }
+scratcharch-target = { path = "../scratcharch-target" }
 
 [dev-dependencies]
 scratcharch-sair-interpreter = { path = "../scratcharch-sair-interpreter" }

@@ -123,3 +123,89 @@ fn test_pipeline_recursion() {
         other => panic!("recursion.ll: expected I32(15), got {:?}", other),
     }
 }
+
+/// Real clang output for `__builtin_bswap16/32`, `__builtin_popcount`,
+/// `__builtin_clz/ctz`, and the `*ll` 64-bit variants. clang -O0 emits the four
+/// bit intrinsics (`llvm.bswap/ctpop/ctlz/cttz.iN`), with `ctlz`/`cttz`
+/// carrying a second `i1 true` is_zero_undef immarg that the interpreter
+/// ignores (no poison).
+#[test]
+fn test_pipeline_intrinsics() {
+    let path = c_programs_dir().join("intrinsics.ll");
+    let result = run_llvm_file(path.to_str().unwrap()).expect("pipeline failed");
+    match result {
+        Some(RuntimeValue::I32(v)) => assert_eq!(v, 2_018_928_754),
+        other => panic!("intrinsics.ll: expected I32(2018928754), got {:?}", other),
+    }
+}
+
+/// Real clang output for signed division/remainder over negative operands
+/// (`sdiv` trunc-toward-zero, `srem` sign-of-dividend). 78 = -200 - 20 - 2 + 300.
+#[test]
+fn test_pipeline_signed() {
+    let path = c_programs_dir().join("signed.ll");
+    let result = run_llvm_file(path.to_str().unwrap()).expect("pipeline failed");
+    match result {
+        Some(RuntimeValue::I32(v)) => assert_eq!(v, 78),
+        other => panic!("signed.ll: expected I32(78), got {:?}", other),
+    }
+}
+
+/// Real clang output for the standard-library memory intrinsics
+/// (`llvm.memcpy`/`llvm.memmove`/`llvm.memset`) with stack operands only: the
+/// copy/move/set calls carry `ptr align 4` operands and the intrinsic
+/// `declare`s carry param attrs. Result 1 = memcpy {1,2,3} to dst, memmove
+/// dst[1]=dst[0] (overlap), memset dst[1..3]=0, sum = 1+0+0.
+#[test]
+fn test_pipeline_memintrin() {
+    let path = c_programs_dir().join("memintrin.ll");
+    let result = run_llvm_file(path.to_str().unwrap()).expect("pipeline failed");
+    match result {
+        Some(RuntimeValue::I32(v)) => assert_eq!(v, 1),
+        other => panic!("memintrin.ll: expected I32(1), got {:?}", other),
+    }
+}
+
+/// Real clang output for exact signed comparisons (Part 2) on negatives and
+/// mixed signs: each of `icmp slt/sgt/sle/sge` fires at runtime over helper
+/// operands. 59 = the checksum described in signedcmp.c; any predicate that
+/// degrades to the unsigned bit-pattern compare flips the answer.
+#[test]
+fn test_pipeline_signedcmp() {
+    let path = c_programs_dir().join("signedcmp.ll");
+    let result = run_llvm_file(path.to_str().unwrap()).expect("pipeline failed");
+    match result {
+        Some(RuntimeValue::I32(v)) => assert_eq!(v, 59),
+        other => panic!("signedcmp.ll: expected I32(59), got {:?}", other),
+    }
+}
+
+/// Real clang output for i64 (multi-cell) arithmetic: i64 add/sub across the
+/// 32-bit limb boundary (borrow clears the high limb, carry re-sets it), two
+/// signed i64 compares, a trunc to i32, and i64 parameter passing. 8 =
+/// (int)c 6 + (c>0) 1 + (c>2^32) 1.
+#[test]
+fn test_pipeline_i64arith() {
+    let path = c_programs_dir().join("i64arith.ll");
+    let result = run_llvm_file(path.to_str().unwrap()).expect("pipeline failed");
+    match result {
+        Some(RuntimeValue::I32(v)) => assert_eq!(v, 8),
+        other => panic!("i64arith.ll: expected I32(8), got {:?}", other),
+    }
+}
+
+/// Real clang output for module-level globals: read/modify/write of a mutable
+/// global, a pointer relocation (`@greeting -> @.str`), inline `getelementptr`
+/// constant expressions into global arrays, a negative i8 scalar, a byte string,
+/// and a negative i64 constant. 95 = (41+9) + 41 + s + u + m + h with the four
+/// compare flags true. The module contains sub-word/byte data, so it is
+/// interpreter-exact only (the VM rejects it; see the driver tests).
+#[test]
+fn test_pipeline_globals() {
+    let path = c_programs_dir().join("globals.ll");
+    let result = run_llvm_file(path.to_str().unwrap()).expect("pipeline failed");
+    match result {
+        Some(RuntimeValue::I32(v)) => assert_eq!(v, 95),
+        other => panic!("globals.ll: expected I32(95), got {:?}", other),
+    }
+}
