@@ -108,9 +108,20 @@ fn test_parse_procedure() {
                         "next": null,
                         "parent": null,
                         "topLevel": true,
+                        "inputs": { "custom_block": [1, "proto"] },
+                        "fields": {}
+                    },
+                    "proto": {
+                        "opcode": "procedures_prototype",
+                        "next": null,
+                        "parent": "def",
+                        "topLevel": false,
+                        "shadow": true,
+                        "inputs": {},
+                        "fields": {},
                         "mutation": {
                             "proccode": "add %s %s",
-                            "argumentnames": "[\"a\", \"b\"]",
+                            "argumentnames": "[[\"a\"], [\"b\"]]",
                             "argumentids": "[\"arg0\", \"arg1\"]"
                         }
                     }

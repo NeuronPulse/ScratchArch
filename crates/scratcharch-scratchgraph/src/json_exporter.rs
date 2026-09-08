@@ -202,10 +202,11 @@ fn export_sounds(sounds: &[Sound]) -> Vec<Value> {
 
 fn export_script(script: &Script, state: &mut ExportState) {
     let hat_id = state.fresh_id();
+    let next_id = next_field_for_body(&script.entry.body, state);
     let hat_block = match &script.entry.hat {
         EventHat::GreenFlag => json!({
             "opcode": "event_whenflagclicked",
-            "next": next_field_for_body(&script.entry.body, state),
+            "next": next_id.clone(),
             "parent": null,
             "inputs": {},
             "fields": {},
@@ -216,7 +217,7 @@ fn export_script(script: &Script, state: &mut ExportState) {
         }),
         EventHat::KeyPressed(key) => json!({
             "opcode": "event_whenkeypressed",
-            "next": next_field_for_body(&script.entry.body, state),
+            "next": next_id.clone(),
             "parent": null,
             "inputs": {},
             "fields": { "KEY_OPTION": [key, null] },
@@ -227,7 +228,7 @@ fn export_script(script: &Script, state: &mut ExportState) {
         }),
         EventHat::SpriteClicked => json!({
             "opcode": "event_whenthisspriteclicked",
-            "next": next_field_for_body(&script.entry.body, state),
+            "next": next_id.clone(),
             "parent": null,
             "inputs": {},
             "fields": {},
@@ -238,7 +239,7 @@ fn export_script(script: &Script, state: &mut ExportState) {
         }),
         EventHat::BroadcastReceived(name) => json!({
             "opcode": "event_whenbroadcastreceived",
-            "next": next_field_for_body(&script.entry.body, state),
+            "next": next_id.clone(),
             "parent": null,
             "inputs": {},
             "fields": { "BROADCAST_OPTION": [name, null] },
@@ -249,7 +250,7 @@ fn export_script(script: &Script, state: &mut ExportState) {
         }),
         EventHat::CloneStart => json!({
             "opcode": "event_whencloned",
-            "next": next_field_for_body(&script.entry.body, state),
+            "next": next_id.clone(),
             "parent": null,
             "inputs": {},
             "fields": {},
@@ -260,7 +261,11 @@ fn export_script(script: &Script, state: &mut ExportState) {
         }),
     };
     state.add_block(hat_id.clone(), hat_block);
-    emit_body(&hat_id, &script.entry.body, state);
+    if let Value::String(first_id) = &next_id {
+        if let Some(block) = state.blocks.get_mut(first_id) {
+            block["parent"] = Value::String(hat_id);
+        }
+    }
 }
 
 fn export_procedure_definition(proc: &Procedure, state: &mut ExportState) {
@@ -268,19 +273,21 @@ fn export_procedure_definition(proc: &Procedure, state: &mut ExportState) {
     let def_id = state.fresh_id();
 
     let proccode = proccode(&proc.prototype);
-    let mut arg_ids = Map::new();
+    let mut arg_input_ids = Map::new();
     let mut arg_names = Vec::new();
+    let mut arg_ids = Vec::new();
     for (idx, param) in proc.prototype.params.iter().enumerate() {
         let arg_id = state.fresh_id();
-        arg_ids.insert(format!("{idx}"), json!([arg_id]));
+        arg_input_ids.insert(format!("{idx}"), json!([arg_id]));
         arg_names.push(json!([param.name.clone()]));
+        arg_ids.push(json!(arg_id));
     }
 
     let prototype_block = json!({
         "opcode": "procedures_prototype",
         "next": null,
         "parent": def_id,
-        "inputs": arg_ids,
+        "inputs": arg_input_ids,
         "fields": {},
         "shadow": true,
         "topLevel": false,
@@ -288,15 +295,17 @@ fn export_procedure_definition(proc: &Procedure, state: &mut ExportState) {
             "tagName": "mutation",
             "children": [],
             "proccode": proccode,
-            "argumentids": serde_json::to_string(&arg_names).unwrap(),
+            "argumentids": serde_json::to_string(&arg_ids).unwrap(),
+            "argumentnames": serde_json::to_string(&arg_names).unwrap(),
             "warp": "false",
         }
     });
     state.add_block(proto_id.clone(), prototype_block);
 
+    let next_id = next_field_for_body(&proc.body, state);
     let def_block = json!({
         "opcode": "procedures_definition",
-        "next": next_field_for_body(&proc.body, state),
+        "next": next_id.clone(),
         "parent": null,
         "inputs": { "custom_block": [1, proto_id] },
         "fields": {},
@@ -306,7 +315,11 @@ fn export_procedure_definition(proc: &Procedure, state: &mut ExportState) {
         "y": 0,
     });
     state.add_block(def_id.clone(), def_block);
-    emit_body(&def_id, &proc.body, state);
+    if let Value::String(first_id) = &next_id {
+        if let Some(block) = state.blocks.get_mut(first_id) {
+            block["parent"] = Value::String(def_id);
+        }
+    }
 }
 
 fn proccode(proto: &crate::ir::ProcedurePrototype) -> String {
@@ -345,16 +358,6 @@ fn emit_stmt_chain(stmts: &[Stmt], state: &mut ExportState) -> String {
         }
     }
     ids[0].clone()
-}
-
-fn emit_body(parent_id: &str, body: &[Stmt], state: &mut ExportState) {
-    if body.is_empty() {
-        return;
-    }
-    let first_id = emit_stmt_chain(body, state);
-    if let Some(block) = state.blocks.get_mut(&first_id) {
-        block["parent"] = Value::String(parent_id.to_string());
-    }
 }
 
 fn emit_stmt(stmt: &Stmt, state: &mut ExportState) -> String {
@@ -664,13 +667,42 @@ fn frame_index_expr(offset: u32) -> Expr {
     )
 }
 
+/// Return Scratch input names for a given operator opcode and argument list.
+fn operator_input_names(opcode: &str, arg_count: usize) -> Vec<String> {
+    match opcode {
+        "operator_add" | "operator_subtract" | "operator_multiply" | "operator_divide"
+        | "operator_lt" | "operator_gt" | "operator_equals" | "operator_mod" => {
+            vec!["NUM1".to_string(), "NUM2".to_string()]
+        }
+        "operator_and" | "operator_or" => vec!["OPERAND1".to_string(), "OPERAND2".to_string()],
+        "operator_not" => vec!["OPERAND".to_string()],
+        "operator_join" | "operator_contains" => {
+            vec!["STRING1".to_string(), "STRING2".to_string()]
+        }
+        "operator_letter_of" => vec!["LETTER".to_string(), "STRING".to_string()],
+        "operator_length" | "operator_round" | "operator_mathop" => vec!["NUM".to_string()],
+        _ => (0..arg_count).map(|i| format!("{i}")).collect(),
+    }
+}
+
+fn operator_inputs(opcode: &str, args: &[&Expr], state: &mut ExportState) -> Map<String, Value> {
+    let names = operator_input_names(opcode, args.len());
+    let mut inputs = Map::new();
+    for (idx, arg) in args.iter().enumerate() {
+        let name = names.get(idx).map(|s| s.as_str()).unwrap_or("");
+        if name.is_empty() {
+            continue;
+        }
+        inputs.insert(name.to_string(), emit_input(arg, state));
+    }
+    inputs
+}
+
 fn emit_expr_as_statement(expr: &Expr, state: &mut ExportState) -> (String, Map<String, Value>, Map<String, Value>) {
     match expr {
         Expr::Operator { opcode, args } => {
-            let mut inputs = Map::new();
-            for (idx, arg) in args.iter().enumerate() {
-                inputs.insert(format!("{idx}"), emit_input(arg, state));
-            }
+            let arg_refs: Vec<&Expr> = args.iter().collect();
+            let inputs = operator_inputs(opcode, &arg_refs, state);
             (opcode.clone(), inputs, Map::new())
         }
         _ => ("operator_add".to_string(), Map::new(), Map::new()),
@@ -824,9 +856,7 @@ fn emit_input(expr: &Expr, state: &mut ExportState) -> Value {
         }
         Expr::HeapIndex { base, offset } => {
             let id = state.fresh_id();
-            let mut inputs = Map::new();
-            inputs.insert("0".to_string(), emit_input(base, state));
-            inputs.insert("1".to_string(), emit_input(offset, state));
+            let inputs = operator_inputs("operator_add", &[&**base, &**offset], state);
             state.add_block(
                 id.clone(),
                 json!({
@@ -843,10 +873,8 @@ fn emit_input(expr: &Expr, state: &mut ExportState) -> Value {
         }
         Expr::Operator { opcode, args } => {
             let id = state.fresh_id();
-            let mut inputs = Map::new();
-            for (idx, arg) in args.iter().enumerate() {
-                inputs.insert(format!("{idx}"), emit_input(arg, state));
-            }
+            let arg_refs: Vec<&Expr> = args.iter().collect();
+            let inputs = operator_inputs(opcode, &arg_refs, state);
             state.add_block(
                 id.clone(),
                 json!({

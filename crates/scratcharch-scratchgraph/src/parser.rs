@@ -310,10 +310,25 @@ impl ProjectParser {
         block: &serde_json::Map<String, Value>,
         blocks: &serde_json::Map<String, Value>,
     ) -> Result<Procedure, ParseError> {
-        let mutation = block
+        // The procedure definition block references a shadow prototype block
+        // that carries the mutation with proccode/argumentnames.
+        let proto_id = block
+            .get("inputs")
+            .and_then(Value::as_object)
+            .and_then(|i| i.get("custom_block"))
+            .and_then(Value::as_array)
+            .and_then(|a| a.get(1))
+            .and_then(Value::as_str)
+            .ok_or(ParseError::InvalidProcedurePrototype)?;
+        let proto_block = blocks
+            .get(proto_id)
+            .and_then(Value::as_object)
+            .ok_or(ParseError::InvalidProcedurePrototype)?;
+        let mutation = proto_block
             .get("mutation")
             .and_then(Value::as_object)
             .ok_or(ParseError::InvalidProcedurePrototype)?;
+
         let proccode = mutation
             .get("proccode")
             .and_then(Value::as_str)
@@ -323,7 +338,13 @@ impl ProjectParser {
         let arg_names: Vec<String> = mutation
             .get("argumentnames")
             .and_then(Value::as_str)
-            .map(|s| serde_json::from_str(s).unwrap_or_default())
+            .map(|s| {
+                serde_json::from_str::<Vec<Vec<String>>>(s)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|v| v.into_iter().next())
+                    .collect()
+            })
             .unwrap_or_default();
         let params: Vec<ProcedureParam> = arg_names
             .into_iter()
