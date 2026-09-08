@@ -245,6 +245,11 @@ impl Vm {
     fn pop_u32(&mut self) -> Result<u32, VmError> {
         match self.stack.pop().map_err(|StackError::Underflow| VmError::StackUnderflow)? {
             Value::I32(v) | Value::Pointer(v) => Ok(v),
+            // An i1 cell is an integer cell of width 1: cell-level comparison
+            // and arithmetic read its 0/1 content. This lets SAIR boolean
+            // algebra (Eq/Lt/Gt over i1 flags, e.g. the signed-compare
+            // expansion) execute on the VM.
+            Value::I1(v) => Ok(v as u32),
             other => Err(VmError::TypeMismatch {
                 expected: "i32 or ptr",
                 found: other.to_string(),
