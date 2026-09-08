@@ -1,6 +1,6 @@
 # LLVM IR → SAIR Translation
 
-> Document version: 0.1
+> Document version: 0.2
 > Status: prototype
 
 ## 1. Why ScratchArch uses LLVM IR as input
@@ -52,6 +52,11 @@ arbitrary C code.
 
 ## 3. LLVM → SAIR mapping
 
+> The authoritative, current compatibility matrix lives in
+> [`docs/specification/LLVM_COMPATIBILITY.md`](../specification/LLVM_COMPATIBILITY.md).
+> This section summarises the mapping rules; the spec documents exact status,
+> verification, and known gaps.
+
 ### Types
 
 | LLVM IR | SAIR | Notes |
@@ -60,11 +65,14 @@ arbitrary C code.
 | `i8` | `IrType::I8` | Byte type |
 | `i16` | `IrType::I16` | Short type |
 | `i32` | `IrType::I32` | Primary integer type |
+| `i64` | `IrType::I64` | Fully supported on the SAIR interpreter (two cells on the VM) |
 | `ptr` | `IrType::Pointer` | Generic pointer |
 | `void` | `IrType::Void` | No return value |
+| `[N x T]` | element type | For value ops; *allocations* are byte arrays |
+| `%T` / `{…}` | element type | Struct layout only (via `scratcharch_target::layout`) |
 
-Unsupported types (i64, f64, float, double, struct, array, vector) produce a
-clear error at parse time.
+Floating-point (`half`/`float`/`double`/`f128`), vectors, `i128` and other
+unsupported types produce a clear **UnsupportedType** error at parse time.
 
 ### Values
 
@@ -72,28 +80,39 @@ clear error at parse time.
 |---------|------|
 | `%name` | `ValueId` (via name lookup in value map) |
 | `@name` | Function name (for call targets) |
-| Integer literal | `Instruction::Const(Constant::I32(v))` or typed constant |
+| Integer literal | typed `Instruction::Const` (`I32`/`I8`/`I16`/`I64`…) |
 | `true`/`false` | `Constant::I1(v)` |
 
 ### Instructions
 
 | LLVM IR | SAIR | Notes |
 |---------|------|-------|
-| `add` | `Instruction::Add` | Wrapping add |
-| `sub` | `Instruction::Sub` | Wrapping sub |
-| `mul` | `Instruction::Mul` | Wrapping mul |
-| `icmp eq` | `Instruction::Eq` | Unsigned equality |
-| `icmp ne` | `Eq` + `Eq` negation | `ne(a,b) = eq(eq(a,b), false)` |
-| `icmp slt` | `Instruction::Lt` | **Unsigned** comparison (signed TODO) |
-| `icmp sgt` | `Instruction::Gt` | **Unsigned** comparison (signed TODO) |
-| `alloca` | `Instruction::Alloca` | Stack allocation |
-| `load` | `Instruction::Load` | Typed load |
-| `store` | `Instruction::Store` | Typed store |
-| `call` | `Instruction::Call` | Direct call only |
-| `ret` | `Terminator::Return` | Function return |
-| `br` | `Terminator::Branch` | Unconditional branch |
-| `br i1 ...` | `Terminator::CondBranch` | Conditional branch |
-| `getelementptr` | `Instruction::Gep` | Dynamic indices only |
+| `add`/`sub`/`mul` | `Add`/`Sub`/`Mul` | Wrapping (SAIR semantics) |
+| `udiv`/`urem` | `Div`/`Rem` | SAIR Div/Rem are unsigned floor — one-to-one, any width |
+| `sdiv`/`srem` | expansion | Signed, trunc toward zero, dividend sign; built from magnitudes (`translate_signed_divrem`) |
+| `icmp eq/ne/ult/ugt/ule/uge` | `Eq`/`Lt`/`Gt` (+negation) | Unsigned bit-pattern compare, one-to-one, any width |
+| `icmp slt/sgt/sle/sge` | sign-bit select (`emit_signed_lt`) | Exact for negatives and mixed signs: `slt(a,b) = sign(a)!=sign(b) ? sign(a) : a <u b`; the other three derive from it |
+| `alloca` | `Alloca` | Byte array sized from layout |
+| `load`/`store` | `Load`/`Store` | Typed |
+| `call` | `Call` | Direct; `llvm.*`/runtime intrinsics dispatched by the interpreter |
+| `ret` | `Terminator::Return` | Value or void |
+| `br` | `Terminator::Branch` | Unconditional |
+| `br i1 …` | `Terminator::CondBranch` | Conditional |
+| `select` | `Select` | Produces a value |
+| `switch` | chain of `eq`+`CondBranch` | Per-case dispatch to the default |
+| `unreachable` | `Unreachable` | No-return marker |
+| `zext`/`sext`/`trunc`/`bitcast` | matching `CastOp` | Integer/pointer conversions |
+| `ptrtoint`/`inttoptr` | `PtrToInt`/`IntToPtr` | Pointer ↔ address integer |
+| `getelementptr` | single byte-offset `Gep` over `i8` | Indices folded via `scratcharch_target::layout` |
+
+| `phi` | SAIR `Phi` | Loop-carried and merge phi, one-to-one; predecessor labels remapped to SAIR block names; verified on the interpreter and the VM (edge copies) |
+| `llvm.memcpy`/`llvm.memmove`/`llvm.memset` | calls resolved at runtime | Handled by the SAIR interpreter's memory-intrinsic family; the VM has no body to run and rejects these with an explicit diagnostic |
+| bitwise ops (`and`/`or`/`xor`/`shl`/`lshr`/`ashr`) | — | **not** translated; explicit **UnsupportedInstruction** error |
+| global variables | static data segment + address constants | Data globals lower to a module `StaticData` image; `@name` references become absolute-address `I32` constants (§ module symbols) |
+
+Floating-point ops, `float`/`double` types, vectors, and indirect calls are
+**not** translated; they produce a clear **UnsupportedInstruction** error rather
+than a silent wrong result.
 
 ### Basic blocks
 
@@ -103,44 +122,66 @@ entry block must be first in both representations.
 ### Functions
 
 LLVM IR `define` maps to `IrFunction`. Parameters become SSA values via
-`IrBuilder::add_param()`. The function named `main` is used as the module
-entry point.
+`IrBuilder::add_param()`. `declare`d functions are skipped by the translator —
+they are resolved at call sites by the interpreter (runtime registry or the
+LLVM bit-intrinsic handler). The first `define`d function named `main` (else
+the last non-declaration) is used as the module entry point.
 
 ## 4. Supported subset
 
-### Fully supported
+### Fully supported (SAIR interpreter)
 
-- `define` with `i32`, `i1`, `i8`, `i16`, `ptr`, `void` return types
-- Parameters of supported types
-- Arithmetic: `add`, `sub`, `mul`
-- Comparison: `icmp eq`, `icmp ne`
-- Memory: `alloca`, `load`, `store`
-- Control flow: `br` (unconditional), `br i1 ...` (conditional)
-- Calls: `call` (direct, with arguments)
-- GEP: `getelementptr` (dynamic indices)
-- Block labels and multi-block functions
+- `define`/`declare` with `i1`, `i8`, `i16`, `i32`, `i64`, `ptr`, `void`
+- Arithmetic: `add`, `sub`, `mul`, `udiv`, `urem`, `sdiv`, `srem`
+  (signed ops are exact including negative operands)
+- Comparison: `icmp eq/ne`, all unsigned predicates at all widths, and the
+  signed predicates (`slt`/`sgt`/`sle`/`sge`) expanded exactly via the sign-bit
+  identity — correct for negatives and mixed signs at `i8/i16/i32/i64`
+- Conversions: `zext`, `sext`, `trunc`, `bitcast`, `ptrtoint`, `inttoptr`
+- Memory: `alloca` (with count), `load`, `store`
+- Control flow: `br`, `br i1 …`, `ret`, `select`, `switch`, `unreachable`
+- `phi`: loop-carried and merge `phi` nodes, predecessor-remapped to SAIR block
+  names
+- `getelementptr` with constant or dynamic (typed) indices → byte offsets
+- Global variables: data globals lower to a module static-data segment; `@name`
+  operands become absolute-address constants; word-granular segments are
+  VM-exact, byte-granular segments run exactly on the interpreter
+- LLVM bit intrinsics: `llvm.bswap`, `llvm.ctpop`, `llvm.ctlz`, `llvm.cttz`
+  (widths 8/16/32/64), resolved by the interpreter as pure expansions
+- `llvm.memcpy`/`llvm.memmove`/`llvm.memset` and runtime intrinsics
+  (`__scratcharch_memcpy`, `__scratcharch_memset`, …) via the
+  `scratcharch-runtime` registry (declaration calls resolve at call time)
 
-### Not supported (rejected with clear error)
+### Not supported (rejected with an explicit diagnostic)
 
-- `i64`, `float`, `double`, struct, array, vector types
-- `fadd`, `fsub`, `fmul`, `fdiv` (floating-point operations)
-- `sdiv`, `srem`, `udiv`, `urem` (division/remainder)
-- `shl`, `lshr`, `ashr` (shift operations)
-- `and`, `or`, `xor` (bitwise operations)
-- `select` (ternary)
-- `phi` (SAIR supports phi, but LLVM phi not yet parsed)
-- Global variables
-- Indirect calls (`call` via `ptr`)
-- Metadata, debug info, attributes
-- Alignment specifiers on load/store
-- `volatile` loads/stores
+- Floating-point values/ops (`float`/`double`/`fadd`/`fsub`/…), vectors,
+  `i128` and other unsupported types
+- Bitwise ops (`and`/`or`/`xor`/`shl`/`lshr`/`ashr`) — SAIR has no bitwise ops
+- Indirect calls through function pointers (no function-pointer ABI)
 
-### Limitations (known, not errors)
+### VM-backend limitations
 
-- `icmp slt`/`icmp sgt` use **unsigned** comparison (Lt/Gt). Works for positive
-  values; signed comparison is future work.
-- All arithmetic is wrapping (matching SAIR semantics).
-- Single-entry module only (first `main` function is the entry point).
+The VM carries 64-bit integers as two 32-bit limbs for add/sub/compare/cast/
+load/store/select/phi. `i64` mul/div/rem are rejected with an explicit
+diagnostic (no 64-bit divide/widen ISA). Dynamic `getelementptr` into a byte
+array (i64 index, scale 1) lowers and runs; dynamic scaling by multi-byte
+element sizes needs an `i64 mul` and is rejected. Sub-word/byte global data and
+`llvm.*`/runtime intrinsics are interpreter-exact; the VM rejects those modules
+with a named diagnostic instead of misreading bytes. Nothing is approximated.
+
+### Known gaps (see LLVM_COMPATIBILITY.md)
+
+- Bitwise ops have no SAIR form, so C code that compiles to `and`/`or`/`xor`/
+  shifts at `-O0` is rejected rather than approximated.
+- `switch` lowers to a linear chain of `eq`+`CondBranch` compared at the
+  switch's own type width; huge case tables are not specialised into a jump
+  table or binary search.
+- No sign of "poison": zero-operand `ctlz`/`cttz` yield the width, and overflow
+  wraps, per SAIR's no-poison policy.
+- The **Scratch backend** (SAIR → ScratchGraph) is a construction surface only;
+  the Scratch execution model cannot express flat memory, pointers, or arbitrary
+  call frames (§6.2 of LLVM_COMPATIBILITY.md), so LLVM→Scratch semantics are out
+  of the v0.2 scope.
 
 ## 5. Crate structure
 
@@ -200,30 +241,39 @@ Every translated module passes through:
 
 ## 7. Test cases
 
-The translator tests exercise the full pipeline:
+The committed fixtures under `tests/c_programs/` (real clang output, committed)
+plus a fresh-clang re-compile of each `.c` on every run:
 
-| Test | LLVM Pattern | Expected |
-|------|-------------|----------|
-| Return constant | `ret i32 42` | 42 |
-| Arithmetic | `add i32 20, 22` | 42 |
-| Function call | `call @add(i32 20, i32 22)` | 42 |
-| Branch (true) | `icmp eq 1, 1` → `br i1` then/else | 1 |
-| Branch (false) | `icmp eq 1, 2` → `br i1` then/else | 0 |
-| Memory | `alloca`/`store`/`load` | 42 |
-| Unconditional branch | `br label %exit` | 42 |
-| Void return | `ret void` | None |
+| Corpus | Pipeline covered |
+|--------|------------------|
+| `hello`, `add`, `array`, `struct`, `pointer`, `string` | value flow, memory, GEP, calls |
+| `factorial`, `fib`, `recursion` | control flow, recursion, multi-block |
+| `signedcmp` | signed `icmp` on negatives/mixed signs (exact expansion) |
+| `i64arith` | `i64` add/sub across the limb boundary, signed `i64` compare, trunc |
+| `memory`, `memintrin` | memory intrinsics (`__scratcharch_memcpy`, `llvm.memcpy`/`memmove`/`memset`) |
+| `intrinsics` | `llvm.bswap/ctpop/ctlz/cttz`, 16/32/64-bit, `i1 true` immarg |
+| `signed` | negative `sdiv`/`srem` (trunc-toward-zero, dividend sign) |
+| `globals` | module-level global data: scalar/array/string/pointer relocations |
+
+The corpus is executed on three surfaces (`scratcharch-pipeline/tests/
+llvm_corpus_surfaces.rs`): the SAIR interpreter, the ISA VM (exact where
+supported, explicit diagnostic where not), and native execution through a real C
+compiler — all three must agree per fixture.
+
+`translator_tests.rs` adds focused coverage (50+ tests): constants, i64
+arithmetic, conversions, `select`/`switch`/`unreachable`, unsigned predicates,
+signed & unsigned division (including negatives and `i64::MIN / -1` wrapping),
+signed `icmp`, `phi`, and explicit rejection of unknown intrinsics and
+unsupported constructs. `scratcharch-driver`'s VM-backend tests run the
+i32-representable fixtures and the multi-cell `i64` corpus through the VM and
+require interpreter/VM agreement; `scratcharch-llvm/tests/` adds hand-written
+loop/`phi` fixtures and the memory-intrinsic matrix.
 
 ## 8. Future work
 
-- **Signed comparison**: Implement proper signed less-than/greater-than for
-  `icmp slt`/`sgt` (requires SAIR signed comparison support).
-- **More icmp predicates**: `ule`, `uge`, `ult`, `ugt` (easy; map to existing
-  unsigned Lt/Gt). `sle`, `sge` (need signed support).
-- **Division/remainder**: `sdiv`, `udiv`, `srem`, `urem`.
-- **Bitwise operations**: `and`, `or`, `xor`, `shl`, `lshr`, `ashr`.
-- **Phi nodes**: Parse and translate LLVM phi to SAIR phi.
-- **Global variables**: Direct mapping to SAIR globals.
-- **Floating point**: `fadd`, `fsub`, `fmul`, `fdiv` for f64.
-- **Wider types**: i64 support via cell decomposition.
-- **LLVM metadata**: Ignore during parsing.
-- **Alignment/volatile**: Respect on load/store.
+- **Bitwise operations**: `and`, `or`, `xor`, `shl`, `lshr`, `ashr` (needs SAIR
+  ops; currently an explicit UnsupportedInstruction).
+- **Floating point**: `fadd`, `fsub`, `fmul`, `fdiv` (SAIR has `f64`, but the
+  LLVM frontend rejects float types for now).
+- **Indirect calls**: a function-pointer ABI (currently rejected at parse time).
+- **Volatile / alignment / metadata**: currently skipped at parse time.

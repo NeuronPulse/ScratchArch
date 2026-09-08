@@ -1,6 +1,6 @@
 # ScratchArch Development Roadmap
 
-> Last updated: 2026-09-08 (Roundtrip & Semantic Validation Framework completed)
+> Last updated: 2026-09-09 (LLVM Compatibility v0.2 completed)
 > Status: living document
 
 ## Legend
@@ -337,31 +337,135 @@ fidelity table, §5 roundtrip contract).
       `docs/design/ROUNDTRIP_VALIDATION.md` documents the checks, soundness
       contracts, test layers, corpus, and the deliberately-reported boundaries.
 
+### LLVM Compatibility v0.1 (`scratcharch-llvm` / `scratcharch-ir` / `scratcharch-sair-interpreter`)
+
+Milestone goal: push *real* clang/LLVM IR through the toolchain as far as
+possible, not to implement the widest possible opcode surface. Compatibility
+matrix and status: `docs/specification/LLVM_COMPATIBILITY.md`.
+
+- [x] **i64 type support** (Part 2): `IrType::I64` end-to-end on the SAIR
+      interpreter — typed constants, wrapping arithmetic, conversions,
+      `alloca`/GEP over `[N x i64]`. Floating-point LLVM types stay explicitly
+      unsupported/reserved with a clear parse-time diagnostic.
+- [x] **Integer conversions** (Part 3): `zext`/`sext`/`trunc`/`bitcast` map to
+      SAIR `CastOp`s at any supported width.
+- [x] **Control flow** (Part 4): `select` → SAIR `Select`, `switch` → per-case
+      `eq` + `CondBranch` chain to a shared default, `unreachable` → SAIR
+      `Unreachable`. Implemented on SAIR terms only — no dependency on
+      Scratch-specific behavior.
+- [x] **Pointer ↔ integer conversions** (Part 5): `ptrtoint`/`inttoptr` per
+      MEMORY/ABI (an address is an integer).
+- [x] **DataLayout unification** (Part 6): byte-address GEP model — every GEP is
+      a single dynamic byte offset over `i8` elements, offsets folded via
+      `scratcharch_target::layout`; duplicated type-size code removed.
+- [x] **Signed division/remainder exactness**: `sdiv`/`srem` lower exactly
+      (trunc-toward-zero, dividend sign) via a magnitude expansion
+      (`translate_signed_divrem`); `udiv`/`urem` map one-to-one to SAIR
+      `Div`/`Rem` at any width incl. i64. Fixed two silent-wrong-result bugs:
+      `srem` previously lowering to a quotient, and both ops ignoring signs.
+- [x] **Bit intrinsics** (Part 7): `llvm.bswap`/`llvm.ctpop`/`llvm.ctlz`/
+      `llvm.cttz` at widths 8/16/32/64 resolved by the SAIR interpreter as pure
+      reference expansions over runtime values (no new ISA). `ctlz`/`cttz`
+      ignore the `i1 is_zero_undef` immarg (no poison). Unknown families and
+      widths raise an explicit `UnsupportedInstruction`.
+- [x] **Real-world clang corpus** (Parts 8–9): committed `intrinsics.{c,ll}` and
+      `signed.{c,ll}` fixtures under `tests/c_programs/` (real clang 19 output)
+      plus fresh-clang recompile harness entries.
+- [x] **Explicit diagnostics**: unsupported instructions/types/intrinsics/widths
+      error out — never silently dropped. 47 translator tests, 12 pipeline, 12
+      corpus, 10 runtime (`scratcharch-llvm`).
+- [x] **Documentation**: `docs/specification/LLVM_COMPATIBILITY.md` matrix and
+      updated `docs/design/LLVM_TRANSLATION.md`.
+
+**Deferred / known gaps at v0.1** (all addressed in v0.2 below): signed
+`icmp slt/sgt/sle/sge` translated to the unsigned bit-pattern compare (exact
+only for non-negative operands); the single-cell VM could not execute `i64` (two
+cells) or `select`; bit intrinsics were interpreter expansions, not yet ISA
+sequences.
+
+### LLVM Compatibility v0.2 — Semantic Correctness & Target Completeness (`scratcharch-llvm` / `scratcharch-ir` / `scratcharch-sair-interpreter` / `scratcharch-driver`)
+
+Milestone goal: make the supported subset *semantically exact* and complete
+interpreter **and** VM coverage, with every unsupported corner reported
+explicitly — never a silent approximation. Status matrix:
+`docs/specification/LLVM_COMPATIBILITY.md`; current bottlenecks:
+`docs/design/LLVM_COMPATIBILITY_STATUS.md`.
+
+- [x] **Six-level compatibility classification** (Part 1): every matrix row is
+      `Supported` (exact on interpreter and VM), **P** (interpreter-exact), **VU**
+      (VM-unrepresentable), **IU** (interpreter-only), or unsupported — `Supported`
+      is claimed only where *both* execution surfaces are exact.
+- [x] **Exact signed comparisons** (Part 2): `icmp slt/sgt/sle/sge` expand via
+      the sign-bit identity (`slt(a,b) = sign(a)!=sign(b) ? sign(a) : a <u b`),
+      exact for negatives and mixed signs at `i8/i16/i32/i64`; real-clang
+      `signedcmp.{c,ll}` fixture proves it (checksum 59).
+- [x] **Multi-cell i64 on the VM** (Part 3): `i64` is two 32-bit limbs for
+      add/sub/compare/cast/load/store/select/phi; limb count comes from
+      `TargetProfile::cells_for_type` (never hardcoded); profile-driven
+      rejection when the split is not two words. `i64` mul/div/rem stay rejected
+      with an explicit diagnostic.
+- [x] **Memory intrinsics** (Part 4): `llvm.memcpy`/`memmove`/`memset` handled by
+      the SAIR interpreter's memory-intrinsic family; the VM rejects modules that
+      need them with a named diagnostic rather than running a bodyless call.
+- [x] **Phi as first-class SAIR Phi** (Part 5): LLVM `phi` parses and translates
+      one-to-one; predecessor labels are remapped to SAIR block names; runs on
+      the interpreter and lowers through VM edge copies.
+- [x] **Module-level globals** (Part 6): data globals lower to a `StaticData`
+      image with `@name` → absolute-address constants; word-granular segments are
+      VM-exact, byte-granular segments run exactly on the interpreter and are
+      rejected by the VM with a "sub-word or byte" diagnostic.
+- [x] **Indirect calls rejected** (Part 7): calls through a function-pointer value
+      produce an explicit `UnsupportedInstruction` naming the missing ABI — never
+      a wrong dispatch.
+- [x] **Real LLVM corpus** (Part 8): committed real-clang fixtures
+      `tests/c_programs/*.{c,ll}` cover signed comparisons, `i64` arithmetic,
+      structs, arrays, globals, bit/memory intrinsics, and calls. A per-fixture
+      five-surface record (`scratcharch-pipeline/tests/llvm_corpus_surfaces.rs`)
+      pins parser / SAIR / interpreter / VM / Scratch-lower verdicts.
+      `phi` loops are not part of clang `-O0` output; loop-carried `phi` is
+      exercised by the hand-written VM corpus and focused translator tests,
+      recorded honestly.
+- [x] **Differential correctness harness** (Part 9): the corpus is also run
+      through a real C compiler (native reference); native exit code, SAIR
+      interpreter, and ISA VM must all agree per fixture — and where the VM is
+      unsupported the expected outcome is the pinned diagnostic, never a silent
+      fallback.
+- [x] **Documentation** (Part 10): `LLVM_COMPATIBILITY.md` refreshed for v0.2,
+      `LLVM_TRANSLATION.md` de-staled, `ROADMAP.md` updated, and a new
+      `LLVM_COMPATIBILITY_STATUS.md` records current bottlenecks.
+
+**Deferred / known gaps at v0.2**: bitwise ops (`and`/`or`/`xor`/shifts) have no
+SAIR form and are rejected; floating-point ops/types are reserved; indirect
+calls have no function-pointer ABI; `switch` stays a linear `eq` chain;
+VM `i64` mul/div/rem, byte-granular globals, and `llvm.*`/runtime intrinsics are
+interpreter-only and rejected on the VM with named diagnostics. Each is
+documented in the matrix — nothing is silently approximated.
+
 ### Testing
 
 - [x] All tests pass with 0 warnings and 0 clippy errors
-- [x] Test breakdown: see final verification output for the current total.
+- [x] v0.2 gate (2026-09-09): `cargo test --workspace` = 497 passed, 0 failed
+      (1 ignored); `cargo clippy --workspace --all-targets` = 0 warnings;
+      `./scripts/run_c_tests.sh` = 1 passed, 0 failed.
 
 ## In Progress
+
+(none — v0.2 delivered; see the commit proposals in the milestone report)
 
 ## Future (v0.3+)
 
 ### Short-term
 
-- [ ] **Extended LLVM IR support**
-  - Signed comparison predicates with sign-aware lowering
-  - Division/remainder lowering
-  - Bitwise operations (`and`, `or`, `xor`, `shl`, `lshr`, `ashr`)
-  - Phi node parsing and translation
-  - Global variable support
-  - Indirect function calls
-- [ ] **Multi-cell arithmetic execution**
-  - Expand ISA lowering for `i64` and wider types on `sa48`
-  - Multi-cell add/sub/mul/div and load/store
-  - Low/high part extraction and recombination
-- [ ] **VM backend runtime linking**
-  - Lower or link calls to `__scratcharch_*` runtime intrinsics
-  - Reference expansions for `memcpy`, `memmove`, `memset`
+- [ ] **Bitwise operations** (`and`, `or`, `xor`, `shl`, `lshr`, `ashr`)
+      — needs SAIR bitwise ops; currently rejected with an explicit diagnostic
+- [ ] **Floating point**: `fadd`/`fsub`/`fmul`/`fdiv` (SAIR has `f64`; the LLVM
+      frontend still rejects float types)
+- [ ] **VM i64 mul/div/rem and widening** — two-limb add/sub/cmp/select/phi are
+      done; a widening multiply/divide ISA would lift the remaining `i64` gap
+- [ ] **VM runtime intrinsic linking** — lower or link `llvm.memcpy`/`memmove`/
+      `memset` and `__scratcharch_*` calls to run on the VM instead of the
+      interpreter-only boundary
+- [ ] **Function-pointer ABI / indirect calls** (currently rejected at parse time)
 
 ### Medium-term
 
@@ -372,11 +476,12 @@ fidelity table, §5 roundtrip contract).
   - Strength reduction
   - Common subexpression elimination
 
-- [ ] **Intrinsic lowering**
-  - ctpop, ctlz, cttz
-  - bswap
-  - saturating arithmetic
-  - overflow-checked arithmetic
+- [ ] **Intrinsic lowering to ISA/VM**
+  - Reference expansion of `bswap`/`ctpop`/`ctlz`/`cttz` is done on the SAIR
+    interpreter; lowering to concrete ISA sequences for the single-cell VM
+    remains
+  - Saturating arithmetic
+  - Overflow-checked arithmetic
 
 - [ ] **Function pointers and indirect calls**
   - Hidden `!fnptr` parameter
