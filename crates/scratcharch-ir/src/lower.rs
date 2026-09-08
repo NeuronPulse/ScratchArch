@@ -6,7 +6,7 @@ use scratcharch_target::profile::TargetProfile;
 
 use crate::block::BasicBlock;
 use crate::function::IrFunction;
-use crate::instruction::{GepIndex, Instruction as SairInstr, Terminator};
+use crate::instruction::{CastOp, GepIndex, Instruction as SairInstr, Terminator};
 use crate::r#module::IrModule;
 use crate::types::IrType;
 use crate::value::{Constant, ValueId};
@@ -98,6 +98,7 @@ impl IsaLowerer {
         }
 
         let mut emitter = FuncEmitter::new(&mut f);
+        let mut select_counter: usize = 0;
         for block in &working.blocks {
             emitter.set_label(&block.label);
 
@@ -112,7 +113,7 @@ impl IsaLowerer {
                     continue;
                 }
                 let result_id = result_ids.get(&(block.label.clone(), idx)).copied();
-                self.lower_instr(instr, result_id, &ctx, &mut emitter)?;
+                self.lower_instr(instr, result_id, &ctx, &mut emitter, &mut select_counter)?;
             }
 
             // Emit outgoing phi copies before the terminator.
@@ -120,7 +121,7 @@ impl IsaLowerer {
                 emit_copies(copies, ctx.temp_slot, &mut emitter);
             }
 
-            self.lower_term(&block.terminator, &ctx, &mut emitter);
+            self.lower_term(&block.terminator, &ctx, &mut emitter)?;
         }
 
         Ok(f)
@@ -132,33 +133,73 @@ impl IsaLowerer {
         result_id: Option<ValueId>,
         ctx: &LowerCtx,
         f: &mut FuncEmitter<'_>,
+        select_counter: &mut usize,
     ) -> Result<(), LowerError> {
         match instr {
             SairInstr::Add { ty, lhs, rhs }
             | SairInstr::Sub { ty, lhs, rhs }
             | SairInstr::Mul { ty, lhs, rhs }
             | SairInstr::Div { ty, lhs, rhs }
-            | SairInstr::Rem { ty, lhs, rhs }
-            | SairInstr::Eq { ty, lhs, rhs }
+            | SairInstr::Rem { ty, lhs, rhs } => {
+                let limbs = self.vm_limbs(*ty)?;
+                if limbs == 1 {
+                    self.emit_load(*lhs, ctx, f)?;
+                    self.emit_load(*rhs, ctx, f)?;
+                    let isa_op = match instr {
+                        SairInstr::Add { .. } => IsaInstr::I32Add,
+                        SairInstr::Sub { .. } => IsaInstr::I32Sub,
+                        SairInstr::Mul { .. } => IsaInstr::I32Mul,
+                        SairInstr::Div { .. } => IsaInstr::I32Div,
+                        SairInstr::Rem { .. } => IsaInstr::I32Rem,
+                        _ => unreachable!(),
+                    };
+                    f.push(isa_op);
+                    if let Some(id) = result_id {
+                        self.emit_store(id, ctx, f)?;
+                    }
+                } else {
+                    match instr {
+                        SairInstr::Add { .. } => self.lower_wide_add(*lhs, *rhs, result_id, ctx, f)?,
+                        SairInstr::Sub { .. } => self.lower_wide_sub(*lhs, *rhs, result_id, ctx, f)?,
+                        SairInstr::Mul { .. } | SairInstr::Div { .. } | SairInstr::Rem { .. } => {
+                            return Err(LowerError::UnsupportedInstruction(format!(
+                                "i64 {} on the VM backend needs 64-bit multiply/divide arithmetic (no ISA widening op); multi-cell add/sub/compare are supported",
+                                match instr {
+                                    SairInstr::Mul { .. } => "mul",
+                                    SairInstr::Div { .. } => "div",
+                                    SairInstr::Rem { .. } => "rem",
+                                    _ => unreachable!(),
+                                },
+                            )));
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            }
+            SairInstr::Eq { ty, lhs, rhs }
             | SairInstr::Lt { ty, lhs, rhs }
             | SairInstr::Gt { ty, lhs, rhs } => {
-                self.check_single_cell(*ty)?;
-                self.emit_load(*lhs, ctx, f)?;
-                self.emit_load(*rhs, ctx, f)?;
-                let isa_op = match instr {
-                    SairInstr::Add { .. } => IsaInstr::I32Add,
-                    SairInstr::Sub { .. } => IsaInstr::I32Sub,
-                    SairInstr::Mul { .. } => IsaInstr::I32Mul,
-                    SairInstr::Div { .. } => IsaInstr::I32Div,
-                    SairInstr::Rem { .. } => IsaInstr::I32Rem,
-                    SairInstr::Eq { .. } => IsaInstr::Eq,
-                    SairInstr::Lt { .. } => IsaInstr::Lt,
-                    SairInstr::Gt { .. } => IsaInstr::Gt,
-                    _ => unreachable!(),
-                };
-                f.push(isa_op);
-                if let Some(id) = result_id {
-                    self.emit_store(id, ctx, f)?;
+                let limbs = self.vm_limbs(*ty)?;
+                if limbs == 1 {
+                    self.emit_load(*lhs, ctx, f)?;
+                    self.emit_load(*rhs, ctx, f)?;
+                    let isa_op = match instr {
+                        SairInstr::Eq { .. } => IsaInstr::Eq,
+                        SairInstr::Lt { .. } => IsaInstr::Lt,
+                        SairInstr::Gt { .. } => IsaInstr::Gt,
+                        _ => unreachable!(),
+                    };
+                    f.push(isa_op);
+                    if let Some(id) = result_id {
+                        self.emit_store(id, ctx, f)?;
+                    }
+                } else {
+                    match instr {
+                        SairInstr::Eq { .. } => self.lower_wide_eq(*lhs, *rhs, result_id, ctx, f)?,
+                        SairInstr::Lt { .. } => self.lower_wide_cmp_lt(*lhs, *rhs, result_id, ctx, f)?,
+                        SairInstr::Gt { .. } => self.lower_wide_cmp_gt(*lhs, *rhs, result_id, ctx, f)?,
+                        _ => unreachable!(),
+                    }
                 }
             }
             SairInstr::Const(c) => {
@@ -175,19 +216,28 @@ impl IsaLowerer {
                 }
             }
             SairInstr::Load { ty, addr } => {
-                self.check_single_cell(*ty)?;
-                self.emit_load(*addr, ctx, f)?;
-                f.push(IsaInstr::Load);
-                if let Some(id) = result_id {
-                    self.emit_store(id, ctx, f)?;
+                let limbs = self.vm_limbs(*ty)?;
+                if limbs == 1 {
+                    self.emit_load(*addr, ctx, f)?;
+                    f.push(IsaInstr::Load);
+                    if let Some(id) = result_id {
+                        self.emit_store(id, ctx, f)?;
+                    }
+                } else {
+                    self.lower_wide_load(*addr, result_id, ctx, f)?;
                 }
             }
-            SairInstr::Store { ty: _, value, addr } => {
-                // The VM expects the value on top of the operand stack and the
-                // address underneath it, so emit the address first.
-                self.emit_load(*addr, ctx, f)?;
-                self.emit_load(*value, ctx, f)?;
-                f.push(IsaInstr::Store);
+            SairInstr::Store { ty, value, addr } => {
+                let limbs = self.vm_limbs(*ty)?;
+                if limbs == 1 {
+                    // The VM expects the value on top of the operand stack and the
+                    // address underneath it, so emit the address first.
+                    self.emit_load(*addr, ctx, f)?;
+                    self.emit_load(*value, ctx, f)?;
+                    f.push(IsaInstr::Store);
+                } else {
+                    self.lower_wide_store(*value, *addr, ctx, f)?;
+                }
             }
             SairInstr::Call {
                 return_ty,
@@ -215,6 +265,17 @@ impl IsaLowerer {
                     self.emit_store(id, ctx, f)?;
                 }
             }
+            SairInstr::Cast { op, from_ty, to_ty, value } => {
+                self.lower_cast(*op, *from_ty, *to_ty, *value, result_id, ctx, f)?;
+            }
+            SairInstr::Select {
+                ty,
+                condition,
+                then_value,
+                else_value,
+            } => {
+                self.lower_select(*ty, *condition, *then_value, *else_value, result_id, ctx, f, select_counter)?;
+            }
             SairInstr::Phi { .. } => {
                 // Phis are lowered via edge copies; the instruction itself is a no-op.
             }
@@ -222,7 +283,12 @@ impl IsaLowerer {
         Ok(())
     }
 
-    fn lower_term(&self, term: &Terminator, ctx: &LowerCtx, f: &mut FuncEmitter<'_>) {
+    fn lower_term(
+        &self,
+        term: &Terminator,
+        ctx: &LowerCtx,
+        f: &mut FuncEmitter<'_>,
+    ) -> Result<(), LowerError> {
         match term {
             Terminator::Branch { target } => {
                 f.push(IsaInstr::Jump(target.clone()));
@@ -232,7 +298,8 @@ impl IsaLowerer {
                 true_target,
                 false_target,
             } => {
-                self.emit_load(*condition, ctx, f).expect("cond branch condition value missing");
+                self.emit_load(*condition, ctx, f)
+                    .expect("cond branch condition value missing");
                 f.push(IsaInstr::Branch(true_target.clone(), false_target.clone()));
             }
             Terminator::Return { value } => {
@@ -241,7 +308,16 @@ impl IsaLowerer {
                 }
                 f.push(IsaInstr::Return);
             }
+            Terminator::Unreachable => {
+                // LLVM `unreachable` is a trap. SA48 has no trap instruction and
+                // a plain fall-through would execute the next block's code, so
+                // lowering refuses rather than inventing semantics.
+                return Err(LowerError::UnsupportedInstruction(
+                    "unreachable terminator needs a trap ISA instruction".into(),
+                ));
+            }
         }
+        Ok(())
     }
 
     fn emit_load(&self, value: ValueId, ctx: &LowerCtx, f: &mut FuncEmitter<'_>) -> Result<(), LowerError> {
@@ -269,7 +345,29 @@ impl IsaLowerer {
             Constant::I1(v) => f.push(IsaInstr::ConstI1(*v)),
             Constant::I8(v) => f.push(IsaInstr::ConstI32(*v as u32)),
             Constant::I16(v) => f.push(IsaInstr::ConstI32(*v as u32)),
+            Constant::I64(v) => {
+                // A 64-bit integer constant becomes two 32-bit limbs (low first,
+                // so that the high limb is on top after the two pushes and the
+                // symmetric `emit_store` drops it into the high slot first).
+                self.push_i64_limbs(*v, f)?;
+            }
         }
+        Ok(())
+    }
+
+    /// Push the two 32-bit limbs of an `i64` bit pattern onto the operand stack
+    /// (low limb first). Errors when the target profile does not decompose a
+    /// 64-bit integer into exactly two VM words.
+    fn push_i64_limbs(&self, v: u64, f: &mut FuncEmitter<'_>) -> Result<(), LowerError> {
+        let cells = LowerCtx::cell_count_for_type(&self.profile, &IrType::I64);
+        if cells != 2 {
+            return Err(LowerError::UnsupportedType(format!(
+                "i64 constant is {cells} profile cells on {}; the VM decomposes 64-bit integers into exactly two 32-bit limbs",
+                self.profile.name,
+            )));
+        }
+        f.push(IsaInstr::ConstI32(v as u32));
+        f.push(IsaInstr::ConstI32((v >> 32) as u32));
         Ok(())
     }
 
@@ -285,7 +383,18 @@ impl IsaLowerer {
         for idx in indices {
             match idx {
                 GepIndex::Dynamic(value) => {
-                    self.emit_load(*value, ctx, f)?;
+                    // The byte offset arrives as a full-width integer (the LLVM
+                    // frontend builds it in i64 for any dynamic index). Only its
+                    // low 32 bits can address the VM's 32-bit pointer space, so a
+                    // multi-cell index contributes its low limb; the profile's
+                    // wrap semantics make this the exact low bits of the offset.
+                    let cells = ctx.cells(*value)?;
+                    if cells > 1 {
+                        let first = ctx.first_slot(*value)?;
+                        f.push(IsaInstr::LocalGet(first));
+                    } else {
+                        self.emit_load(*value, ctx, f)?;
+                    }
                     f.push(IsaInstr::ConstI32(elem_ty.size_in_bytes()));
                     f.push(IsaInstr::I32Mul);
                     f.push(IsaInstr::I32Add);
@@ -300,14 +409,512 @@ impl IsaLowerer {
         Ok(())
     }
 
-    fn check_single_cell(&self, ty: IrType) -> Result<(), LowerError> {
+    /// Number of operand-stack words (limbs) an integer `ty` occupies on the VM.
+    ///
+    /// The VM stores every integer cell as a 32-bit word. An i1/i8/i16/i32 value
+    /// is one profile cell on the SA48/sa32 profiles and so one limb; an i64 is
+    /// two cells there and is carried as two 32-bit limbs. A profile that would
+    /// need a different number of cells — or a 64-bit integer in a single cell —
+    /// has no faithful decomposition into 32-bit VM words and is reported rather
+    /// than approximated.
+    fn vm_limbs(&self, ty: IrType) -> Result<u32, LowerError> {
         let cells = LowerCtx::cell_count_for_type(&self.profile, &ty);
-        if cells != 1 {
-            return Err(LowerError::UnsupportedType(format!(
-                "multi-cell value of type {ty} ({cells} cells) not yet executable",
-            )));
+        if cells == 1 {
+            if let Some(w) = ty.integer_width() {
+                if w > 32 {
+                    return Err(LowerError::UnsupportedType(format!(
+                        "integer {ty} ({w} bits) would need one {}-bit profile cell but the VM words are 32 bits",
+                        self.profile.cell_width,
+                    )));
+                }
+            }
+            return Ok(1);
+        }
+        match ty {
+            IrType::I64 if cells == 2 => Ok(2),
+            _ => Err(LowerError::UnsupportedType(format!(
+                "multi-cell integer {ty} is {cells} profile cells on {}; the VM can only carry a 64-bit integer as two 32-bit limbs",
+                self.profile.name,
+            ))),
+        }
+    }
+
+    /// Push one 32-bit limb of `value` onto the operand stack.
+    fn emit_load_limb(
+        &self,
+        value: ValueId,
+        limb: u32,
+        ctx: &LowerCtx,
+        f: &mut FuncEmitter<'_>,
+    ) -> Result<(), LowerError> {
+        let first = ctx.first_slot(value)?;
+        f.push(IsaInstr::LocalGet(first + limb));
+        Ok(())
+    }
+
+    /// Lower an SAIR `select` to an if/else over branches, since the ISA has no
+    /// select/CMOV instruction. The condition selects between pushing the
+    /// `then` cells or the `else` cells onto the operand stack; both arms merge
+    /// at a `join` label where the winner is stored into the result slot. The
+    /// expansion is cell-count generic, so it also carries multi-cell (i64)
+    /// selects — each arm simply pushes both of the value's limbs.
+    ///
+    /// The synthesized blocks are pure ISA-level structure (fresh labels, no
+    /// SAIR block), emitted inline inside the enclosing block, so they do not
+    /// participate in phi copies or critical-edge splitting.
+    ///
+    /// The `&mut usize` counter threads the codebase's `lower_*` helper style
+    /// (op operands + ctx + emitter), which exceeds clippy's arity default.
+    #[allow(clippy::too_many_arguments)]
+    fn lower_select(
+        &self,
+        ty: IrType,
+        cond: ValueId,
+        then_value: ValueId,
+        else_value: ValueId,
+        result_id: Option<ValueId>,
+        ctx: &LowerCtx,
+        f: &mut FuncEmitter<'_>,
+        counter: &mut usize,
+    ) -> Result<(), LowerError> {
+        let _ = ty;
+        let Some(_id) = result_id else {
+            // A select with no result is dead code (no side effects): skip it
+            // rather than emit unbalanced branches.
+            return Ok(());
+        };
+
+        let n = *counter;
+        *counter += 1;
+        let t_label = format!("__select_{n}_then");
+        let e_label = format!("__select_{n}_else");
+        let j_label = format!("__select_{n}_join");
+
+        self.emit_load(cond, ctx, f)?;
+        f.push(IsaInstr::Branch(t_label.clone(), e_label.clone()));
+
+        f.set_label(&t_label);
+        self.emit_load(then_value, ctx, f)?;
+        f.push(IsaInstr::Jump(j_label.clone()));
+
+        f.set_label(&e_label);
+        self.emit_load(else_value, ctx, f)?;
+
+        f.set_label(&j_label);
+        if let Some(id) = result_id {
+            self.emit_store(id, ctx, f)?;
         }
         Ok(())
+    }
+
+    // ---- Multi-cell (i64) integer lowering -------------------------------
+    //
+    // A 64-bit integer occupies two adjacent value slots: slot `first` holds the
+    // low 32-bit limb and slot `first + 1` the high limb (little-endian order,
+    // matching both the slot convention of `emit_load`/`emit_store` and the byte
+    // order a two-word memory read produces). Each helper computes limb results
+    // and stores them as soon as they are ready, keeping the operand stack
+    // shallow — the ISA has no rotate/reorder instruction beyond `Pick`.
+
+    /// Slot index of `limb` (0 = low) of `value`.
+    fn slot_of_limb(&self, value: ValueId, limb: u32, ctx: &LowerCtx) -> Result<u32, LowerError> {
+        Ok(ctx.first_slot(value)? + limb)
+    }
+
+    fn lower_wide_add(
+        &self,
+        lhs: ValueId,
+        rhs: ValueId,
+        result_id: Option<ValueId>,
+        ctx: &LowerCtx,
+        f: &mut FuncEmitter<'_>,
+    ) -> Result<(), LowerError> {
+        let Some(id) = result_id else { return Ok(()) };
+        let l0 = self.slot_of_limb(lhs, 0, ctx)?;
+        let r0 = self.slot_of_limb(rhs, 0, ctx)?;
+        let q = ctx.first_slot(id)?;
+
+        // s0 = (l0 + r0) mod 2^32; carry-out of the low limb = s0 <u l0.
+        f.push(IsaInstr::LocalGet(l0));
+        f.push(IsaInstr::LocalGet(r0));
+        f.push(IsaInstr::I32Add);
+        f.push(IsaInstr::LocalSet(q)); // low limb result
+        // carry = low sum wrapped (unsigned)
+        f.push(IsaInstr::LocalGet(q));
+        f.push(IsaInstr::LocalGet(l0));
+        f.push(IsaInstr::Lt);
+        // s1 = (l1 + r1) mod 2^32, then add the carry (an i1 reads as 0/1).
+        f.push(IsaInstr::LocalGet(l0 + 1));
+        f.push(IsaInstr::LocalGet(r0 + 1));
+        f.push(IsaInstr::I32Add);
+        f.push(IsaInstr::I32Add);
+        f.push(IsaInstr::LocalSet(q + 1));
+        Ok(())
+    }
+
+    fn lower_wide_sub(
+        &self,
+        lhs: ValueId,
+        rhs: ValueId,
+        result_id: Option<ValueId>,
+        ctx: &LowerCtx,
+        f: &mut FuncEmitter<'_>,
+    ) -> Result<(), LowerError> {
+        let Some(id) = result_id else { return Ok(()) };
+        let l0 = self.slot_of_limb(lhs, 0, ctx)?;
+        let r0 = self.slot_of_limb(rhs, 0, ctx)?;
+        let q = ctx.first_slot(id)?;
+
+        // d0 = (l0 - r0) mod 2^32.
+        f.push(IsaInstr::LocalGet(l0));
+        f.push(IsaInstr::LocalGet(r0));
+        f.push(IsaInstr::I32Sub);
+        f.push(IsaInstr::LocalSet(q));
+        // t1 = (l1 - r1) mod 2^32, then subtract the borrow = l0 <u r0.
+        f.push(IsaInstr::LocalGet(l0 + 1));
+        f.push(IsaInstr::LocalGet(r0 + 1));
+        f.push(IsaInstr::I32Sub);
+        // Recompute borrow from the untouched operand slots: t1 - borrow.
+        f.push(IsaInstr::LocalGet(l0));
+        f.push(IsaInstr::LocalGet(r0));
+        f.push(IsaInstr::Lt);
+        f.push(IsaInstr::I32Sub);
+        f.push(IsaInstr::LocalSet(q + 1));
+        Ok(())
+    }
+
+    /// Turn the i1 flag on top of the operand stack into an I32 0/1 word so the
+    /// boolean result can flow through the ISA's integer `And`/`Or`.
+    fn widen_top_flag(&self, f: &mut FuncEmitter<'_>) {
+        f.push(IsaInstr::ConstI32(0));
+        f.push(IsaInstr::I32Add);
+    }
+
+    /// Reduce the 0/1 I32 word on top of the stack to a true i1 flag.
+    fn reduce_top_to_flag(&self, f: &mut FuncEmitter<'_>) {
+        f.push(IsaInstr::ConstI32(1));
+        f.push(IsaInstr::Eq);
+    }
+
+    fn lower_wide_eq(
+        &self,
+        lhs: ValueId,
+        rhs: ValueId,
+        result_id: Option<ValueId>,
+        ctx: &LowerCtx,
+        f: &mut FuncEmitter<'_>,
+    ) -> Result<(), LowerError> {
+        let l0 = self.slot_of_limb(lhs, 0, ctx)?;
+        let r0 = self.slot_of_limb(rhs, 0, ctx)?;
+        // a == b  <=>  (l0 ^ r0) | (l1 ^ r1) == 0.
+        f.push(IsaInstr::LocalGet(l0));
+        f.push(IsaInstr::LocalGet(r0));
+        f.push(IsaInstr::Xor);
+        f.push(IsaInstr::LocalGet(l0 + 1));
+        f.push(IsaInstr::LocalGet(r0 + 1));
+        f.push(IsaInstr::Xor);
+        f.push(IsaInstr::Or);
+        f.push(IsaInstr::ConstI32(0));
+        f.push(IsaInstr::Eq);
+        if let Some(id) = result_id {
+            self.emit_store(id, ctx, f)?;
+        }
+        Ok(())
+    }
+
+    fn lower_wide_cmp_lt(
+        &self,
+        lhs: ValueId,
+        rhs: ValueId,
+        result_id: Option<ValueId>,
+        ctx: &LowerCtx,
+        f: &mut FuncEmitter<'_>,
+    ) -> Result<(), LowerError> {
+        let l0 = self.slot_of_limb(lhs, 0, ctx)?;
+        let r0 = self.slot_of_limb(rhs, 0, ctx)?;
+        // l <u r  <=>  (l1 <u r1) | ((l1 == r1) & (l0 <u r0))
+        self.push_limb_cmp(l0, r0, 1, IsaInstr::Lt, f);
+        self.push_limb_cmp(l0, r0, 1, IsaInstr::Eq, f);
+        self.push_limb_cmp(l0, r0, 0, IsaInstr::Lt, f);
+        f.push(IsaInstr::And);
+        f.push(IsaInstr::Or);
+        self.reduce_top_to_flag(f);
+        if let Some(id) = result_id {
+            self.emit_store(id, ctx, f)?;
+        }
+        Ok(())
+    }
+
+    fn lower_wide_cmp_gt(
+        &self,
+        lhs: ValueId,
+        rhs: ValueId,
+        result_id: Option<ValueId>,
+        ctx: &LowerCtx,
+        f: &mut FuncEmitter<'_>,
+    ) -> Result<(), LowerError> {
+        let l0 = self.slot_of_limb(lhs, 0, ctx)?;
+        let r0 = self.slot_of_limb(rhs, 0, ctx)?;
+        // l >u r  <=>  (l1 >u r1) | ((l1 == r1) & (l0 >u r0))
+        self.push_limb_cmp(l0, r0, 1, IsaInstr::Gt, f);
+        self.push_limb_cmp(l0, r0, 1, IsaInstr::Eq, f);
+        self.push_limb_cmp(l0, r0, 0, IsaInstr::Gt, f);
+        f.push(IsaInstr::And);
+        f.push(IsaInstr::Or);
+        self.reduce_top_to_flag(f);
+        if let Some(id) = result_id {
+            self.emit_store(id, ctx, f)?;
+        }
+        Ok(())
+    }
+
+    /// Emit one limb comparison `slot_a op slot_b` widened to an I32 0/1 word.
+    fn push_limb_cmp(
+        &self,
+        slot_a: u32,
+        slot_b: u32,
+        limb: u32,
+        op: IsaInstr,
+        f: &mut FuncEmitter<'_>,
+    ) {
+        f.push(IsaInstr::LocalGet(slot_a + limb));
+        f.push(IsaInstr::LocalGet(slot_b + limb));
+        f.push(op);
+        self.widen_top_flag(f);
+    }
+
+    /// Load an i64 from `addr`: low limb at `addr`, high limb at `addr + 4`.
+    fn lower_wide_load(
+        &self,
+        addr: ValueId,
+        result_id: Option<ValueId>,
+        ctx: &LowerCtx,
+        f: &mut FuncEmitter<'_>,
+    ) -> Result<(), LowerError> {
+        self.emit_load(addr, ctx, f)?;
+        f.push(IsaInstr::Load); // low limb
+        self.emit_load(addr, ctx, f)?;
+        f.push(IsaInstr::ConstI32(4));
+        f.push(IsaInstr::I32Add);
+        f.push(IsaInstr::Load); // high limb at addr + 4
+        if let Some(id) = result_id {
+            self.emit_store(id, ctx, f)?;
+        }
+        Ok(())
+    }
+
+    /// Store an i64 to `addr`: low limb at `addr`, high limb at `addr + 4`.
+    fn lower_wide_store(
+        &self,
+        value: ValueId,
+        addr: ValueId,
+        ctx: &LowerCtx,
+        f: &mut FuncEmitter<'_>,
+    ) -> Result<(), LowerError> {
+        let v0 = self.slot_of_limb(value, 0, ctx)?;
+        self.emit_load(addr, ctx, f)?;
+        f.push(IsaInstr::LocalGet(v0));
+        f.push(IsaInstr::Store);
+        self.emit_load(addr, ctx, f)?;
+        f.push(IsaInstr::ConstI32(4));
+        f.push(IsaInstr::I32Add);
+        f.push(IsaInstr::LocalGet(v0 + 1));
+        f.push(IsaInstr::Store);
+        Ok(())
+    }
+
+    /// Lower a width-changing integer cast (LLVM `zext`/`sext`/`trunc`) to
+    /// limb arithmetic. Bitcasts and pointer-integer reinterpretations have no
+    /// ISA form and are still rejected explicitly.
+    ///
+    /// The `result_id: Option<ValueId>` makes the arity (op + value + optional
+    /// result + ctx + emitter) exceed clippy's default, matching the other
+    /// `lower_*` helpers' threading style.
+    #[allow(clippy::too_many_arguments)]
+    fn lower_cast(
+        &self,
+        op: CastOp,
+        from_ty: IrType,
+        to_ty: IrType,
+        value: ValueId,
+        result_id: Option<ValueId>,
+        ctx: &LowerCtx,
+        f: &mut FuncEmitter<'_>,
+    ) -> Result<(), LowerError> {
+        let Some(fw) = from_ty.integer_width() else {
+            return Err(LowerError::UnsupportedInstruction(format!(
+                "{} from {} is not supported on the VM backend (integer casts only)",
+                op.name(),
+                from_ty,
+            )));
+        };
+        let Some(tw) = to_ty.integer_width() else {
+            return Err(LowerError::UnsupportedInstruction(format!(
+                "{} to {} is not supported on the VM backend (integer casts only)",
+                op.name(),
+                to_ty,
+            )));
+        };
+        match op {
+            CastOp::Zext | CastOp::Sext => {
+                if tw <= fw {
+                    return Err(LowerError::UnsupportedInstruction(format!(
+                        "{} requires widening, got {} -> {}",
+                        op.name(),
+                        from_ty,
+                        to_ty,
+                    )));
+                }
+            }
+            CastOp::Trunc => {
+                if tw >= fw {
+                    return Err(LowerError::UnsupportedInstruction(format!(
+                        "trunc requires narrowing, got {} -> {}",
+                        from_ty,
+                        to_ty,
+                    )));
+                }
+            }
+            _ => {
+                return Err(LowerError::UnsupportedInstruction(format!(
+                    "{} ({} -> {}) is not supported on the VM backend: no ISA instruction reinterprets bits",
+                    op.name(),
+                    from_ty,
+                    to_ty,
+                )));
+            }
+        }
+
+        let Some(id) = result_id else { return Ok(()) };
+        let q = ctx.first_slot(id)?;
+
+        // ---- Target is 64 bits: widening (zext/sext) into two result cells.
+        // The source is single-cell (fw < 64 for a widening cast).
+        if tw == 64 {
+            match op {
+                CastOp::Sext => {
+                    // Low cell = the source widened into 32 bits; high cell =
+                    // the sign fill. A 32-bit source already fills its limb and
+                    // passes through unchanged — OR-ing it with the all-ones
+                    // sign fill would corrupt negatives (sext i32 -7: 0xFFFFFFF9
+                    // | 0xFFFFFFFF = 0xFFFFFFFF = -1). Only fw < 32 sources need
+                    // the fill OR'd in to sign-extend them into the low limb.
+                    if fw == 32 {
+                        self.emit_cast_source_as_i32(from_ty, value, ctx, f)?;
+                        f.push(IsaInstr::LocalSet(q));
+                    } else {
+                        self.emit_sext_low32(fw, from_ty, value, ctx, f)?;
+                        f.push(IsaInstr::LocalSet(q));
+                    }
+                    self.emit_sext_fill(fw, from_ty, value, ctx, f)?;
+                    f.push(IsaInstr::LocalSet(q + 1));
+                }
+                _ => {
+                    // zext: low cell = source, high cell = 0.
+                    self.emit_cast_source_as_i32(from_ty, value, ctx, f)?;
+                    f.push(IsaInstr::LocalSet(q));
+                    f.push(IsaInstr::ConstI32(0));
+                    f.push(IsaInstr::LocalSet(q + 1));
+                }
+            }
+            return Ok(());
+        }
+
+        // ---- Single-cell target (tw in 1|8|16|32).
+        match op {
+            CastOp::Trunc => {
+                // The low bits of the source carry the truncated value.
+                if fw == 64 {
+                    self.emit_load_limb(value, 0, ctx, f)?;
+                } else {
+                    self.emit_cast_source_as_i32(from_ty, value, ctx, f)?;
+                }
+                match tw {
+                    32 => { /* the cell is already exactly 32 bits */ }
+                    1 => {
+                        f.push(IsaInstr::ConstI32(1));
+                        f.push(IsaInstr::And);
+                        self.reduce_top_to_flag(f);
+                    }
+                    _ => self.mask_top_to(tw, f),
+                }
+            }
+            CastOp::Sext => {
+                // Sign-extend a single-cell source into the target cell:
+                // low = source | (0 - (source >> (fw-1))), masked to `tw` bits
+                // (the interpreter carries sub-32 results masked to their width).
+                self.emit_sext_low32(fw, from_ty, value, ctx, f)?;
+                if tw < 32 {
+                    self.mask_top_to(tw, f);
+                }
+            }
+            _ => {
+                // zext into a <=32-bit cell. Sub-32 sources travel masked to fw
+                // bits, so the cell already equals the extended value.
+                self.emit_cast_source_as_i32(from_ty, value, ctx, f)?;
+            }
+        }
+        if let Some(id) = result_id {
+            self.emit_store(id, ctx, f)?;
+        }
+        Ok(())
+    }
+
+    /// Push the single-cell integer `value` as an I32 word, widening an i1
+    /// (whose slot holds an `I1` value) by adding it to a zero constant.
+    fn emit_cast_source_as_i32(
+        &self,
+        from_ty: IrType,
+        value: ValueId,
+        ctx: &LowerCtx,
+        f: &mut FuncEmitter<'_>,
+    ) -> Result<(), LowerError> {
+        self.emit_load(value, ctx, f)?;
+        if from_ty == IrType::I1 {
+            self.widen_top_flag(f);
+        }
+        Ok(())
+    }
+
+    /// Leave `0 - (source >> (fw-1))` on the stack: the all-ones/all-zeros sign
+    /// fill of a single-cell integer source of width `fw`.
+    fn emit_sext_fill(
+        &self,
+        fw: u32,
+        from_ty: IrType,
+        value: ValueId,
+        ctx: &LowerCtx,
+        f: &mut FuncEmitter<'_>,
+    ) -> Result<(), LowerError> {
+        f.push(IsaInstr::ConstI32(0));
+        self.emit_cast_source_as_i32(from_ty, value, ctx, f)?;
+        f.push(IsaInstr::ConstI32(fw - 1));
+        f.push(IsaInstr::Shr);
+        f.push(IsaInstr::I32Sub);
+        Ok(())
+    }
+
+    /// Leave `source | sign_fill` on the stack: the sign extension of the
+    /// single-cell source into a full 32-bit cell.
+    fn emit_sext_low32(
+        &self,
+        fw: u32,
+        from_ty: IrType,
+        value: ValueId,
+        ctx: &LowerCtx,
+        f: &mut FuncEmitter<'_>,
+    ) -> Result<(), LowerError> {
+        self.emit_sext_fill(fw, from_ty, value, ctx, f)?;
+        self.emit_cast_source_as_i32(from_ty, value, ctx, f)?;
+        f.push(IsaInstr::Or);
+        Ok(())
+    }
+
+    /// Mask the 32-bit word on top of the stack to `width` bits (`1|8|16`).
+    fn mask_top_to(&self, width: u32, f: &mut FuncEmitter<'_>) {
+        let mask = ((1u64 << width) - 1) as u32;
+        f.push(IsaInstr::ConstI32(mask));
+        f.push(IsaInstr::And);
     }
 }
 
@@ -407,10 +1014,24 @@ impl<'a> FuncEmitter<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
+enum PhiSrc {
+    /// Copy from an SSA value's slot.
+    Slot(u32),
+    /// Rematerialize a constant operand directly at the copy site. Constants
+    /// that feed a phi are defined by a `Const` instruction in the *successor*
+    /// block (that is where the translator emits them), so on the VM the slot
+    /// holding them is only initialized after the successor's own code runs —
+    /// too late for copies emitted at the end of the predecessor (first loop
+    /// iteration reads an uninitialized slot). Rematerializing the immediate at
+    /// the edge makes the copy independent of block order.
+    Const(Constant),
+}
+
+#[derive(Debug, Clone)]
 struct Copy {
     dst: u32,
-    src: u32,
+    src: PhiSrc,
 }
 
 enum CopyPlacement {
@@ -455,6 +1076,22 @@ fn collect_phi_copies(
 ) -> Result<HashMap<(String, String), Vec<Copy>>, LowerError> {
     let mut per_edge: HashMap<(String, String), Vec<Copy>> = HashMap::new();
 
+    // Map every value id that is a constant instruction back to its constant,
+    // so a phi operand can be rematerialized at the edge instead of copied
+    // from the successor-local slot (see PhiSrc::Const).
+    let mut next_const_id = func.params.len();
+    let mut const_at: HashMap<ValueId, Constant> = HashMap::new();
+    for block in &func.blocks {
+        for instr in &block.instructions {
+            if instr.result_type().is_some() {
+                if let SairInstr::Const(c) = instr {
+                    const_at.insert(next_const_id, c.clone());
+                }
+                next_const_id += 1;
+            }
+        }
+    }
+
     for succ in &func.blocks {
         for (instr_idx, instr) in succ.instructions.iter().enumerate() {
             if let SairInstr::Phi { incoming, .. } = instr {
@@ -464,21 +1101,37 @@ fn collect_phi_copies(
                 let phi_cells = ctx.cells(phi_result)?;
 
                 for (value, pred_label) in incoming {
-                    let src_first = ctx.first_slot(*value)?;
-                    let src_cells = ctx.cells(*value)?;
-                    if phi_cells != src_cells {
+                    let cells = ctx.cells(*value)?;
+                    if phi_cells != cells {
                         return Err(LowerError::ValidationError(format!(
                             "phi operand cell count mismatch: phi {} cells, operand {} cells",
-                            phi_cells, src_cells
+                            phi_cells, cells
                         )));
                     }
+                    if let Some(c) = const_at.get(value) {
+                        // Constants feeding a phi are rematerialized at the edge
+                        // (see `PhiSrc::Const`). A multi-cell constant (i64) is
+                        // split into one imm per limb so each copy is a single
+                        // cell write, matching the layout of a slot-moved value.
+                        for limb in 0..cells {
+                            per_edge
+                                .entry((pred_label.clone(), succ.label.clone()))
+                                .or_default()
+                                .push(Copy {
+                                    dst: phi_first + limb,
+                                    src: PhiSrc::Const(const_limb(c, limb, cells)),
+                                });
+                        }
+                        continue;
+                    }
+                    let src_first = ctx.first_slot(*value)?;
                     for offset in 0..phi_cells {
                         per_edge
                             .entry((pred_label.clone(), succ.label.clone()))
                             .or_default()
                             .push(Copy {
                                 dst: phi_first + offset,
-                                src: src_first + offset,
+                                src: PhiSrc::Slot(src_first + offset),
                             });
                     }
                 }
@@ -505,18 +1158,68 @@ fn find_result_id(func: &IrFunction, block_label: &str, instr_idx: usize) -> Val
 }
 
 fn emit_copies(copies: &[Copy], temp_slot: u32, f: &mut FuncEmitter<'_>) {
-    let ordered = resolve_parallel_copies(copies, temp_slot);
-    for (src, dst) in ordered {
+    // Immediate (constant) writes carry no source dependency, but a slot move
+    // in the same batch may read the slot an immediate is about to write — that
+    // read must observe the pre-edge (old) value. So slot moves are emitted
+    // first under parallel-copy ordering, and constant writes last.
+    let mut slot_moves: Vec<(u32, u32)> = Vec::new();
+    let mut imm_writes: Vec<&Copy> = Vec::new();
+    for c in copies {
+        match &c.src {
+            PhiSrc::Slot(src) => slot_moves.push((c.dst, *src)),
+            PhiSrc::Const(_) => imm_writes.push(c),
+        }
+    }
+
+    for (src, dst) in resolve_parallel_copies(&slot_moves, temp_slot) {
         f.push(IsaInstr::LocalGet(src));
+        f.push(IsaInstr::LocalSet(dst));
+    }
+    for c in imm_writes {
+        let (instr, dst) = match &c.src {
+            PhiSrc::Const(value) => (const_push_isa(value), c.dst),
+            PhiSrc::Slot(_) => unreachable!(),
+        };
+        f.push(instr);
         f.push(IsaInstr::LocalSet(dst));
     }
 }
 
-fn resolve_parallel_copies(copies: &[Copy], temp_slot: u32) -> Vec<(u32, u32)> {
+/// The ISA instruction that pushes `c` onto the operand stack as a typed value.
+/// Mirrors `IsaLowerer::emit_const`; sub-32-bit integers travel as I32 cells.
+/// Only single-cell constants reach this helper — a multi-cell constant is split
+/// into per-limb `Const` copies by [`const_limb`] before emission.
+fn const_push_isa(c: &Constant) -> IsaInstr {
+    match c {
+        Constant::I32(v) => IsaInstr::ConstI32(*v),
+        Constant::F64(v) => IsaInstr::ConstF64(*v),
+        Constant::I1(v) => IsaInstr::ConstI1(*v),
+        Constant::I8(v) => IsaInstr::ConstI32(*v as u32),
+        Constant::I16(v) => IsaInstr::ConstI32(*v as u32),
+        Constant::I64(_) => unreachable!(
+            "i64 phi constants are split into limb copies by const_limb before emission"
+        ),
+    }
+}
+
+/// Extract the `limb`-th single-cell constant of a `cells`-cell constant. A
+/// one-cell constant is returned unchanged; an i64 constant yields its low
+/// (limb 0) or high (limb 1) 32-bit half.
+fn const_limb(c: &Constant, limb: u32, cells: u32) -> Constant {
+    if cells == 1 {
+        return c.clone();
+    }
+    match c {
+        Constant::I64(v) => Constant::I32((v >> (32 * limb)) as u32),
+        _ => unreachable!("multi-cell constant must be i64"),
+    }
+}
+
+fn resolve_parallel_copies(copies: &[(u32, u32)], temp_slot: u32) -> Vec<(u32, u32)> {
     let mut map: HashMap<u32, u32> = copies
         .iter()
-        .filter(|c| c.dst != c.src)
-        .map(|c| (c.dst, c.src))
+        .filter(|(dst, src)| dst != src)
+        .map(|(dst, src)| (*dst, *src))
         .collect();
     let mut ordered = Vec::new();
 

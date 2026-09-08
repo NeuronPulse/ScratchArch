@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use scratcharch_ir::function::IrFunction;
-use scratcharch_ir::instruction::{GepIndex, Instruction, Terminator};
-use scratcharch_ir::r#module::IrModule;
+use scratcharch_ir::instruction::{CastOp, GepIndex, Instruction, Terminator};
+use scratcharch_ir::r#module::{IrModule, STATIC_DATA_BASE};
 use scratcharch_ir::types::IrType;
 use scratcharch_ir::value::{Constant, ValueId};
 use scratcharch_runtime::{ByteMemory, IntrinsicResult, RuntimeError, Value};
@@ -17,6 +17,7 @@ pub enum RuntimeValue {
     I8(u8),
     I16(u16),
     I32(u32),
+    I64(u64),
     F64(f64),
     Pointer(u32),
 }
@@ -72,6 +73,18 @@ pub enum InterpError {
     CallStackOverflow,
     InvalidGepIndex(String),
     UnsupportedInstruction(String),
+    /// Control reached an LLVM `unreachable` terminator. This is a trap: the IR
+    /// declares the path impossible, so the program is erroneous.
+    Trap,
+    /// The module's static data segment does not fit below the stack floor. The
+    /// segment is seeded at [`STATIC_DATA_BASE`]; if it reached into the stack's
+    /// region the stack would silently overwrite global data, so this is an
+    /// explicit error instead. Raise `stack_limit` (or shrink the globals).
+    StaticDataTooLarge {
+        base: u32,
+        size: usize,
+        stack_limit: u32,
+    },
     Runtime(RuntimeError),
 }
 
@@ -84,6 +97,7 @@ pub struct Interpreter {
     func_index: HashMap<String, usize>,
     max_frames: usize,
     instr_id_maps: HashMap<String, InstrIdMap>,
+    static_seeded: bool,
 }
 
 impl Interpreter {
@@ -103,7 +117,35 @@ impl Interpreter {
             func_index,
             max_frames: 1024,
             instr_id_maps,
+            static_seeded: false,
         }
+    }
+
+    /// Copy the module's static data segment (LLVM globals) into the low memory
+    /// region below the stack floor. Runs once, before the first `run()`. The
+    /// segment must fit entirely below `stack_limit`, otherwise the stack could
+    /// grow down over it later — that is reported as an error, never silently
+    /// allowed.
+    fn seed_static_data(&mut self) -> Result<(), InterpError> {
+        if self.static_seeded {
+            return Ok(());
+        }
+        self.static_seeded = true;
+        let data = &self.module.static_data;
+        if data.image.is_empty() {
+            return Ok(());
+        }
+        let size = data.image.len();
+        let end = STATIC_DATA_BASE as usize + size;
+        if end > self.stack_limit as usize || end > self.memory.len() {
+            return Err(InterpError::StaticDataTooLarge {
+                base: STATIC_DATA_BASE,
+                size,
+                stack_limit: self.stack_limit,
+            });
+        }
+        self.memory[STATIC_DATA_BASE as usize..end].copy_from_slice(&data.image);
+        Ok(())
     }
 
     /// Set the maximum number of call frames allowed before execution fails with
@@ -113,6 +155,7 @@ impl Interpreter {
     }
 
     pub fn run(&mut self) -> Result<Option<RuntimeValue>, InterpError> {
+        self.seed_static_data()?;
         let entry_name = self.module.entry.clone();
         let _ = self.func_index.get(&entry_name)
             .ok_or_else(|| InterpError::UndefinedFunction(entry_name.clone()))?;
@@ -204,82 +247,39 @@ impl Interpreter {
             Instruction::Add { ty, lhs, rhs } => {
                 let a = self.read_value(*lhs, *ty)?;
                 let b = self.read_value(*rhs, *ty)?;
-                let result = match ty {
-                    IrType::I1 | IrType::I8 | IrType::I16 | IrType::I32 => {
-                        let a = trunc_to_u32(a, *ty);
-                        let b = trunc_to_u32(b, *ty);
-                        let w = type_width(*ty);
-                        let mask = if w >= 32 { 0xFFFFFFFF } else { (1u32 << w) - 1 };
-                        RuntimeValue::I32((a.wrapping_add(b)) & mask)
-                    }
-                    _ => return Err(InterpError::TypeMismatch("add requires integer".into())),
-                };
+                let result = int_binop(BinOp::Add, *ty, &a, &b)?;
                 self.write_top_value(result);
             }
             Instruction::Sub { ty, lhs, rhs } => {
                 let a = self.read_value(*lhs, *ty)?;
                 let b = self.read_value(*rhs, *ty)?;
-                let result = match ty {
-                    IrType::I1 | IrType::I8 | IrType::I16 | IrType::I32 => {
-                        let a = trunc_to_u32(a, *ty);
-                        let b = trunc_to_u32(b, *ty);
-                        let w = type_width(*ty);
-                        let mask = if w >= 32 { 0xFFFFFFFF } else { (1u32 << w) - 1 };
-                        RuntimeValue::I32(a.wrapping_sub(b) & mask)
-                    }
-                    _ => return Err(InterpError::TypeMismatch("sub requires integer".into())),
-                };
+                let result = int_binop(BinOp::Sub, *ty, &a, &b)?;
                 self.write_top_value(result);
             }
             Instruction::Mul { ty, lhs, rhs } => {
                 let a = self.read_value(*lhs, *ty)?;
                 let b = self.read_value(*rhs, *ty)?;
-                let result = match ty {
-                    IrType::I1 | IrType::I8 | IrType::I16 | IrType::I32 => {
-                        let a = trunc_to_u32(a, *ty);
-                        let b = trunc_to_u32(b, *ty);
-                        let w = type_width(*ty);
-                        let mask = if w >= 32 { 0xFFFFFFFF } else { (1u32 << w) - 1 };
-                        RuntimeValue::I32(a.wrapping_mul(b) & mask)
-                    }
-                    _ => return Err(InterpError::TypeMismatch("mul requires integer".into())),
-                };
+                let result = int_binop(BinOp::Mul, *ty, &a, &b)?;
                 self.write_top_value(result);
             }
             Instruction::Div { ty, lhs, rhs } => {
                 let a = self.read_value(*lhs, *ty)?;
                 let b = self.read_value(*rhs, *ty)?;
-                let result = match ty {
-                    IrType::I1 | IrType::I8 | IrType::I16 | IrType::I32 => {
-                        let a = trunc_to_u32(a, *ty);
-                        let b = trunc_to_u32(b, *ty);
-                        if b == 0 { return Err(InterpError::DivisionByZero); }
-                        RuntimeValue::I32(a / b)
-                    }
-                    _ => return Err(InterpError::TypeMismatch("div requires integer".into())),
-                };
+                let result = int_binop(BinOp::Div, *ty, &a, &b)?;
                 self.write_top_value(result);
             }
             Instruction::Rem { ty, lhs, rhs } => {
                 let a = self.read_value(*lhs, *ty)?;
                 let b = self.read_value(*rhs, *ty)?;
-                let result = match ty {
-                    IrType::I1 | IrType::I8 | IrType::I16 | IrType::I32 => {
-                        let a = trunc_to_u32(a, *ty);
-                        let b = trunc_to_u32(b, *ty);
-                        if b == 0 { return Err(InterpError::DivisionByZero); }
-                        RuntimeValue::I32(a % b)
-                    }
-                    _ => return Err(InterpError::TypeMismatch("rem requires integer".into())),
-                };
+                let result = int_binop(BinOp::Rem, *ty, &a, &b)?;
                 self.write_top_value(result);
             }
             Instruction::Eq { ty, lhs, rhs } => {
                 let a = self.read_value(*lhs, *ty)?;
                 let b = self.read_value(*rhs, *ty)?;
                 let result = match ty {
-                    IrType::I1 | IrType::I8 | IrType::I16 | IrType::I32 => {
-                        RuntimeValue::I1(trunc_to_u32(a, *ty) == trunc_to_u32(b, *ty))
+                    IrType::I1 | IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64 => {
+                        RuntimeValue::I1(int_bits(&a, *ty) == int_bits(&b, *ty))
                     }
                     IrType::F64 => {
                         let a = match a { RuntimeValue::F64(v) => v, _ => return Err(InterpError::TypeMismatch("eq f64".into())) };
@@ -294,8 +294,8 @@ impl Interpreter {
                 let a = self.read_value(*lhs, *ty)?;
                 let b = self.read_value(*rhs, *ty)?;
                 let result = match ty {
-                    IrType::I1 | IrType::I8 | IrType::I16 | IrType::I32 => {
-                        RuntimeValue::I1(trunc_to_u32(a, *ty) < trunc_to_u32(b, *ty))
+                    IrType::I1 | IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64 => {
+                        RuntimeValue::I1(int_bits(&a, *ty) < int_bits(&b, *ty))
                     }
                     _ => return Err(InterpError::TypeMismatch("lt unsupported type".into())),
                 };
@@ -305,11 +305,28 @@ impl Interpreter {
                 let a = self.read_value(*lhs, *ty)?;
                 let b = self.read_value(*rhs, *ty)?;
                 let result = match ty {
-                    IrType::I1 | IrType::I8 | IrType::I16 | IrType::I32 => {
-                        RuntimeValue::I1(trunc_to_u32(a, *ty) > trunc_to_u32(b, *ty))
+                    IrType::I1 | IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64 => {
+                        RuntimeValue::I1(int_bits(&a, *ty) > int_bits(&b, *ty))
                     }
                     _ => return Err(InterpError::TypeMismatch("gt unsupported type".into())),
                 };
+                self.write_top_value(result);
+            }
+            Instruction::Select { condition, then_value, else_value, .. } => {
+                let cond = self.read_current_value(*condition)?;
+                let take_true = match cond {
+                    RuntimeValue::I1(v) => v,
+                    _ => {
+                        return Err(InterpError::TypeMismatch(
+                            "select condition must be i1".into(),
+                        ))
+                    }
+                };
+                // LLVM requires both operands to dominate the select, so both
+                // must already be materialized regardless of the chosen branch.
+                let then_v = self.read_current_value(*then_value)?;
+                let else_v = self.read_current_value(*else_value)?;
+                let result = if take_true { then_v } else { else_v };
                 self.write_top_value(result);
             }
             Instruction::Const(c) => {
@@ -318,9 +335,15 @@ impl Interpreter {
                     Constant::I8(v) => RuntimeValue::I8(*v),
                     Constant::I16(v) => RuntimeValue::I16(*v),
                     Constant::I32(v) => RuntimeValue::I32(*v),
+                    Constant::I64(v) => RuntimeValue::I64(*v),
                     Constant::F64(v) => RuntimeValue::F64(*v),
                 };
                 self.write_top_value(val);
+            }
+            Instruction::Cast { op, from_ty, to_ty, value } => {
+                let v = self.read_value(*value, *from_ty)?;
+                let result = cast_value(*op, *from_ty, *to_ty, &v)?;
+                self.write_top_value(result);
             }
             Instruction::Alloca { ty, count } => {
                 let size = ty.size_in_bytes() * count;
@@ -426,6 +449,10 @@ impl Interpreter {
                                 RuntimeValue::I8(v) => v as u32,
                                 RuntimeValue::I16(v) => v as u32,
                                 RuntimeValue::I32(v) => v,
+                                // GEP indices on 64-bit hosts are i64; SA48
+                                // addresses are 32-bit, so the low word is the
+                                // offset (mod 2^32).
+                                RuntimeValue::I64(v) => v as u32,
                                 _ => return Err(InterpError::TypeMismatch("GEP index must be integer".into())),
                             };
                             addr = addr.wrapping_add(idx_u32 * current_ty.size_in_bytes());
@@ -470,6 +497,7 @@ impl Interpreter {
                 };
                 Ok(TermResult::Return(val))
             }
+            Terminator::Unreachable => Err(InterpError::Trap),
         }
     }
 
@@ -510,6 +538,25 @@ impl Interpreter {
         return_ty: &IrType,
         arg_values: &[RuntimeValue],
     ) -> Result<RuntimeValue, InterpError> {
+        // LLVM bit intrinsics (`llvm.bswap/ctpop/ctlz/cttz.iN`) are resolved
+        // directly from the SSA values: they are pure bitwise reference
+        // expansions over the declared width and need no memory access. This is
+        // the interpreter-level "reference implementation" — no new SAIR or ISA
+        // instruction is involved.
+        // Memory intrinsics (`llvm.memcpy`/`llvm.memmove`/`llvm.memset`) write
+        // through the flat SAIR memory and are resolved first. Unknown `llvm.*`
+        // names fall through to the pure bit intrinsics below, which reject
+        // them explicitly.
+        if name.starts_with("llvm.") {
+            if let Some(result) = self.dispatch_memory_intrinsic(name, arg_values)? {
+                return Ok(result);
+            }
+            return self
+                .dispatch_llvm_intrinsic(name, arg_values)?
+                .ok_or_else(|| InterpError::UnsupportedInstruction(format!(
+                    "unsupported llvm intrinsic: {name}"
+                )));
+        }
         let args: Vec<u32> = arg_values
             .iter()
             .map(runtime_value_to_u32)
@@ -518,6 +565,188 @@ impl Interpreter {
         let result = scratcharch_runtime::dispatch_intrinsic(name, &mut mem, &args)
             .map_err(InterpError::Runtime)?;
         intrinsic_result_to_runtime_value(result, *return_ty)
+    }
+
+    /// Resolve a `llvm.bswap/ctpop/ctlz/cttz.iN` call, where `N` is carried in
+    /// the intrinsic name (`llvm.ctpop.i32` → 32-bit). `ctlz`/`cttz` take an
+    /// `i1` "is_zero_undef" immarg that clang always emits as `false`; the
+    /// argument is accepted and ignored (SAIR has no poison). Returns `None`
+    /// for names that are not one of these four families so the caller can
+    /// produce an explicit "unsupported intrinsic" diagnostic.
+    fn dispatch_llvm_intrinsic(
+        &self,
+        name: &str,
+        arg_values: &[RuntimeValue],
+    ) -> Result<Option<RuntimeValue>, InterpError> {
+        let rest = name.strip_prefix("llvm.").unwrap();
+        // `rest` = `<family>.i<width>`. Split on the trailing `.iN` so the
+        // family may itself contain dots (e.g. `llvm.fshl.i32` in the future).
+        let dot = rest.rfind(".i").ok_or_else(|| {
+            InterpError::UnsupportedInstruction(format!("malformed llvm intrinsic: {name}"))
+        })?;
+        let family = &rest[..dot];
+        let width: u32 = rest[dot + 2..].parse().map_err(|_| {
+            InterpError::UnsupportedInstruction(format!("malformed llvm intrinsic: {name}"))
+        })?;
+        if width != 8 && width != 16 && width != 32 && width != 64 {
+            return Err(InterpError::UnsupportedInstruction(format!(
+                "unsupported llvm intrinsic width {width} in {name}"
+            )));
+        }
+        // The first argument is the value; ctlz/cttz carry a second i1 arg.
+        let value = arg_values.first().ok_or_else(|| {
+            InterpError::TypeMismatch(format!("{name} requires at least one argument"))
+        })?;
+        let bits = value_bits(value)?;
+        let mask = if width == 64 { u64::MAX } else { (1u64 << width) - 1 };
+        let x = bits & mask;
+
+        let result = match family {
+            "bswap" => bswap(x, u64::from(width / 8)),
+            "ctpop" => x.count_ones() as u64,
+            "ctlz" => {
+                if x == 0 {
+                    width as u64
+                } else {
+                    // `x` is masked to `width` bits, so its u64 leading zeros
+                    // include the (64 - width) padding bits above the width.
+                    (x.leading_zeros().saturating_sub(64 - width)) as u64
+                }
+            }
+            "cttz" => {
+                if x == 0 {
+                    width as u64
+                } else {
+                    x.trailing_zeros() as u64
+                }
+            }
+            _ => return Ok(None),
+        };
+        // Sub-64 results are carried as masked I32 (matching SAIR's carrier);
+        // 64-bit results use I64. The caller reads these back and masks by the
+        // instruction's own type, so widths stay exact.
+        let result = if width == 64 {
+            RuntimeValue::I64(result)
+        } else {
+            RuntimeValue::I32(result as u32)
+        };
+        Ok(Some(result))
+    }
+
+    /// Resolve `llvm.memcpy.*`/`llvm.memmove.*`/`llvm.memset.*` calls against the
+    /// interpreter's flat byte memory, using the same address/bounds rules as
+    /// SAIR `Load`/`Store` (little-endian, byte-addressed, `NullPointer` for a
+    /// zero destination). `memmove` and `memcpy` copy through a temporary so
+    /// overlapping regions stay well-defined (`memmove` semantics); `memcpy`
+    /// semantics coincide when the regions do not overlap, which is the only
+    /// case where LLVM defines `memcpy` anyway.
+    ///
+    /// The length argument is a byte count regardless of its integer width
+    /// (clang emits `i64` for `p0.p0.i64`, `i32` for older forms). The trailing
+    /// `isvolatile` immarg is accepted and ignored: SAIR memory has no volatile
+    /// model, matching the existing load/store treatment.
+    fn dispatch_memory_intrinsic(
+        &mut self,
+        name: &str,
+        args: &[RuntimeValue],
+    ) -> Result<Option<RuntimeValue>, InterpError> {
+        enum MemOp {
+            Copy,
+            Move,
+            Set,
+        }
+        // The family is `llvm.memcpy`/`llvm.memmove`/`llvm.memset` and the
+        // remainder is its *variant* (`p<d>.p<s>.i<lenwidth>` for the two-address
+        // intrinsics, `p<d>.i<lenwidth>` for memset). The variant must be
+        // validated structurally so that a *different* intrinsic that merely
+        // shares the family prefix — e.g. `llvm.memcpy.inline.*` or
+        // `llvm.memcpy.element.unordered.*` — is rejected with an explicit
+        // diagnostic instead of silently executed. Address spaces and the
+        // length width do not change the byte-copy semantics, so any `p<N>`
+        // forms are accepted.
+        let op = if let Some(rest) = name.strip_prefix("llvm.memcpy.") {
+            let segs: Vec<&str> = rest.split('.').collect();
+            if segs.len() == 3 && segs[0].starts_with('p') && segs[1].starts_with('p') {
+                Some(MemOp::Copy)
+            } else {
+                return Err(InterpError::UnsupportedInstruction(format!(
+                    "unsupported llvm.memcpy variant: {name}"
+                )));
+            }
+        } else if let Some(rest) = name.strip_prefix("llvm.memmove.") {
+            let segs: Vec<&str> = rest.split('.').collect();
+            if segs.len() == 3 && segs[0].starts_with('p') && segs[1].starts_with('p') {
+                Some(MemOp::Move)
+            } else {
+                return Err(InterpError::UnsupportedInstruction(format!(
+                    "unsupported llvm.memmove variant: {name}"
+                )));
+            }
+        } else if let Some(rest) = name.strip_prefix("llvm.memset.") {
+            let segs: Vec<&str> = rest.split('.').collect();
+            if segs.len() == 2 && segs[0].starts_with('p') {
+                Some(MemOp::Set)
+            } else {
+                return Err(InterpError::UnsupportedInstruction(format!(
+                    "unsupported llvm.memset variant: {name}"
+                )));
+            }
+        } else {
+            None
+        };
+        let op = match op {
+            Some(op) => op,
+            None => return Ok(None),
+        };
+        if args.len() < 3 {
+            return Err(InterpError::TypeMismatch(format!(
+                "{name} requires (dst, src/val, len) at minimum, got {} arguments",
+                args.len()
+            )));
+        }
+
+        let n = as_mem_len(&args[2])? as usize;
+        match op {
+            MemOp::Copy | MemOp::Move => {
+                let dst = as_mem_addr(&args[0])?;
+                let src = as_mem_addr(&args[1])?;
+                if n == 0 {
+                    return Ok(Some(RuntimeValue::I32(0)));
+                }
+                if dst == 0 {
+                    return Err(InterpError::NullPointer);
+                }
+                let d_end = (dst as usize)
+                    .checked_add(n)
+                    .ok_or(InterpError::MemoryOutOfBounds(dst))?;
+                let s_end = (src as usize)
+                    .checked_add(n)
+                    .ok_or(InterpError::MemoryOutOfBounds(src))?;
+                if d_end > self.memory.len() || s_end > self.memory.len() {
+                    return Err(InterpError::MemoryOutOfBounds(dst));
+                }
+                let bytes = self.memory[src as usize..s_end].to_vec();
+                self.memory[dst as usize..d_end].copy_from_slice(&bytes);
+            }
+            MemOp::Set => {
+                let dst = as_mem_addr(&args[0])?;
+                let byte = as_mem_byte(&args[1])?;
+                if n == 0 {
+                    return Ok(Some(RuntimeValue::I32(0)));
+                }
+                if dst == 0 {
+                    return Err(InterpError::NullPointer);
+                }
+                let d_end = (dst as usize)
+                    .checked_add(n)
+                    .ok_or(InterpError::MemoryOutOfBounds(dst))?;
+                if d_end > self.memory.len() {
+                    return Err(InterpError::MemoryOutOfBounds(dst));
+                }
+                self.memory[dst as usize..d_end].fill(byte);
+            }
+        }
+        Ok(Some(RuntimeValue::I32(0)))
     }
 
 }
@@ -548,6 +777,11 @@ fn runtime_value_to_u32(val: &RuntimeValue) -> Result<u32, InterpError> {
         RuntimeValue::I8(v) => Ok(*v as u32),
         RuntimeValue::I16(v) => Ok(*v as u32),
         RuntimeValue::I32(v) | RuntimeValue::Pointer(v) => Ok(*v),
+        // Runtime intrinsics take u32 words. An i64 argument is truncated to
+        // its low 32 bits, consistent with the 32-bit addressing model. Intrinsics
+        // whose semantics actually need the high word must reject this at
+        // registry level; no such intrinsic is currently registered.
+        RuntimeValue::I64(v) => Ok(*v as u32),
         RuntimeValue::F64(_) => Err(InterpError::TypeMismatch(
             "runtime intrinsic argument cannot be f64".into(),
         )),
@@ -578,23 +812,285 @@ fn intrinsic_result_to_runtime_value(
     }
 }
 
-fn type_width(ty: IrType) -> u32 {
-    match ty {
-        IrType::I1 => 1,
-        IrType::I8 => 8,
-        IrType::I16 => 16,
-        IrType::I32 => 32,
-        _ => 32,
+/// Mask `bits` down to the bit width of `ty` (used for sub-32-bit values that
+/// are carried in a 32-bit container). For widths >= 64 the value is unmasked.
+fn mask_to_width(bits: u64, ty: IrType) -> u64 {
+    match ty.integer_width() {
+        Some(w) if w < 64 => bits & ((1u64 << w) - 1),
+        _ => bits,
     }
 }
 
-fn trunc_to_u32(val: RuntimeValue, _ty: IrType) -> u32 {
-    match val {
-        RuntimeValue::I1(v) => v as u32,
-        RuntimeValue::I8(v) => v as u32,
-        RuntimeValue::I16(v) => v as u32,
-        RuntimeValue::I32(v) => v,
+/// Reinterpret a runtime value as an unsigned `ty`-bit integer. Values whose
+/// SSA type is i8/i16 are already masked, so this is idempotent.
+fn int_bits(val: &RuntimeValue, ty: IrType) -> u64 {
+    let raw = match val {
+        RuntimeValue::I1(v) => *v as u64,
+        RuntimeValue::I8(v) => *v as u64,
+        RuntimeValue::I16(v) => *v as u64,
+        RuntimeValue::I32(v) => *v as u64,
+        RuntimeValue::I64(v) => *v,
         _ => 0,
+    };
+    mask_to_width(raw, ty)
+}
+
+/// Raw unsigned bits carried by an integer runtime value. Sub-64-bit values are
+/// already masked in their container at write time, so — unlike [`int_bits`],
+/// which also masks against a requested type — no type argument is needed.
+fn value_bits(val: &RuntimeValue) -> Result<u64, InterpError> {
+    match val {
+        RuntimeValue::I1(v) => Ok(*v as u64),
+        RuntimeValue::I8(v) => Ok(*v as u64),
+        RuntimeValue::I16(v) => Ok(*v as u64),
+        RuntimeValue::I32(v) | RuntimeValue::Pointer(v) => Ok(*v as u64),
+        RuntimeValue::I64(v) => Ok(*v),
+        RuntimeValue::F64(_) => Err(InterpError::TypeMismatch(
+            "integer intrinsic argument cannot be f64".into(),
+        )),
+    }
+}
+
+/// Interpret a runtime value as a byte address (pointer or address integer).
+fn as_mem_addr(val: &RuntimeValue) -> Result<u32, InterpError> {
+    match val {
+        RuntimeValue::Pointer(a) | RuntimeValue::I32(a) => Ok(*a),
+        _ => Err(InterpError::TypeMismatch(
+            "memory intrinsic address must be a pointer or address integer".into(),
+        )),
+    }
+}
+
+/// Interpret a runtime value as a byte count for a memory intrinsic.
+fn as_mem_len(val: &RuntimeValue) -> Result<u64, InterpError> {
+    match val {
+        RuntimeValue::I1(v) => Ok(*v as u64),
+        RuntimeValue::I8(v) => Ok(*v as u64),
+        RuntimeValue::I16(v) => Ok(*v as u64),
+        RuntimeValue::I32(v) | RuntimeValue::Pointer(v) => Ok(*v as u64),
+        RuntimeValue::I64(v) => Ok(*v),
+        RuntimeValue::F64(_) => Err(InterpError::TypeMismatch(
+            "memory intrinsic length cannot be f64".into(),
+        )),
+    }
+}
+
+/// Interpret a runtime value as a byte for `llvm.memset`.
+fn as_mem_byte(val: &RuntimeValue) -> Result<u8, InterpError> {
+    match val {
+        RuntimeValue::I1(v) => Ok(*v as u8),
+        RuntimeValue::I8(v) => Ok(*v),
+        RuntimeValue::I16(v) => Ok(*v as u8),
+        RuntimeValue::I32(v) | RuntimeValue::Pointer(v) => Ok(*v as u8),
+        RuntimeValue::I64(v) => Ok(*v as u8),
+        RuntimeValue::F64(_) => Err(InterpError::TypeMismatch(
+            "memory intrinsic value cannot be f64".into(),
+        )),
+    }
+}
+
+/// Byte-reverse the low `nbytes` bytes of `x` (LLVM `llvm.bswap.i<N>`); upper
+/// bits are left untouched and masked by the caller.
+fn bswap(x: u64, nbytes: u64) -> u64 {
+    let mut out = 0u64;
+    for i in 0..nbytes {
+        let byte = (x >> (i * 8)) & 0xff;
+        out |= byte << ((nbytes - 1 - i) * 8);
+    }
+    out
+}
+
+#[derive(Debug, Clone, Copy)]
+enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+}
+
+/// Apply a wrapping binary integer op on two values of the given type.
+///
+/// SAIR arithmetic is wrapping two's-complement. i8/i16/i32 results are carried
+/// as masked `RuntimeValue::I32` (matching the pre-existing behaviour); i64
+/// results are carried as `RuntimeValue::I64`.
+fn int_binop(op: BinOp, ty: IrType, a: &RuntimeValue, b: &RuntimeValue) -> Result<RuntimeValue, InterpError> {
+    let w = ty
+        .integer_width()
+        .ok_or_else(|| InterpError::TypeMismatch(format!("{op:?} requires integer type, got {ty}")))?;
+    let a = int_bits(a, ty);
+    let b = int_bits(b, ty);
+    let (res, overflowed) = match op {
+        BinOp::Add => (a.wrapping_add(b), false),
+        BinOp::Sub => (a.wrapping_sub(b), false),
+        BinOp::Mul => (a.wrapping_mul(b), false),
+        BinOp::Div => {
+            if b == 0 {
+                return Err(InterpError::DivisionByZero);
+            }
+            // LLVM `udiv` (unsigned); `sdiv` is translated by the SAIR frontends
+            // into the trunc-modelled form available today. See LLVM_COMPATIBILITY.
+            (a / b, false)
+        }
+        BinOp::Rem => {
+            if b == 0 {
+                return Err(InterpError::DivisionByZero);
+            }
+            (a % b, false)
+        }
+    };
+    let _ = overflowed;
+    if w >= 64 {
+        Ok(RuntimeValue::I64(res))
+    } else {
+        Ok(RuntimeValue::I32(res as u32))
+    }
+}
+
+/// Implement one LLVM integer/pointer conversion. Returns the produced value in
+/// a representation matching `to_ty` (see [`int_binop`] for the sub-32-bit
+/// convention).
+fn cast_value(
+    op: CastOp,
+    from_ty: IrType,
+    to_ty: IrType,
+    value: &RuntimeValue,
+) -> Result<RuntimeValue, InterpError> {
+    use CastOp::*;
+    let from_w = from_ty.integer_width();
+    let to_w = to_ty.integer_width();
+    match op {
+        Zext | Sext | Trunc => {
+            let (fw, tw) = match (from_w, to_w) {
+                (Some(f), Some(t)) => (f, t),
+                _ => {
+                    return Err(InterpError::TypeMismatch(format!(
+                        "{} requires integer types, got {} -> {}",
+                        op.name(),
+                        from_ty,
+                        to_ty
+                    )))
+                }
+            };
+            let bits = int_bits(value, from_ty);
+            let out = match op {
+                Zext => {
+                    if tw <= fw {
+                        return Err(InterpError::TypeMismatch(format!(
+                            "zext requires widening ({} -> {})",
+                            from_ty, to_ty
+                        )));
+                    }
+                    bits
+                }
+                Sext => {
+                    if tw <= fw {
+                        return Err(InterpError::TypeMismatch(format!(
+                            "sext requires widening ({} -> {})",
+                            from_ty, to_ty
+                        )));
+                    }
+                    let sign = fw < 64 && (bits & (1u64 << (fw - 1))) != 0;
+                    if sign {
+                        bits | (!0u64 << fw)
+                    } else {
+                        bits
+                    }
+                }
+                Trunc => {
+                    if tw >= fw {
+                        return Err(InterpError::TypeMismatch(format!(
+                            "trunc requires narrowing ({} -> {})",
+                            from_ty, to_ty
+                        )));
+                    }
+                    mask_to_width(bits, to_ty)
+                }
+                _ => unreachable!(),
+            };
+            Ok(to_width_value(to_ty, out))
+        }
+        Bitcast => {
+            let (fw, tw) = (from_ty.size_in_bytes(), to_ty.size_in_bytes());
+            if fw != tw {
+                return Err(InterpError::TypeMismatch(format!(
+                    "bitcast requires equal byte sizes ({} -> {})",
+                    from_ty, to_ty
+                )));
+            }
+            // pointer <-> pointer: address unchanged.
+            if matches!(from_ty, IrType::Pointer) && matches!(to_ty, IrType::Pointer) {
+                return match value {
+                    RuntimeValue::Pointer(a) => Ok(RuntimeValue::Pointer(*a)),
+                    _ => Err(InterpError::TypeMismatch("bitcast ptr source not a pointer".into())),
+                };
+            }
+            let bits: u64 = match (from_ty, value) {
+                (IrType::F64, RuntimeValue::F64(v)) => v.to_bits(),
+                (_, v) if from_ty.is_integer() || from_ty.is_pointer_sized_integer() => int_bits(v, from_ty),
+                _ => {
+                    return Err(InterpError::TypeMismatch(format!(
+                        "bitcast from {} unsupported",
+                        from_ty
+                    )))
+                }
+            };
+            match to_ty {
+                IrType::F64 => Ok(RuntimeValue::F64(f64::from_bits(bits))),
+                t if t.is_integer() || t.is_pointer_sized_integer() => Ok(to_width_value(t, bits)),
+                IrType::Pointer => Ok(RuntimeValue::Pointer(bits as u32)),
+                _ => Err(InterpError::TypeMismatch(format!(
+                    "bitcast to {} unsupported",
+                    to_ty
+                ))),
+            }
+        }
+        PtrToInt => {
+            let addr = match value {
+                RuntimeValue::Pointer(a) => *a as u64,
+                _ => {
+                    return Err(InterpError::TypeMismatch(
+                        "ptrtoint source must be a pointer".into(),
+                    ))
+                }
+            };
+            match to_ty {
+                IrType::I32 => Ok(RuntimeValue::I32(addr as u32)),
+                IrType::I64 => Ok(RuntimeValue::I64(addr)),
+                _ => Err(InterpError::TypeMismatch(format!(
+                    "ptrtoint target must be a pointer-sized integer, got {}",
+                    to_ty
+                ))),
+            }
+        }
+        IntToPtr => {
+            let addr = match value {
+                RuntimeValue::Pointer(a) => return Ok(RuntimeValue::Pointer(*a)),
+                v => int_bits(v, from_ty),
+            };
+            if from_w.map(|w| w > 32).unwrap_or(false) && addr > u32::MAX as u64 {
+                // Value does not fit in a 32-bit pointer: trap as a diagnostic
+                // rather than silently truncating a real address.
+                return Err(InterpError::TypeMismatch(format!(
+                    "inttoptr value {addr:#x} does not fit a 32-bit SA48 pointer"
+                )));
+            }
+            Ok(RuntimeValue::Pointer(addr as u32))
+        }
+    }
+}
+
+/// Represent a masked `bits` value according to `ty` (I1/I8/I16 as dedicated
+/// variants, I32 as masked I32, I64 as I64).
+fn to_width_value(ty: IrType, bits: u64) -> RuntimeValue {
+    match ty {
+        IrType::I1 => RuntimeValue::I1(bits & 1 != 0),
+        IrType::I8 => RuntimeValue::I32(bits as u32),
+        IrType::I16 => RuntimeValue::I32(bits as u32),
+        IrType::I32 => RuntimeValue::I32(bits as u32),
+        IrType::I64 => RuntimeValue::I64(bits),
+        IrType::Pointer => RuntimeValue::Pointer(bits as u32),
+        _ => RuntimeValue::I32(bits as u32),
     }
 }
 
@@ -604,6 +1100,7 @@ fn bytes_to_runtime(ty: &IrType, bytes: &[u8]) -> RuntimeValue {
         IrType::I8 => RuntimeValue::I8(bytes[0]),
         IrType::I16 => RuntimeValue::I16(u16::from_le_bytes([bytes[0], bytes[1]])),
         IrType::I32 => RuntimeValue::I32(u32::from_le_bytes(bytes.try_into().unwrap())),
+        IrType::I64 => RuntimeValue::I64(u64::from_le_bytes(bytes.try_into().unwrap())),
         IrType::F64 => RuntimeValue::F64(f64::from_le_bytes(bytes.try_into().unwrap())),
         IrType::Pointer => RuntimeValue::Pointer(u32::from_le_bytes(bytes.try_into().unwrap())),
         IrType::Void => RuntimeValue::I32(0),
@@ -616,6 +1113,7 @@ fn runtime_to_bytes(val: RuntimeValue, _ty: IrType) -> Vec<u8> {
         RuntimeValue::I8(v) => vec![v],
         RuntimeValue::I16(v) => v.to_le_bytes().to_vec(),
         RuntimeValue::I32(v) => v.to_le_bytes().to_vec(),
+        RuntimeValue::I64(v) => v.to_le_bytes().to_vec(),
         RuntimeValue::F64(v) => v.to_le_bytes().to_vec(),
         RuntimeValue::Pointer(v) => v.to_le_bytes().to_vec(),
     }
@@ -628,6 +1126,7 @@ impl core::fmt::Display for RuntimeValue {
             RuntimeValue::I8(v) => write!(f, "i8 {}", v),
             RuntimeValue::I16(v) => write!(f, "i16 {}", v),
             RuntimeValue::I32(v) => write!(f, "i32 {}", v),
+            RuntimeValue::I64(v) => write!(f, "i64 {}", v),
             RuntimeValue::F64(v) => write!(f, "f64 {}", v),
             RuntimeValue::Pointer(v) => write!(f, "ptr 0x{v:x}"),
         }

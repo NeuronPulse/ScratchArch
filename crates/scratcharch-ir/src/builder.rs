@@ -1,7 +1,7 @@
 use crate::block::BasicBlock;
 use crate::debug::DebugLoc;
 use crate::function::IrFunction;
-use crate::instruction::{GepIndex, Instruction, Terminator};
+use crate::instruction::{CastOp, GepIndex, Instruction, Terminator};
 use crate::r#module::IrModule;
 use crate::types::IrType;
 use crate::value::{Constant, ValueId};
@@ -115,6 +115,46 @@ impl IrBuilder {
 
     pub fn const_i16(&mut self, val: u16) -> ValueId {
         self.emit_value(Instruction::Const(Constant::I16(val)), IrType::I16, None::<&str>)
+    }
+
+    pub fn const_i64(&mut self, val: u64) -> ValueId {
+        self.emit_value(Instruction::Const(Constant::I64(val)), IrType::I64, None::<&str>)
+    }
+
+    /// Emit an LLVM conversion as `Instruction::Cast`. `from_ty` is the static
+    /// type of `value`; the produced value has static type `to_ty`.
+    pub fn cast(
+        &mut self,
+        op: CastOp,
+        from_ty: IrType,
+        to_ty: IrType,
+        value: ValueId,
+    ) -> ValueId {
+        self.emit_value(
+            Instruction::Cast { op, from_ty, to_ty, value },
+            to_ty,
+            None::<&str>,
+        )
+    }
+
+    /// `select ty cond a b` — `a` when `cond` (i1) is true, else `b`.
+    pub fn select(
+        &mut self,
+        ty: IrType,
+        condition: ValueId,
+        then_value: ValueId,
+        else_value: ValueId,
+    ) -> ValueId {
+        self.emit_value(
+            Instruction::Select { ty, condition, then_value, else_value },
+            ty,
+            None::<&str>,
+        )
+    }
+
+    /// Terminate the current block with LLVM `unreachable`.
+    pub fn unreachable(&mut self) {
+        self.set_terminator(Terminator::Unreachable);
     }
 
     pub fn gep(&mut self, elem_ty: IrType, base: ValueId, indices: Vec<GepIndex>) -> ValueId {

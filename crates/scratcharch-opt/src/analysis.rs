@@ -138,6 +138,10 @@ fn instruction_operands(instr: &Instruction) -> Vec<ValueId> {
         Instruction::Store { value, addr, .. } => vec![*value, *addr],
         Instruction::Call { args, .. } => args.clone(),
         Instruction::Phi { incoming, .. } => incoming.iter().map(|(v, _)| *v).collect(),
+        Instruction::Cast { value, .. } => vec![*value],
+        Instruction::Select { condition, then_value, else_value, .. } => {
+            vec![*condition, *then_value, *else_value]
+        }
         Instruction::Gep { base, indices, .. } => {
             let mut deps = vec![*base];
             for index in indices {
@@ -155,6 +159,7 @@ fn terminator_operands(term: &Terminator) -> Vec<ValueId> {
         Terminator::Branch { .. } => vec![],
         Terminator::CondBranch { condition, .. } => vec![*condition],
         Terminator::Return { value } => value.map_or(vec![], |v| vec![v]),
+        Terminator::Unreachable => vec![],
     }
 }
 

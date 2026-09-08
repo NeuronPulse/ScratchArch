@@ -238,7 +238,7 @@ fn build_succ_map(func: &IrFunction) -> HashMap<String, Vec<String>> {
                 false_target,
                 ..
             } => vec![true_target.clone(), false_target.clone()],
-            Terminator::Return { .. } => vec![],
+            Terminator::Return { .. } | Terminator::Unreachable => vec![],
         };
         map.insert(block.label.clone(), succs);
     }
@@ -297,6 +297,14 @@ fn lower_region(
                     option: StopOption::ThisScript,
                 });
                 break;
+            }
+            Terminator::Unreachable => {
+                // Reaching LLVM `unreachable` is a trap. Scratch has no trap, so
+                // lowering reports the path rather than inventing a mapping.
+                return Err(LowerError::UnsupportedTerminator(format!(
+                    "block '{}' ends in 'unreachable' (a trap); no Scratch mapping",
+                    block.label
+                )));
             }
             Terminator::Branch { target } => {
                 if local_visited.contains(target) {
@@ -663,6 +671,39 @@ fn lower_instruction(
                 value,
             }])
         }
+        SairInstr::Select {
+            condition,
+            then_value,
+            else_value,
+            ..
+        } => {
+            // `select cond a b` stores a or b into the result slot depending on
+            // the i1 condition. Both operands are already materialized in the
+            // frame, so an if/else that copies the chosen one is faithful.
+            let result_offset = frame_offset(func, result_id);
+            Ok(vec![Stmt::If {
+                condition: lower_value(func, *condition)?,
+                then_body: vec![Stmt::FrameSet {
+                    offset: result_offset,
+                    value: lower_value(func, *then_value)?,
+                }],
+                else_body: vec![Stmt::FrameSet {
+                    offset: result_offset,
+                    value: lower_value(func, *else_value)?,
+                }],
+            }])
+        }
+        SairInstr::Cast { op, from_ty, to_ty, .. } => {
+            // Width-changing casts need exact bit semantics; the Scratch numeric
+            // backend is f64-only and cannot express i64/width extension, so the
+            // lowering reports rather than approximating.
+            Err(LowerError::UnsupportedInstruction(format!(
+                "{} {} to {} cannot be lowered to Scratch numbers",
+                op.name(),
+                from_ty,
+                to_ty,
+            )))
+        }
     }
 }
 
@@ -713,5 +754,9 @@ fn lower_const(c: &Constant) -> Expr {
         Constant::I16(v) => Expr::number(*v as f64),
         Constant::I32(v) => Expr::number(*v as f64),
         Constant::F64(v) => Expr::number(*v),
+        // Scratch numbers are IEEE doubles: small i64 magnitudes round-trip
+        // exactly, values above 2^53 lose low bits (documented Scratch backend
+        // limitation, not a silent truncation at SAIR level).
+        Constant::I64(v) => Expr::number(*v as f64),
     }
 }

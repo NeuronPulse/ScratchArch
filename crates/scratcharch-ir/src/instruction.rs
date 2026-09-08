@@ -10,6 +10,35 @@ pub enum GepIndex {
     StructField(u32),
 }
 
+/// The LLVM integer/pointer conversions that SAIR models directly.
+///
+/// SA48 keeps 32-bit pointers, so `PtrToInt`/`IntToPtr` only change static
+/// type (the value stays a 32-bit integer / pointer). `Zext`/`Sext`/`Trunc`
+/// change bit width with LLVM semantics; `Bitcast` keeps the bits and only
+/// reinterprets the static type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CastOp {
+    Zext,
+    Sext,
+    Trunc,
+    Bitcast,
+    PtrToInt,
+    IntToPtr,
+}
+
+impl CastOp {
+    pub fn name(&self) -> &'static str {
+        match self {
+            CastOp::Zext => "zext",
+            CastOp::Sext => "sext",
+            CastOp::Trunc => "trunc",
+            CastOp::Bitcast => "bitcast",
+            CastOp::PtrToInt => "ptrtoint",
+            CastOp::IntToPtr => "inttoptr",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Instruction {
     Add {
@@ -51,6 +80,21 @@ pub enum Instruction {
         ty: IrType,
         lhs: ValueId,
         rhs: ValueId,
+    },
+    /// Bit-width-preserving or bit-width-changing conversion. `value` has static
+    /// type `from_ty`; the produced SSA value has static type `to_ty`.
+    Cast {
+        op: CastOp,
+        from_ty: IrType,
+        to_ty: IrType,
+        value: ValueId,
+    },
+    /// LLVM `select i1 cond, a, b`: yields `a` when cond is true, else `b`.
+    Select {
+        ty: IrType,
+        condition: ValueId,
+        then_value: ValueId,
+        else_value: ValueId,
     },
     Const(Constant),
     Alloca {
@@ -95,6 +139,8 @@ impl Instruction {
             Instruction::Eq { .. }
             | Instruction::Lt { .. }
             | Instruction::Gt { .. } => Some(IrType::I1),
+            Instruction::Cast { to_ty, .. } => Some(*to_ty),
+            Instruction::Select { ty, .. } => Some(*ty),
             Instruction::Alloca { .. } => Some(IrType::Pointer),
             Instruction::Load { ty, .. } => Some(*ty),
             Instruction::Store { .. } => None,
@@ -120,4 +166,24 @@ pub enum Terminator {
     Return {
         value: Option<ValueId>,
     },
+    /// LLVM `unreachable`: control must never reach here. A block ending in
+    /// `Unreachable` is a legal predecessor in the CFG (LLVM may branch to it)
+    /// but never produces a runtime edge. The interpreter treats reaching it as
+    /// an error rather than UB.
+    Unreachable,
+}
+
+impl Terminator {
+    /// Blocks this terminator may pass control to.
+    pub fn referenced_labels(&self) -> Vec<BlockLabel> {
+        match self {
+            Terminator::Branch { target } => vec![target.clone()],
+            Terminator::CondBranch {
+                true_target,
+                false_target,
+                ..
+            } => vec![true_target.clone(), false_target.clone()],
+            Terminator::Return { .. } | Terminator::Unreachable => Vec::new(),
+        }
+    }
 }

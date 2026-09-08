@@ -132,6 +132,28 @@ fn write_instruction(
         Instruction::Gt { ty, lhs, rhs } => {
             write!(out, "gt {} {}, {}", ty, val(*lhs, value_map), val(*rhs, value_map)).unwrap();
         }
+        Instruction::Cast { op, from_ty, to_ty, value } => {
+            write!(
+                out,
+                "cast {} {} {} {}",
+                op.name(),
+                from_ty,
+                to_ty,
+                val(*value, value_map)
+            )
+            .unwrap();
+        }
+        Instruction::Select { ty, condition, then_value, else_value } => {
+            write!(
+                out,
+                "select {} {}, {}, {}",
+                ty,
+                val(*condition, value_map),
+                val(*then_value, value_map),
+                val(*else_value, value_map)
+            )
+            .unwrap();
+        }
         Instruction::Const(c) => {
             write!(out, "const {}", const_to_string(c)).unwrap();
         }
@@ -212,6 +234,9 @@ fn write_terminator(
         Terminator::Return { value: None } => {
             writeln!(out, "    ret void").unwrap();
         }
+        Terminator::Unreachable => {
+            writeln!(out, "    unreachable").unwrap();
+        }
     }
 }
 
@@ -235,6 +260,7 @@ fn const_to_string(c: &Constant) -> String {
         Constant::I8(v) => format!("i8 {}", v),
         Constant::I16(v) => format!("i16 {}", v),
         Constant::I32(v) => format!("i32 {}", v),
+        Constant::I64(v) => format!("i64 {}", v),
         Constant::F64(v) => format!("f64 0x{:016x}", v.to_bits()),
     }
 }

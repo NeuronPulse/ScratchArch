@@ -4,6 +4,7 @@ pub type ValueId = usize;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Constant {
+    I64(u64),
     I32(u32),
     F64(f64),
     I1(bool),
@@ -14,6 +15,7 @@ pub enum Constant {
 impl Constant {
     pub fn ty(&self) -> IrType {
         match self {
+            Constant::I64(_) => IrType::I64,
             Constant::I1(_) => IrType::I1,
             Constant::I8(_) => IrType::I8,
             Constant::I16(_) => IrType::I16,

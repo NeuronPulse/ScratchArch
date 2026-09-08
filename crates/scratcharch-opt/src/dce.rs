@@ -78,6 +78,8 @@ fn is_safe_to_remove(instr: &Instruction) -> bool {
         | Instruction::Eq { .. }
         | Instruction::Lt { .. }
         | Instruction::Gt { .. }
+        | Instruction::Cast { .. }
+        | Instruction::Select { .. }
         | Instruction::Const(_) => true,
         Instruction::Div { .. }
         | Instruction::Rem { .. }

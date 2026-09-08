@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use crate::builder::IrBuilder;
 use crate::debug::DebugLoc;
-use crate::instruction::{GepIndex, Terminator};
+use crate::instruction::{CastOp, GepIndex, Terminator};
 use crate::r#module::IrModule;
 use crate::types::IrType;
 use crate::value::{Constant, ValueId};
@@ -53,9 +53,18 @@ enum Token {
     KwCall,
     KwPhi,
     KwGep,
+    KwCast,
+    KwSelect,
     KwBr,
     KwCondBr,
     KwRet,
+    KwUnreachable,
+    KwZext,
+    KwSext,
+    KwTrunc,
+    KwBitcast,
+    KwPtrToInt,
+    KwIntToPtr,
     KwVoid,
     KwTrue,
     KwFalse,
@@ -65,6 +74,7 @@ enum Token {
     TyI8,
     TyI16,
     TyI32,
+    TyI64,
     TyF64,
     TyPtr,
     String(String),
@@ -227,9 +237,18 @@ impl<'a> Lexer<'a> {
             "call" => Token::KwCall,
             "phi" => Token::KwPhi,
             "gep" => Token::KwGep,
+            "cast" => Token::KwCast,
+            "select" => Token::KwSelect,
             "br" => Token::KwBr,
             "cond_br" => Token::KwCondBr,
             "ret" => Token::KwRet,
+            "unreachable" => Token::KwUnreachable,
+            "zext" => Token::KwZext,
+            "sext" => Token::KwSext,
+            "trunc" => Token::KwTrunc,
+            "bitcast" => Token::KwBitcast,
+            "ptrtoint" => Token::KwPtrToInt,
+            "inttoptr" => Token::KwIntToPtr,
             "void" => Token::KwVoid,
             "true" => Token::KwTrue,
             "false" => Token::KwFalse,
@@ -239,6 +258,7 @@ impl<'a> Lexer<'a> {
             "i8" => Token::TyI8,
             "i16" => Token::TyI16,
             "i32" => Token::TyI32,
+            "i64" => Token::TyI64,
             "f64" => Token::TyF64,
             "ptr" => Token::TyPtr,
             _ => Token::String(word),
@@ -432,6 +452,7 @@ impl<'a> Parser<'a> {
             Token::TyI8 => Ok(IrType::I8),
             Token::TyI16 => Ok(IrType::I16),
             Token::TyI32 => Ok(IrType::I32),
+            Token::TyI64 => Ok(IrType::I64),
             Token::TyF64 => Ok(IrType::F64),
             Token::TyPtr => Ok(IrType::Pointer),
             Token::KwVoid => Ok(IrType::Void),
@@ -515,7 +536,7 @@ impl<'a> Parser<'a> {
     fn is_terminator_start(&self) -> bool {
         matches!(
             self.current,
-            Token::KwBr | Token::KwCondBr | Token::KwRet
+            Token::KwBr | Token::KwCondBr | Token::KwRet | Token::KwUnreachable
         )
     }
 
@@ -560,6 +581,24 @@ impl<'a> Parser<'a> {
             Token::KwEq => self.parse_binop(builder, |b, t, l, r| b.eq(t, l, r)),
             Token::KwLt => self.parse_binop(builder, |b, t, l, r| b.lt(t, l, r)),
             Token::KwGt => self.parse_binop(builder, |b, t, l, r| b.gt(t, l, r)),
+            Token::KwCast => {
+                let op = self.parse_cast_op()?;
+                let from_ty = self.parse_type()?;
+                let to_ty = self.parse_type()?;
+                let value = self.parse_value_ref()?;
+                let id = builder.cast(op, from_ty, to_ty, value);
+                Ok(Some(id))
+            }
+            Token::KwSelect => {
+                let ty = self.parse_type()?;
+                let condition = self.parse_value_ref()?;
+                self.expect(&Token::Comma)?;
+                let then_value = self.parse_value_ref()?;
+                self.expect(&Token::Comma)?;
+                let else_value = self.parse_value_ref()?;
+                let id = builder.select(ty, condition, then_value, else_value);
+                Ok(Some(id))
+            }
             Token::KwAlloca => {
                 let ty = self.parse_type()?;
                 let count = if self.current == Token::Comma {
@@ -679,7 +718,22 @@ impl<'a> Parser<'a> {
                     Ok(Terminator::Return { value: Some(value) })
                 }
             }
+            Token::KwUnreachable => Ok(Terminator::Unreachable),
             other => Err(TextIrError::Parse(format!("expected terminator, got {:?}", other))),
+        }
+    }
+
+    fn parse_cast_op(&mut self) -> Result<CastOp, TextIrError> {
+        let tok = self.current.clone();
+        self.advance()?;
+        match tok {
+            Token::KwZext => Ok(CastOp::Zext),
+            Token::KwSext => Ok(CastOp::Sext),
+            Token::KwTrunc => Ok(CastOp::Trunc),
+            Token::KwBitcast => Ok(CastOp::Bitcast),
+            Token::KwPtrToInt => Ok(CastOp::PtrToInt),
+            Token::KwIntToPtr => Ok(CastOp::IntToPtr),
+            other => Err(TextIrError::Parse(format!("expected cast op, got {:?}", other))),
         }
     }
 
@@ -749,6 +803,10 @@ impl<'a> Parser<'a> {
                 let n = self.parse_number()?;
                 Ok(Constant::I32(n as u32))
             }
+            IrType::I64 => {
+                let n = self.parse_number()?;
+                Ok(Constant::I64(n))
+            }
             IrType::F64 => {
                 let n = self.parse_number()?;
                 Ok(Constant::F64(f64::from_bits(n)))
@@ -790,6 +848,7 @@ impl IrBuilder {
             Constant::I8(v) => self.const_i8(v),
             Constant::I16(v) => self.const_i16(v),
             Constant::I32(v) => self.const_i32(v),
+            Constant::I64(v) => self.const_i64(v),
             Constant::F64(v) => self.const_f64(v),
         }
     }

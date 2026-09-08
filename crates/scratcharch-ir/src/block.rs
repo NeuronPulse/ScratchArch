@@ -56,15 +56,6 @@ impl BasicBlock {
     }
 
     pub fn referenced_labels(&self) -> Vec<String> {
-        let mut labels = Vec::new();
-        match &self.terminator {
-            Terminator::Branch { target } => labels.push(target.clone()),
-            Terminator::CondBranch { true_target, false_target, .. } => {
-                labels.push(true_target.clone());
-                labels.push(false_target.clone());
-            }
-            Terminator::Return { .. } => {}
-        }
-        labels
+        self.terminator.referenced_labels()
     }
 }

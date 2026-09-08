@@ -91,6 +91,14 @@ fn remap_instruction(instr: &mut Instruction, map: &HashMap<ValueId, ValueId>) {
                 *value = remap_id(map, *value);
             }
         }
+        Instruction::Cast { value, .. } => {
+            *value = remap_id(map, *value);
+        }
+        Instruction::Select { condition, then_value, else_value, .. } => {
+            *condition = remap_id(map, *condition);
+            *then_value = remap_id(map, *then_value);
+            *else_value = remap_id(map, *else_value);
+        }
         Instruction::Gep { base, indices, .. } => {
             *base = remap_id(map, *base);
             for index in indices {
@@ -113,5 +121,6 @@ fn remap_terminator(term: &mut Terminator, map: &HashMap<ValueId, ValueId>) {
                 *id = remap_id(map, *id);
             }
         }
+        Terminator::Unreachable => {}
     }
 }
