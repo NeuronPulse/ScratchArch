@@ -6,41 +6,81 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 cargo build                          # build all crates
-cargo test                           # run all tests (158 total)
-cargo test -p scratcharch-llvm       # test a single crate
+cargo test --workspace               # run all workspace tests (321 total)
+cargo test -p scratcharch-transform  # test a single crate
 cargo test -p scratcharch-llvm -- test_name --nocapture  # run one test
-cargo clippy                         # lint (zero warnings required)
+cargo clippy --workspace --all-targets  # lint (zero warnings required)
 ./scripts/run_c_tests.sh             # C compatibility pipeline tests
 ```
 
 ## Architecture
 
-ScratchArch is a custom architecture compiler/VM stack. The primary pipeline is:
+ScratchArch started as a custom-architecture compiler/VM stack and has grown
+into a Scratch 3.0 toolchain. The repo contains two related IR pipelines that
+share the `scratcharch-core`/`scratcharch-ir` foundations:
 
 ```
-C source → LLVM IR (.ll) → SAIR → interpreter
-                                 → ISA lowering → VM  (partial; single-block only)
+Scratch source (.sb3 / project.json)
+        │  Sb3Reader / parse_project_json
+        ▼
+  ScratchGraph Project ── analyzer ──▶ reports / DOT / diff
+        │  scratcharch-transform passes
+        ▼
+  ScratchGraph Project ── JsonExporter / Sb3Writer ──▶ .sb3 / .json
+
+C source → LLVM IR (.ll) → SAIR (IrModule) ──▶ interpreter
+                                       └────▶ ISA lowering → VM (partial)
+IrModule ── scratchgraph::lower ──▶ ScratchGraph Project
 ```
+
+The **Scratch pipeline** (`.sb3`/`.json` ↔ ScratchGraph) is the primary,
+complete toolchain: parse into `scratcharch_scratchgraph::ir::Project`,
+analyze or optimize it with `scratcharch-transform` passes, and export back to
+`.sb3` (via `scratcharch-sb3`) or project JSON (via `JsonExporter`).
+
+The **SAIR pipeline** (C/LLVM → SAIR → interpreter/VM) is the original custom
+stack. It also feeds the Scratch side: SAIR modules can be lowered to
+ScratchGraph with `scratchgraph::lower`.
 
 ### Crate map
 
 | Crate | Role |
 |---|---|
 | `scratcharch-core` | ISA-level types: `Instruction`, `Value`, `Program`, core type system |
+| `scratcharch-target` | `TargetProfile` struct; SA48 profile (48-bit cell, 32-bit pointer, LE) |
 | `scratcharch-ir` | SAIR: SSA IR with typed values, basic blocks, phi nodes, GEP, builder API, validator, ISA lowerer (`lower.rs`) |
 | `scratcharch-vm` | Stack-based VM that executes core ISA programs |
+| `scratcharch-runtime` | Portable runtime library (SART), shared by the SAIR interpreter |
 | `scratcharch-sair-interpreter` | Directly interprets SAIR modules (no lowering); supports full multi-block/phi/GEP/recursion |
 | `scratcharch-llvm` | Hand-written LLVM IR lexer + recursive-descent parser (`parser.rs`) and LLVM→SAIR translator (`translator.rs`); no LLVM dependency |
 | `scratcharch-opt` | SAIR optimization passes: constant folding, DCE, CFG simplification; pass manager in `manager.rs` |
-| `scratcharch-target` | `TargetProfile` struct; SA48 profile (48-bit cell, 32-bit pointer, LE) |
+| `scratcharch-driver` | Compilation driver for the classic SAIR/ISA stack |
+| `scratcharch-scratchgraph` | ScratchGraph IR (`ir`), project JSON parser, `JsonExporter`, SAIR→ScratchGraph lowerer (`lower.rs`), event/runtime model (`runtime.rs`) |
+| `scratcharch-sb3` | `.sb3` archive reader/writer (`Sb3Reader`/`Sb3Writer`), asset manager; writer reuses the ScratchGraph `JsonExporter` |
+| `scratcharch-transform` | ScratchGraph optimization passes (`TransformPass`/`PassManager`) and reports |
+| `scratcharch-analyzer` | Static analysis of ScratchGraph projects: reports, DOT, semantic diff |
+| `scratcharch-explorer` | Unified data exploration interface over SAIR and ScratchGraph |
+| `scratcharch-pipeline` | Unified compilation pipeline orchestrator (dumps, modes) used by the CLI |
+| `scratcharch-cli` | `scratcharch` binary: analyze / decompile / graph / inspect / diff / optimize / debug / pipeline subcommands |
 
-Dependency order (leaves first): `core` → `ir`, `vm` → `sair-interpreter` → `llvm` → `opt`
+`scratcharch-opt` and `scratcharch-transform` are deliberately separate
+frameworks: `scratcharch-opt` optimizes SAIR `IrModule`s (SSA/basic blocks),
+while `scratcharch-transform` optimizes ScratchGraph `Project`s (sprites,
+scripts, procedures, variables). See `docs/design/OPTIMIZATION.md` section 6.
 
-### Two execution paths
+### Execution paths
 
-The **interpreter path** (`scratcharch-llvm` → `scratcharch-sair-interpreter`) is complete and used for all pipeline tests. It handles multi-block control flow, phi nodes, GEP, and recursive calls directly on SAIR.
+The **Scratch interpreter path** (`scratcharch-scratchgraph` + `scratcharch-sb3`
+→ `scratcharch-transform`/`scratcharch-analyzer`) is complete and covered by the
+sb3/scratchgraph/transform/cli test suites.
 
-The **VM path** (`scratcharch-ir::lower` → `scratcharch-vm`) is partial: `lower.rs` only handles single-block functions with no phi or GEP; multi-block lowering is in progress (see ROADMAP.md).
+The **SAIR interpreter path** (`scratcharch-llvm` → `scratcharch-sair-interpreter`)
+is complete and used for all pipeline tests. It handles multi-block control
+flow, phi nodes, GEP, and recursive calls directly on SAIR.
+
+The **VM path** (`scratcharch-ir::lower` → `scratcharch-vm`) is partial:
+`lower.rs` only handles single-block functions with no phi or GEP; multi-block
+lowering is in progress (see ROADMAP.md).
 
 ### SAIR key invariants
 
@@ -50,9 +90,30 @@ The **VM path** (`scratcharch-ir::lower` → `scratcharch-vm`) is partial: `lowe
 - Phi nodes use edge-selected semantics; the interpreter tracks `prev_block` to resolve them.
 - `IrModule::validate()` enforces reachability, phi predecessor consistency, and block label existence.
 
+### ScratchGraph key facts
+
+- Broadcast messages are project-global: a `broadcast` in any sprite/stage
+  (including inside a procedure) can trigger `BroadcastReceived` hats on any
+  target. Procedure (custom block) definitions are per-target.
+- Variables are declared per target with an `id` and a `name`; scripts and
+  procedures reference variables by name, so renames/removals must respect all
+  targets.
+- Scratch boolean values are distinct from the numeric literals `0`/`1`; passes
+  must not collapse between them.
+- Arithmetic follows Scratch/JS IEEE-754 `f64` semantics (wrapping/inf/NaN as
+  Scratch defines them).
+
 ### Test layout
 
-Integration/pipeline tests live in `crates/scratcharch-llvm/tests/pipeline_tests.rs` and exercise the full LLVM→SAIR→interpreter path using hand-written `.ll` files under `tests/c_programs/`.
+- `crates/scratcharch-llvm/tests/pipeline_tests.rs` — full LLVM→SAIR→interpreter
+  path over hand-written `.ll` files in `tests/c_programs/`.
+- `crates/scratcharch-sb3/tests/sb3_tests.rs` — SB3 write/read roundtrips and
+  asset handling.
+- `crates/scratcharch-scratchgraph/tests/parser_tests.rs` — JSON→Project parsing
+  and JSON export.
+- `crates/scratcharch-cli/tests/cli_tests.rs` — end-to-end CLI subcommands.
+- `crates/scratcharch-transform/src/*.rs` — unit tests per pass (DCE, constant
+  folding, empty-block removal, variable analysis).
 
 ## Commit Guidelines (hard requirement)
 
@@ -97,7 +158,8 @@ test(llvm): add memcpy pipeline tests
 ### Scopes
 
 Preferred scopes: `core`, `isa`, `abi`, `memory`, `ir`, `sair`, `vm`, `llvm`,
-`runtime`, `opt`, `target`, `backend`, `scratch`, `docs`, `ci`.
+`runtime`, `opt`, `target`, `backend`, `scratch`, `scratchgraph`, `sb3`,
+`transform`, `analyzer`, `cli`, `pipeline`, `docs`, `ci`.
 
 ### Large features
 
@@ -123,8 +185,8 @@ feat(runtime): add runtime
 Run before committing:
 
 ```bash
-cargo test
-cargo clippy
+cargo test --workspace
+cargo clippy --workspace --all-targets
 ```
 
 For LLVM-related changes also run:
