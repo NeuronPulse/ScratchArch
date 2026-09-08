@@ -2,7 +2,7 @@ use std::path::Path;
 
 use scratcharch_core::value::Value as IsaValue;
 use scratcharch_ir::lower::IsaLowerer;
-use scratcharch_ir::r#module::IrModule;
+use scratcharch_ir::r#module::{IrModule, StaticData, STATIC_DATA_BASE};
 use scratcharch_opt::manager::PassManager;
 use scratcharch_opt::{cfg_simplify::CfgSimplify, constant_fold::ConstantFold, dce::DeadCodeElimination};
 use scratcharch_sair_interpreter::Interpreter;
@@ -93,6 +93,8 @@ impl CompileDriver {
         let mut vm = Vm::new(self.config.memory_size, self.config.stack_limit);
         vm.load_program(&program)
             .map_err(|e| DriverError::Vm(format!("load failed: {}", e)))?;
+        seed_vm_static(&mut vm, &compiled.module.static_data, self.config.stack_limit)
+            .map_err(DriverError::Vm)?;
         vm.run().map_err(|e| DriverError::Vm(format!("execution failed: {}", e)))?;
         Ok(vm.stack.peek().ok().map(convert_vm_value))
     }
@@ -128,6 +130,44 @@ fn convert_vm_value(value: &IsaValue) -> ExecutionValue {
         IsaValue::F64(v) => ExecutionValue::F64(v),
         IsaValue::Pointer(v) => ExecutionValue::Pointer(v),
     }
+}
+
+/// Seed the VM's static data segment (LLVM globals) before execution.
+///
+/// The ISA VM's `Load`/`Store` are 32-bit-word ops, so only word-granular data
+/// (`i32`/`i64`/`ptr` elements at aligned offsets, see
+/// [`StaticData::word_exact`]) round-trips exactly. A module with sub-word or
+/// byte data (strings, `i8` arrays) is exact on the SAIR interpreter only; the
+/// VM rejects it with an explicit diagnostic rather than silently misreading
+/// bytes. The segment must also sit below the stack floor, or the stack could
+/// overwrite it later — reported as an error, never allowed to collide.
+fn seed_vm_static(
+    vm: &mut Vm,
+    data: &StaticData,
+    stack_limit: u32,
+) -> Result<(), String> {
+    if data.image.is_empty() {
+        return Ok(());
+    }
+    if !data.word_exact {
+        return Err("global static data contains sub-word or byte elements (i1/i8/i16 or \
+             byte arrays/strings); the SAIR interpreter is exact for these but the \
+             VM backend's memory ops are 32-bit-word granular, so the module is \
+             interpreter-only"
+            .to_string());
+    }
+    let size = data.image.len();
+    let end = STATIC_DATA_BASE as usize + size;
+    if end > stack_limit as usize {
+        return Err(format!(
+            "global static data ({} bytes at base {}) does not fit below the stack \
+             floor ({}); raise the stack limit or shrink the data segment",
+            size, STATIC_DATA_BASE, stack_limit
+        ));
+    }
+    vm.memory
+        .write(STATIC_DATA_BASE, &data.image)
+        .map_err(|e| format!("seeding static data failed: {:?}", e))
 }
 
 fn build_pass_manager(opt_level: OptLevel) -> PassManager {
