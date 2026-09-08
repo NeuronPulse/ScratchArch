@@ -398,6 +398,7 @@ dependencies = [
  "scratcharch-pipeline",
  "scratcharch-sb3",
  "scratcharch-scratchgraph",
+ "scratcharch-transform",
  "serde",
  "serde_json",
  "tempfile",
@@ -509,6 +510,15 @@ dependencies = [
 [[package]]
 name = "scratcharch-target"
 version = "0.1.0"
+
+[[package]]
+name = "scratcharch-transform"
+version = "0.1.0"
+dependencies = [
+ "scratcharch-scratchgraph",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "scratcharch-vm"

@@ -273,3 +273,190 @@ fn test_cli_sb3_build() {
     let archive = scratcharch_sb3::Sb3Archive::from_bytes(&bytes).unwrap();
     assert_eq!(archive.project.targets.len(), 1);
 }
+
+fn make_optimizable_project() -> scratcharch_scratchgraph::ir::Project {
+    use scratcharch_scratchgraph::ir::*;
+    let mut stage = Stage::new("Stage");
+    stage.add_variable(Variable::new("x_id", "x"));
+    stage.add_variable(Variable::new("unused_id", "unused"));
+
+    // Green-flag script: foldable expression and a call to my_proc.
+    stage.add_script(Script::new(
+        EventHat::GreenFlag,
+        vec![
+            Stmt::SetVariable {
+                var: "x".to_string(),
+                value: Expr::Operator {
+                    opcode: "operator_add".to_string(),
+                    args: vec![
+                        Expr::Literal(Value::Number(10.0)),
+                        Expr::Literal(Value::Number(20.0)),
+                    ],
+                },
+            },
+            Stmt::Call {
+                proc: "my_proc".to_string(),
+                args: vec![],
+            },
+        ],
+    ));
+
+    // Unreachable broadcast script (should be removed by DCE).
+    stage.add_script(Script::new(
+        EventHat::BroadcastReceived("unused_ev".to_string()),
+        vec![Stmt::SetVariable {
+            var: "x".to_string(),
+            value: Expr::Literal(Value::Number(99.0)),
+        }],
+    ));
+
+    // Called procedure (should remain).
+    stage.add_procedure(Procedure::new(
+        "my_proc",
+        vec![],
+        vec![Stmt::ChangeVariable {
+            var: "x".to_string(),
+            delta: Expr::Literal(Value::Number(1.0)),
+        }],
+    ));
+
+    // Uncalled procedure (should be removed by DCE).
+    stage.add_procedure(Procedure::new(
+        "unused_proc",
+        vec![],
+        vec![Stmt::SetVariable {
+            var: "x".to_string(),
+            value: Expr::Literal(Value::Number(0.0)),
+        }],
+    ));
+
+    Project::new().with_stage(stage)
+}
+
+fn write_sb3_project(project: &scratcharch_scratchgraph::ir::Project, name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let sb3_path = dir.path().join(name);
+    let writer = scratcharch_sb3::Sb3Writer::new();
+    let archive = writer.write(project);
+    let bytes = archive.to_bytes().unwrap();
+    std::fs::write(&sb3_path, &bytes).unwrap();
+    (dir, sb3_path)
+}
+
+#[test]
+fn test_cli_optimize_sb3_roundtrip() {
+    let project = make_optimizable_project();
+    let (_dir, sb3_path) = write_sb3_project(&project, "opt_roundtrip.sb3");
+    let out_path = std::env::temp_dir().join("cli_test_optimize_roundtrip_out.sb3");
+    let _ = std::fs::remove_file(&out_path);
+
+    let (ok, output) = run_cmd(&[
+        "optimize",
+        sb3_path.to_str().unwrap(),
+        "-o",
+        out_path.to_str().unwrap(),
+    ]);
+    assert!(ok, "optimize roundtrip failed: {}", output);
+    assert!(out_path.exists(), "output sb3 not created: {:?}", out_path);
+
+    // Verify the output is a valid sb3 archive that can be read back.
+    let bytes = std::fs::read(&out_path).unwrap();
+    let archive = scratcharch_sb3::Sb3Archive::from_bytes(&bytes).unwrap();
+    let project2 = scratcharch_sb3::Sb3Reader::new()
+        .read(&archive)
+        .expect("optimized sb3 should be readable");
+    assert_eq!(project2.stage.name, "Stage");
+}
+
+#[test]
+fn test_cli_optimize_dce() {
+    let project = make_optimizable_project();
+    let (_dir, sb3_path) = write_sb3_project(&project, "opt_dce.sb3");
+    let out_path = std::env::temp_dir().join("cli_test_optimize_dce_out.sb3");
+    let _ = std::fs::remove_file(&out_path);
+
+    let (ok, output) = run_cmd(&[
+        "optimize",
+        sb3_path.to_str().unwrap(),
+        "-o",
+        out_path.to_str().unwrap(),
+        "--passes",
+        "dce",
+    ]);
+    assert!(ok, "optimize dce failed: {}", output);
+
+    let bytes = std::fs::read(&out_path).unwrap();
+    let archive = scratcharch_sb3::Sb3Archive::from_bytes(&bytes).unwrap();
+    let project2 = scratcharch_sb3::Sb3Reader::new()
+        .read(&archive)
+        .expect("optimized sb3 should be readable");
+
+    // The unreachable broadcast script and uncalled procedure should be gone.
+    assert_eq!(project2.stage.scripts.len(), 1, "green-flag script should remain");
+    assert_eq!(project2.stage.procedures.len(), 1, "only my_proc should remain");
+    assert_eq!(project2.stage.procedures[0].prototype.name, "my_proc");
+}
+
+#[test]
+fn test_cli_optimize_constfold() {
+    let project = make_optimizable_project();
+    let (_dir, sb3_path) = write_sb3_project(&project, "opt_constfold.sb3");
+    let out_path = std::env::temp_dir().join("cli_test_optimize_constfold_out.sb3");
+    let _ = std::fs::remove_file(&out_path);
+
+    let (ok, output) = run_cmd(&[
+        "optimize",
+        sb3_path.to_str().unwrap(),
+        "-o",
+        out_path.to_str().unwrap(),
+        "--passes",
+        "constfold",
+    ]);
+    assert!(ok, "optimize constfold failed: {}", output);
+
+    let bytes = std::fs::read(&out_path).unwrap();
+    let archive = scratcharch_sb3::Sb3Archive::from_bytes(&bytes).unwrap();
+    let project2 = scratcharch_sb3::Sb3Reader::new()
+        .read(&archive)
+        .expect("optimized sb3 should be readable");
+
+    // 10 + 20 should be folded to 30 in the green-flag script.
+    let body = &project2.stage.scripts[0].entry.body;
+    if let scratcharch_scratchgraph::ir::Stmt::SetVariable { value, .. } = &body[0] {
+        assert_eq!(
+            value,
+            &scratcharch_scratchgraph::ir::Expr::Literal(scratcharch_scratchgraph::ir::Value::Number(30.0)),
+            "10+20 should fold to 30"
+        );
+    } else {
+        panic!("expected SetVariable");
+    }
+}
+
+#[test]
+fn test_cli_optimize_report_json() {
+    let project = make_optimizable_project();
+    let (_dir, sb3_path) = write_sb3_project(&project, "opt_report.sb3");
+    let out_path = std::env::temp_dir().join("cli_test_optimize_report_out.sb3");
+    let report_path = std::env::temp_dir().join("cli_test_optimize_report.json");
+    let _ = std::fs::remove_file(&out_path);
+    let _ = std::fs::remove_file(&report_path);
+
+    let (ok, output) = run_cmd(&[
+        "optimize",
+        sb3_path.to_str().unwrap(),
+        "-o",
+        out_path.to_str().unwrap(),
+        "--format",
+        "json",
+        "--report",
+        report_path.to_str().unwrap(),
+    ]);
+    assert!(ok, "optimize report json failed: {}", output);
+    assert!(report_path.exists(), "report file not created");
+
+    let report_text = std::fs::read_to_string(&report_path).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&report_text).unwrap();
+    let passes = report["passes"].as_array().expect("report should contain passes");
+    assert!(!passes.is_empty(), "report should contain at least one pass");
+}

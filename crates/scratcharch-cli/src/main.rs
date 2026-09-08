@@ -7,6 +7,7 @@ mod decompile;
 mod diff;
 mod graph;
 mod inspect;
+mod optimize_cmd;
 mod pipeline_cmd;
 mod sb3_cmd;
 
@@ -67,6 +68,23 @@ enum Command {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+    },
+    /// Run ScratchGraph optimization passes on a Scratch project.
+    Optimize {
+        /// Input project (.sb3 or .json)
+        input: String,
+        /// Output path (default: <input>_opt.sb3 or <input>_opt.json)
+        #[arg(short, long)]
+        output: Option<String>,
+        /// Comma-separated pass names, or "all"
+        #[arg(short, long, default_value = "all")]
+        passes: String,
+        /// Report format: text, json
+        #[arg(short, long, default_value = "text")]
+        format: String,
+        /// Write report to file instead of stdout
+        #[arg(long)]
+        report: Option<String>,
     },
     /// Semantic diff between two Scratch projects
     Diff {
@@ -140,6 +158,13 @@ fn main() {
         Command::Decompile { input, output } => decompile::run(input, output),
         Command::Graph { input, kind, output } => graph::run(input, kind, output),
         Command::Inspect { input, json } => inspect::run(input, *json),
+        Command::Optimize {
+            input,
+            output,
+            passes,
+            format,
+            report,
+        } => optimize_cmd::run(input, output, passes, format, report.as_deref()),
         Command::Diff { a, b, format } => diff::run(a, b, format),
         Command::Debug { input, sair } => debug_cmd::run(input, sair.as_deref()),
         Command::Pipeline { input, output, dump, mode } => {
