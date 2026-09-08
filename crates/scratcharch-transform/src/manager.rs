@@ -37,39 +37,64 @@ impl Default for PassManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pass::PassReport;
-    use scratcharch_scratchgraph::ir::Project;
+    use crate::{ConstantFolding, DeadScriptElimination, EmptyBlockRemoval, VariableAnalysis};
+    use scratcharch_scratchgraph::ir::*;
 
-    /// Minimal pass used to exercise the manager before concrete passes exist.
-    struct CountingPass;
-
-    impl TransformPass for CountingPass {
-        fn name(&self) -> &str {
-            "Counting Pass"
-        }
-
-        fn run(&mut self, _project: &mut Project) -> PassReport {
-            PassReport {
-                name: self.name().to_string(),
-                modifications: 1,
-                deleted_nodes: 0,
-                saved_variables: 0,
-            }
+    fn make_project() -> Project {
+        Project {
+            stage: Stage {
+                name: "Stage".into(),
+                variables: vec![
+                    Variable::new("x_id", "x"),
+                    Variable::new("unused_id", "unused"),
+                ],
+                lists: vec![],
+                broadcasts: vec![],
+                scripts: vec![Script::new(
+                    EventHat::GreenFlag,
+                    vec![Stmt::SetVariable {
+                        var: "x".into(),
+                        value: Expr::Operator {
+                            opcode: "operator_add".into(),
+                            args: vec![
+                                Expr::Literal(Value::Number(1.0)),
+                                Expr::Literal(Value::Number(2.0)),
+                            ],
+                        },
+                    }],
+                )],
+                procedures: vec![],
+                costumes: vec![],
+                sounds: vec![],
+            },
+            sprites: vec![],
         }
     }
 
     #[test]
-    fn test_pass_manager_runs_all_registered_passes() {
-        let mut project = Project::default();
+    fn test_pass_manager_runs_default_pipeline() {
+        let mut project = make_project();
         let mut manager = PassManager::new();
 
-        manager.add(CountingPass);
-        manager.add(CountingPass);
+        manager.add(ConstantFolding::new());
+        manager.add(DeadScriptElimination::new());
+        manager.add(VariableAnalysis::new());
+        manager.add(EmptyBlockRemoval::new());
 
         let report = manager.run(&mut project);
 
-        assert_eq!(report.passes.len(), 2, "both passes should run");
-        assert_eq!(manager.passes().len(), 2, "registered passes exposed");
-        assert_eq!(report.total_modifications(), 2, "reports are aggregated");
+        assert_eq!(report.passes.len(), 4, "all 4 passes should run");
+        assert!(
+            report.total_modifications() > 0,
+            "should have some modifications"
+        );
+        assert!(
+            report.total_saved_variables() > 0,
+            "should save some variables"
+        );
+        assert!(
+            report.to_text().contains("Optimization Report"),
+            "text report should have header"
+        );
     }
 }
