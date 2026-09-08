@@ -1,1 +1,4 @@
 /target/
+.trae/
+# cli integration tests write default-output artifacts into the package dir
+/crates/scratcharch-cli/cli_test_pipeline_dump.sair
