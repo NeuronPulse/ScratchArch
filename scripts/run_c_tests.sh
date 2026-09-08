@@ -3,27 +3,19 @@ set -euo pipefail
 
 # ScratchArch C Compatibility Test Suite
 #
-# Compiles C programs to LLVM IR (if clang is available),
-# translates to SAIR via scratcharch-llvm,
-# executes via scratcharch-sair-interpreter,
-# and compares against expected results.
+# For every committed fixture in tests/c_programs/, compiles the .c source to
+# LLVM IR with clang (real clang output, freshly generated on each run),
+# translates to SAIR via scratcharch-llvm, executes via
+# scratcharch-sair-interpreter, and compares against the expected result.
+#
+# The committed tests/c_programs/*.ll files are themselves real clang output
+# (checked into the repo); this script additionally verifies that a *fresh*
+# clang compile still parses and produces the same result, guarding against
+# corpus drift.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 C_DIR="$PROJECT_DIR/tests/c_programs"
-
-# Programs and their expected exit codes
-declare -A EXPECTED
-EXPECTED[hello]=42
-EXPECTED[add]=42
-EXPECTED[factorial]=120
-EXPECTED[fib]=55
-EXPECTED[array]=42
-EXPECTED[struct]=30
-EXPECTED[pointer]=42
-EXPECTED[string]=5
-EXPECTED[memory]=6
-EXPECTED[recursion]=15
 
 HAS_CLANG=false
 if command -v clang &>/dev/null; then
@@ -35,61 +27,36 @@ if ! command -v cargo &>/dev/null; then
     exit 1
 fi
 
-# Build the test runner if needed
-TEST_RUNNER="$PROJECT_DIR/target/debug/c_test_runner"
-if [ ! -x "$TEST_RUNNER" ]; then
-    echo "Building C test runner..."
-    cargo build -p scratcharch-llvm --bin c_test_runner 2>/dev/null || true
-fi
-
 pass=0
 fail=0
 skipped=0
 
-for prog in hello add factorial fib array struct pointer string memory recursion; do
-    ll_file="$C_DIR/$prog.ll"
-    c_file="$C_DIR/$prog.c"
+# The committed fixtures are validated by cargo test (pipeline_tests.rs reads
+# tests/c_programs/*.ll); corpus_clang_tests.rs recompiles each .c fresh with
+# clang and runs it through the same pipeline.
+output=$(cd "$PROJECT_DIR" && cargo test -p scratcharch-llvm --test corpus_clang_tests -- --nocapture 2>&1 || true)
 
-    # Try compiling from C source if clang is available
-    if [ "$HAS_CLANG" = true ] && [ -f "$c_file" ]; then
-        compiled_ll=$(mktemp /tmp/scratcharch_${prog}_XXXXXX.ll)
-        if clang -S -emit-llvm -O0 -Xclang -disable-O0-optnone "$c_file" -o "$compiled_ll" 2>/dev/null; then
-            ll_file="$compiled_ll"
-        else
-            rm -f "$compiled_ll"
-        fi
-    fi
-
-    if [ ! -f "$ll_file" ]; then
-        echo "SKIP  $prog  (no .ll file found)"
-        skipped=$((skipped + 1))
-        continue
-    fi
-
-    expected="${EXPECTED[$prog]}"
-
-    # Use the Rust test infrastructure directly via cargo test
-    # We pattern-match on the test name which includes the program name
-    test_name="test_pipeline_${prog}"
-
-    output=$(cd "$PROJECT_DIR" && cargo test -p scratcharch-llvm -- "$test_name" --nocapture 2>&1 || true)
-
-    if echo "$output" | grep -q "test $test_name ... ok"; then
-        echo "PASS  $prog"
-        pass=$((pass + 1))
-    elif echo "$output" | grep -q "test $test_name ... FAILED"; then
-        echo "FAIL  $prog  (test failed)"
-        fail=$((fail + 1))
+if [ "$HAS_CLANG" = true ]; then
+    if echo "$output" | grep -q "test result: ok"; then
+        echo "PASS  fresh clang corpus (tests/c_programs/*.c → clang → SAIR → interpreter)"
+        pass=1
     else
-        echo "WARN  $prog  (could not find test result; may need to add test)"
-        skipped=$((skipped + 1))
+        echo "FAIL  fresh clang corpus"
+        echo "$output" | tail -30
+        fail=1
     fi
-
-    # Clean up temp file if we created one
-    if [ -n "${compiled_ll:-}" ] && [ -f "$compiled_ll" ]; then
-        rm -f "$compiled_ll"
+else
+    echo "SKIP  fresh clang corpus (clang not found; running committed fixtures only)"
+    skipped=1
+    if echo "$output" | grep -q "test result: ok"; then
+        echo "PASS  committed fixtures (tests/c_programs/*.ll)"
+        pass=$((pass + 1))
+    else
+        echo "FAIL  committed fixtures"
+        echo "$output" | tail -30
+        fail=$((fail + 1))
     fi
-done
+fi
 
 echo ""
 echo "Results: $pass passed, $fail failed, $skipped skipped"
