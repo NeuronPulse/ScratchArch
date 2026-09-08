@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 cargo build                          # build all crates
-cargo test --workspace               # run all workspace tests (321 total)
+cargo test --workspace               # run all workspace tests (400 total)
 cargo test -p scratcharch-transform  # test a single crate
 cargo test -p scratcharch-llvm -- test_name --nocapture  # run one test
 cargo clippy --workspace --all-targets  # lint (zero warnings required)
@@ -58,10 +58,11 @@ ScratchGraph with `scratchgraph::lower`.
 | `scratcharch-scratchgraph` | ScratchGraph IR (`ir`), project JSON parser, `JsonExporter`, SAIR→ScratchGraph lowerer (`lower.rs`), event/runtime model (`runtime.rs`) |
 | `scratcharch-sb3` | `.sb3` archive reader/writer (`Sb3Reader`/`Sb3Writer`), asset manager; writer reuses the ScratchGraph `JsonExporter` |
 | `scratcharch-transform` | ScratchGraph optimization passes (`TransformPass`/`PassManager`) and reports |
+| `scratcharch-validation` | Roundtrip & semantic validation: graph validation, SB3 byte roundtrip, per-pass preservation verdicts, `verify_project` (used by `scratcharch verify`) |
 | `scratcharch-analyzer` | Static analysis of ScratchGraph projects: reports, DOT, semantic diff |
 | `scratcharch-explorer` | Unified data exploration interface over SAIR and ScratchGraph |
 | `scratcharch-pipeline` | Unified compilation pipeline orchestrator (dumps, modes) used by the CLI |
-| `scratcharch-cli` | `scratcharch` binary: analyze / decompile / graph / inspect / diff / optimize / debug / pipeline subcommands |
+| `scratcharch-cli` | `scratcharch` binary: build / analyze / decompile / graph / inspect / optimize / diff / verify / debug / pipeline subcommands |
 
 `scratcharch-opt` and `scratcharch-transform` are deliberately separate
 frameworks: `scratcharch-opt` optimizes SAIR `IrModule`s (SSA/basic blocks),
@@ -70,9 +71,13 @@ scripts, procedures, variables). See `docs/design/OPTIMIZATION.md` section 6.
 
 ### Execution paths
 
-The **Scratch interpreter path** (`scratcharch-scratchgraph` + `scratcharch-sb3`
-→ `scratcharch-transform`/`scratcharch-analyzer`) is complete and covered by the
-sb3/scratchgraph/transform/cli test suites.
+The **Scratch path** (`scratcharch-scratchgraph` + `scratcharch-sb3` →
+`scratcharch-transform`/`scratcharch-analyzer`) is complete and covered by the
+sb3/scratchgraph/transform/cli test suites. `scratcharch-validation` proves the
+pipeline preserves semantics — graph validation, `.sb3` roundtrip, semantic
+preservation, and per-pass transform preservation via `scratcharch verify` —
+over roundtrip, preservation, and differential-corpus suites (see
+`docs/design/ROUNDTRIP_VALIDATION.md`).
 
 The **SAIR interpreter path** (`scratcharch-llvm` → `scratcharch-sair-interpreter`)
 is complete and used for all pipeline tests. It handles multi-block control
@@ -114,6 +119,12 @@ lowering is in progress (see ROADMAP.md).
 - `crates/scratcharch-cli/tests/cli_tests.rs` — end-to-end CLI subcommands.
 - `crates/scratcharch-transform/src/*.rs` — unit tests per pass (DCE, constant
   folding, empty-block removal, variable analysis).
+- `crates/scratcharch-validation/tests/roundtrip/` — semantic SB3 roundtrip
+  matrix (basic/procedures/recursion/events/lists/memory).
+- `crates/scratcharch-validation/tests/preservation.rs` — per-pass transform
+  preservation verdicts (soundness contracts).
+- `crates/scratcharch-validation/tests/corpus/` — differential corpus harness
+  over committed `project.json` fixtures + `manifest.json`.
 
 ## Commit Guidelines (hard requirement)
 

@@ -1,6 +1,6 @@
 # ScratchArch Development Roadmap
 
-> Last updated: 2026-07-23 (Scratch Backend Foundation v0.4 completed)
+> Last updated: 2026-09-08 (Roundtrip & Semantic Validation Framework completed)
 > Status: living document
 
 ## Legend
@@ -286,6 +286,56 @@
       tests.
 - [x] **Documentation**: `docs/design/SCRATCH_RUNTIME_IMPLEMENTATION.md` and
       `docs/design/SCRATCH_ANALYZER.md`.
+
+### Roundtrip & Semantic Validation Framework (`scratcharch-validation`)
+
+The formal framework that proves Scratch pipeline conversions preserve semantics
+as far as the IR models behavior: `SB3 → ScratchGraph → transform → ScratchGraph
+→ SB3` and `ScratchGraph → SAIR → ScratchGraph`. Verification is IR-level, never
+byte-level. Spec contract: `docs/specification/SCRATCH_SEMANTICS.md` (§4
+fidelity table, §5 roundtrip contract).
+
+- [x] **Semantic model spec** (Part 1): `docs/specification/SCRATCH_SEMANTICS.md`
+      defines observable behavior, fidelity buckets, and the equivalence
+      contract the framework verifies.
+- [x] **SemanticNormalizer** (Part 2): `scratcharch-scratchgraph::semantic`
+      reduces a `Project` to `NormalizedProject`, erasing block IDs,
+      declaration ordering, sprite order, broadcast declaration sites, and
+      value noise (`-0.0` = `0.0`) so equality means semantic equality
+      (7 unit tests).
+- [x] **Categorized semantic diff** (Part 3): `scratcharch-analyzer::diff`
+      (`semantic_diff` / `semantic_diff_normalized`, `DiffResult`/`DiffEntry`/
+      `DiffFormat`) classifies differences as `Added`, `Removed`, `Changed`,
+      `Moved`, `ScopeChanged`, `ControlFlowChanged`, or `RuntimeChanged`, with
+      LCS body alignment and severity aggregation (12 unit tests).
+- [x] **Roundtrip validation crate** (Part 2/6): `scratcharch-validation`
+      composes graph validation (`validate_graph`), the SB3 byte roundtrip
+      (`roundtrip_sb3`), semantic preservation, and per-pass soundness verdicts
+      into `verify_project`.
+- [x] **Roundtrip test matrix** (Part 4): 31 tests under
+      `tests/roundtrip/` (basic, procedures, recursion, events, lists, memory)
+      prove native programs round-trip semantically and that documented lossy
+      code (ABI frame/heap) is *detected* as lossy, never silently blessed.
+- [x] **Transform preservation verdicts** (Part 5): 17 tests under
+      `tests/preservation.rs` run each pass and forbid its disallowed changes —
+      deleting a live broadcast receiver / reachable procedure (DCE), folding a
+      boolean context (constant folding), dropping a still-referenced variable
+      (variable analysis), removing a non-empty control block (empty-block
+      removal).
+- [x] **`scratcharch verify` subcommand** (Part 6): parse → graph validation →
+      SB3 roundtrip → semantic preservation → transform preservation, text and
+      JSON report (verify engine 4 unit tests, CLI 5 end-to-end tests).
+- [x] **Differential corpus** (Part 7): `tests/corpus/scratch/` commits 6
+      representative loadable `project.json` fixtures + a `manifest.json`
+      catalog covering basic, events, procedures, recursion, lists, memory.
+      The harness loads each through the CLI `.json` path, validates it, runs
+      the full verify gate, and checks it against its canonical IR builder;
+      regeneration is env-gated and deterministic (3 tests + 1 ignored).
+- [x] **Semantic diff documentation** (Part 8): `docs/design/SEMANTIC_DIFF.md`
+      rewritten to the categorized API and real `scratcharch diff` CLI.
+- [x] **Roundtrip validation documentation** (Part 8):
+      `docs/design/ROUNDTRIP_VALIDATION.md` documents the checks, soundness
+      contracts, test layers, corpus, and the deliberately-reported boundaries.
 
 ### Testing
 
