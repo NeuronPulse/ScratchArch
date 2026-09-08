@@ -1,0 +1,285 @@
+{
+  "extensions": [],
+  "meta": {
+    "agent": "ScratchArch",
+    "semver": "3.0.0",
+    "vm": "0.2.0"
+  },
+  "monitors": [],
+  "targets": [
+    {
+      "blocks": {
+        "b0": {
+          "fields": {},
+          "inputs": {},
+          "next": "b1",
+          "opcode": "event_whenflagclicked",
+          "parent": null,
+          "shadow": false,
+          "topLevel": true,
+          "x": 0,
+          "y": 0
+        },
+        "b1": {
+          "fields": {
+            "VARIABLE": [
+              "score",
+              null
+            ]
+          },
+          "inputs": {
+            "VALUE": [
+              1,
+              "b2"
+            ]
+          },
+          "next": "b3",
+          "opcode": "data_setvariableto",
+          "parent": "b0",
+          "shadow": false,
+          "topLevel": false
+        },
+        "b10": {
+          "fields": {
+            "VARIABLE": [
+              "score",
+              null
+            ]
+          },
+          "inputs": {
+            "VALUE": [
+              2,
+              "b11"
+            ]
+          },
+          "next": null,
+          "opcode": "data_setvariableto",
+          "parent": null,
+          "shadow": false,
+          "topLevel": false
+        },
+        "b11": {
+          "fields": {
+            "VARIABLE": [
+              "score",
+              null
+            ]
+          },
+          "inputs": {},
+          "next": null,
+          "opcode": "data_variable",
+          "parent": null,
+          "shadow": false,
+          "topLevel": false
+        },
+        "b12": {
+          "fields": {},
+          "inputs": {
+            "NUM1": [
+              2,
+              "b13"
+            ],
+            "NUM2": [
+              1,
+              "b14"
+            ]
+          },
+          "next": null,
+          "opcode": "operator_gt",
+          "parent": null,
+          "shadow": false,
+          "topLevel": false
+        },
+        "b13": {
+          "fields": {
+            "VARIABLE": [
+              "score",
+              null
+            ]
+          },
+          "inputs": {},
+          "next": null,
+          "opcode": "data_variable",
+          "parent": null,
+          "shadow": false,
+          "topLevel": false
+        },
+        "b14": {
+          "fields": {
+            "NUM": [
+              "3",
+              null
+            ]
+          },
+          "inputs": {},
+          "next": null,
+          "opcode": "math_number",
+          "parent": null,
+          "shadow": true,
+          "topLevel": false
+        },
+        "b2": {
+          "fields": {
+            "NUM": [
+              "0",
+              null
+            ]
+          },
+          "inputs": {},
+          "next": null,
+          "opcode": "math_number",
+          "parent": null,
+          "shadow": true,
+          "topLevel": false
+        },
+        "b3": {
+          "fields": {},
+          "inputs": {
+            "SUBSTACK": [
+              1,
+              "b4"
+            ],
+            "TIMES": [
+              1,
+              "b6"
+            ]
+          },
+          "next": "b7",
+          "opcode": "control_repeat",
+          "parent": "b1",
+          "shadow": false,
+          "topLevel": false
+        },
+        "b4": {
+          "fields": {
+            "VARIABLE": [
+              "score",
+              null
+            ]
+          },
+          "inputs": {
+            "VALUE": [
+              1,
+              "b5"
+            ]
+          },
+          "next": null,
+          "opcode": "data_changevariableby",
+          "parent": null,
+          "shadow": false,
+          "topLevel": false
+        },
+        "b5": {
+          "fields": {
+            "NUM": [
+              "1",
+              null
+            ]
+          },
+          "inputs": {},
+          "next": null,
+          "opcode": "math_number",
+          "parent": null,
+          "shadow": true,
+          "topLevel": false
+        },
+        "b6": {
+          "fields": {
+            "NUM": [
+              "5",
+              null
+            ]
+          },
+          "inputs": {},
+          "next": null,
+          "opcode": "math_number",
+          "parent": null,
+          "shadow": true,
+          "topLevel": false
+        },
+        "b7": {
+          "fields": {},
+          "inputs": {
+            "CONDITION": [
+              2,
+              "b12"
+            ],
+            "SUBSTACK": [
+              1,
+              "b8"
+            ],
+            "SUBSTACK2": [
+              1,
+              "b10"
+            ]
+          },
+          "next": null,
+          "opcode": "control_if_else",
+          "parent": "b3",
+          "shadow": false,
+          "topLevel": false
+        },
+        "b8": {
+          "fields": {
+            "VARIABLE": [
+              "score",
+              null
+            ]
+          },
+          "inputs": {
+            "VALUE": [
+              1,
+              "b9"
+            ]
+          },
+          "next": null,
+          "opcode": "data_setvariableto",
+          "parent": null,
+          "shadow": false,
+          "topLevel": false
+        },
+        "b9": {
+          "fields": {
+            "NUM": [
+              "10",
+              null
+            ]
+          },
+          "inputs": {},
+          "next": null,
+          "opcode": "math_number",
+          "parent": null,
+          "shadow": true,
+          "topLevel": false
+        }
+      },
+      "broadcasts": {},
+      "costumeCount": 0,
+      "costumeIndex": 0,
+      "costumes": [],
+      "direction": 90,
+      "draggable": false,
+      "isStage": true,
+      "lists": {},
+      "name": "Stage",
+      "rotationStyle": "all around",
+      "size": 100,
+      "soundCount": 0,
+      "soundIndex": 0,
+      "sounds": [],
+      "tempo": 60,
+      "variables": {
+        "score": [
+          "score",
+          ""
+        ]
+      },
+      "videoState": "off",
+      "videoTransparency": 50,
+      "visible": true,
+      "volume": 100,
+      "x": 0,
+      "y": 0
+    }
+  ]
+}

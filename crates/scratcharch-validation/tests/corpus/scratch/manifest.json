@@ -1,0 +1,41 @@
+{
+  "members": [
+    {
+      "category": "basic",
+      "description": "green flag resets a score, repeats an increment, then branches on it",
+      "file": "hello_score.json",
+      "id": "hello_score"
+    },
+    {
+      "category": "events",
+      "description": "stage broadcasts a message; stage and a sprite both receive it",
+      "file": "broadcast_relay.json",
+      "id": "broadcast_relay"
+    },
+    {
+      "category": "procedures",
+      "description": "parameterized procedure computes area and is called from a green flag script",
+      "file": "area_calculator.json",
+      "id": "area_calculator"
+    },
+    {
+      "category": "recursion",
+      "description": "self-recursive procedure with a parameter decremented to a base case",
+      "file": "countdown_tick.json",
+      "id": "countdown_tick"
+    },
+    {
+      "category": "lists",
+      "description": "seed a list, replace and delete items, read item and length back into variables",
+      "file": "shopping_cart.json",
+      "id": "shopping_cart"
+    },
+    {
+      "category": "memory",
+      "description": "native list used as a stack: push, peek top by length index, pop",
+      "file": "stack_memory.json",
+      "id": "stack_memory"
+    }
+  ],
+  "schema": "scratcharch-corpus"
+}

@@ -1,0 +1,244 @@
+{
+  "extensions": [],
+  "meta": {
+    "agent": "ScratchArch",
+    "semver": "3.0.0",
+    "vm": "0.2.0"
+  },
+  "monitors": [],
+  "targets": [
+    {
+      "blocks": {
+        "b0": {
+          "fields": {},
+          "inputs": {},
+          "next": "b1",
+          "opcode": "event_whenflagclicked",
+          "parent": null,
+          "shadow": false,
+          "topLevel": true,
+          "x": 0,
+          "y": 0
+        },
+        "b1": {
+          "fields": {
+            "VARIABLE": [
+              "state",
+              null
+            ]
+          },
+          "inputs": {
+            "VALUE": [
+              1,
+              "b2"
+            ]
+          },
+          "next": "b3",
+          "opcode": "data_setvariableto",
+          "parent": "b0",
+          "shadow": false,
+          "topLevel": false
+        },
+        "b2": {
+          "fields": {
+            "TEXT": [
+              "idle",
+              null
+            ]
+          },
+          "inputs": {},
+          "next": null,
+          "opcode": "text",
+          "parent": null,
+          "shadow": true,
+          "topLevel": false
+        },
+        "b3": {
+          "fields": {},
+          "inputs": {
+            "BROADCAST_INPUT": [
+              1,
+              "b4"
+            ]
+          },
+          "next": null,
+          "opcode": "event_broadcast",
+          "parent": "b1",
+          "shadow": false,
+          "topLevel": false
+        },
+        "b4": {
+          "fields": {
+            "TEXT": [
+              "go",
+              null
+            ]
+          },
+          "inputs": {},
+          "next": null,
+          "opcode": "text",
+          "parent": null,
+          "shadow": true,
+          "topLevel": false
+        },
+        "b5": {
+          "fields": {
+            "BROADCAST_OPTION": [
+              "go",
+              null
+            ]
+          },
+          "inputs": {},
+          "next": "b6",
+          "opcode": "event_whenbroadcastreceived",
+          "parent": null,
+          "shadow": false,
+          "topLevel": true,
+          "x": 0,
+          "y": 0
+        },
+        "b6": {
+          "fields": {
+            "VARIABLE": [
+              "ticks",
+              null
+            ]
+          },
+          "inputs": {
+            "VALUE": [
+              1,
+              "b7"
+            ]
+          },
+          "next": null,
+          "opcode": "data_changevariableby",
+          "parent": "b5",
+          "shadow": false,
+          "topLevel": false
+        },
+        "b7": {
+          "fields": {
+            "NUM": [
+              "1",
+              null
+            ]
+          },
+          "inputs": {},
+          "next": null,
+          "opcode": "math_number",
+          "parent": null,
+          "shadow": true,
+          "topLevel": false
+        }
+      },
+      "broadcasts": {
+        "go": "go"
+      },
+      "costumeCount": 0,
+      "costumeIndex": 0,
+      "costumes": [],
+      "direction": 90,
+      "draggable": false,
+      "isStage": true,
+      "lists": {},
+      "name": "Stage",
+      "rotationStyle": "all around",
+      "size": 100,
+      "soundCount": 0,
+      "soundIndex": 0,
+      "sounds": [],
+      "tempo": 60,
+      "variables": {
+        "state": [
+          "state",
+          ""
+        ],
+        "ticks": [
+          "ticks",
+          ""
+        ]
+      },
+      "videoState": "off",
+      "videoTransparency": 50,
+      "visible": true,
+      "volume": 100,
+      "x": 0,
+      "y": 0
+    },
+    {
+      "blocks": {
+        "b0": {
+          "fields": {
+            "BROADCAST_OPTION": [
+              "go",
+              null
+            ]
+          },
+          "inputs": {},
+          "next": "b1",
+          "opcode": "event_whenbroadcastreceived",
+          "parent": null,
+          "shadow": false,
+          "topLevel": true,
+          "x": 0,
+          "y": 0
+        },
+        "b1": {
+          "fields": {
+            "VARIABLE": [
+              "state",
+              null
+            ]
+          },
+          "inputs": {
+            "VALUE": [
+              1,
+              "b2"
+            ]
+          },
+          "next": null,
+          "opcode": "data_setvariableto",
+          "parent": "b0",
+          "shadow": false,
+          "topLevel": false
+        },
+        "b2": {
+          "fields": {
+            "TEXT": [
+              "running",
+              null
+            ]
+          },
+          "inputs": {},
+          "next": null,
+          "opcode": "text",
+          "parent": null,
+          "shadow": true,
+          "topLevel": false
+        }
+      },
+      "broadcasts": {},
+      "costumeCount": 0,
+      "costumeIndex": 0,
+      "costumes": [],
+      "direction": 90,
+      "draggable": false,
+      "isStage": false,
+      "lists": {},
+      "name": "Cat",
+      "rotationStyle": "all around",
+      "size": 100,
+      "soundCount": 0,
+      "soundIndex": 0,
+      "sounds": [],
+      "tempo": 60,
+      "variables": {},
+      "videoState": "off",
+      "videoTransparency": 50,
+      "visible": true,
+      "volume": 100,
+      "x": 0,
+      "y": 0
+    }
+  ]
+}
