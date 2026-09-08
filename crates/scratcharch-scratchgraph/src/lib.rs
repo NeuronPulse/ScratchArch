@@ -19,6 +19,7 @@ pub mod json_exporter;
 pub mod lower;
 pub mod parser;
 pub mod runtime;
+pub mod semantic;
 
 pub use debug::{BlockSourceEntry, SourceLocation, SourceMap, TargetSourceMap};
 pub use exporter::{Infallible, ScratchExporter};
@@ -33,4 +34,8 @@ pub use parser::{parse_project_json, ParseError, ProjectParser, SourceMapBuilder
 pub use runtime::{
     EventState, ExecutionStatus, GlobalState, ProgramCounter, RuntimeState, SchedulerState,
     ThreadContext, ThreadId, ThreadState, WaitReason,
+};
+pub use semantic::{
+    SemanticNormalizer, NormalizedList, NormalizedParam, NormalizedProcedure, NormalizedProject,
+    NormalizedScript, NormalizedStmt, NormalizedTarget, NormalizedVariable,
 };
