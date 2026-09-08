@@ -399,6 +399,7 @@ dependencies = [
  "scratcharch-sb3",
  "scratcharch-scratchgraph",
  "scratcharch-transform",
+ "scratcharch-validation",
  "serde",
  "serde_json",
  "tempfile",

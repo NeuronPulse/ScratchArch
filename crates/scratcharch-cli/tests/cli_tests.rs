@@ -460,3 +460,92 @@ fn test_cli_optimize_report_json() {
     let passes = report["passes"].as_array().expect("report should contain passes");
     assert!(!passes.is_empty(), "report should contain at least one pass");
 }
+
+#[test]
+fn test_cli_verify_clean_project_passes() {
+    // The optimizable fixture has foldable math, a provably-dead receiver, an
+    // unreferenced variable, and dead/uncalled procedures. A *sound* optimizer
+    // may remove those; verify must still PASS because each pass stays within
+    // its contract.
+    let project = make_optimizable_project();
+    let (_dir, sb3_path) = write_sb3_project(&project, "verify_clean.sb3");
+
+    let (ok, output) = run_cmd(&["verify", sb3_path.to_str().unwrap()]);
+    assert!(ok, "verify clean project failed: {}", output);
+    assert!(output.contains("Parse: PASS"), "output: {}", output);
+    assert!(output.contains("Graph validation: PASS"), "output: {}", output);
+    assert!(output.contains("Roundtrip: PASS"), "output: {}", output);
+    assert!(output.contains("Semantic preservation: PASS"), "output: {}", output);
+    assert!(output.contains("Transform preservation: PASS"), "output: {}", output);
+}
+
+#[test]
+fn test_cli_verify_json_report() {
+    let project = make_optimizable_project();
+    let (_dir, sb3_path) = write_sb3_project(&project, "verify_json.sb3");
+
+    let (ok, output) = run_cmd(&["verify", sb3_path.to_str().unwrap(), "--json"]);
+    assert!(ok, "verify --json failed: {}", output);
+    let report: serde_json::Value = serde_json::from_str(output.trim()).expect("valid json");
+    assert_eq!(report["parse_ok"], true);
+    assert_eq!(report["graph_valid"], true, "{}", output);
+    assert_eq!(report["roundtrip_ok"], true, "{}", output);
+    assert_eq!(report["semantic_preserved"], true, "{}", output);
+    assert_eq!(report["transform_preserved"], true, "{}", output);
+    let passes = report["passes"].as_array().expect("passes array present");
+    assert_eq!(passes.len(), 4, "four default-pipeline passes are checked");
+}
+
+#[test]
+fn test_cli_verify_flags_an_undeclared_variable_reference() {
+    // The script references `ghost`, which no target declares: the project
+    // parses and round-trips, but graph validation must fail.
+    use scratcharch_scratchgraph::ir::*;
+    let mut stage = Stage::new("Stage");
+    stage.add_script(Script::new(
+        EventHat::GreenFlag,
+        vec![Stmt::SetVariable {
+            var: "ghost".to_string(),
+            value: Expr::Literal(Value::Number(1.0)),
+        }],
+    ));
+    let project = Project::new().with_stage(stage);
+    let (_dir, sb3_path) = write_sb3_project(&project, "verify_ghost.sb3");
+
+    let (ok, output) = run_cmd(&["verify", sb3_path.to_str().unwrap()]);
+    assert!(!ok, "verify should fail on an undeclared reference: {}", output);
+    assert!(output.contains("Graph validation: FAIL"), "output: {}", output);
+    assert!(output.contains("ghost"), "output: {}", output);
+}
+
+#[test]
+fn test_cli_verify_json_input_passes() {
+    // `verify` also accepts a project.json directly (the non-sb3 load path);
+    // the roundtrip leg still goes through real .sb3 bytes internally.
+    let project = make_optimizable_project();
+    let dir = tempfile::tempdir().unwrap();
+    let json_path = dir.path().join("verify_input.json");
+    use scratcharch_scratchgraph::{JsonExporter, ScratchExporter};
+    let json = JsonExporter::new()
+        .export(&project)
+        .expect("export to json");
+    std::fs::write(&json_path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+
+    let (ok, output) = run_cmd(&["verify", json_path.to_str().unwrap()]);
+    assert!(ok, "verify json failed: {}", output);
+    assert!(output.contains("Parse: PASS"), "output: {}", output);
+    assert!(output.contains("Graph validation: PASS"), "output: {}", output);
+    assert!(output.contains("Roundtrip: PASS"), "output: {}", output);
+    assert!(output.contains("Semantic preservation: PASS"), "output: {}", output);
+    assert!(output.contains("Transform preservation: PASS"), "output: {}", output);
+}
+
+#[test]
+fn test_cli_verify_reports_unparseable_input() {
+    let path = std::env::temp_dir().join("cli_test_verify_corrupt.sb3");
+    std::fs::write(&path, b"this is not a zip archive").unwrap();
+
+    let (ok, output) = run_cmd(&["verify", path.to_str().unwrap()]);
+    assert!(!ok, "verify should fail on garbage input: {}", output);
+    assert!(output.contains("Parse: FAIL"), "output: {}", output);
+}

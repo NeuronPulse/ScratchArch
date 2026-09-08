@@ -10,6 +10,7 @@ mod inspect;
 mod optimize_cmd;
 mod pipeline_cmd;
 mod sb3_cmd;
+mod verify_cmd;
 
 #[derive(Parser)]
 #[command(name = "scratcharch", version, about = "ScratchArch developer toolchain")]
@@ -96,6 +97,15 @@ enum Command {
         #[arg(short, long, default_value = "text")]
         format: String,
     },
+    /// Verify a Scratch project: parse, graph validation, .sb3 roundtrip,
+    /// semantic preservation, and per-pass transform preservation
+    Verify {
+        /// Input project (.sb3 or .json)
+        input: String,
+        /// Output the report as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Debug: trace SAIR <-> ScratchGraph <-> project.json mappings
     Debug {
         /// Input Scratch project (.json or .sb3)
@@ -166,6 +176,7 @@ fn main() {
             report,
         } => optimize_cmd::run(input, output, passes, format, report.as_deref()),
         Command::Diff { a, b, format } => diff::run(a, b, format),
+        Command::Verify { input, json } => verify_cmd::run(input, *json),
         Command::Debug { input, sair } => debug_cmd::run(input, sair.as_deref()),
         Command::Pipeline { input, output, dump, mode } => {
             pipeline_cmd::run(input, output, dump, mode)
