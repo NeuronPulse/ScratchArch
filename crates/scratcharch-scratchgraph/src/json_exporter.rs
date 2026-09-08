@@ -26,13 +26,15 @@ impl ScratchExporter for JsonExporter {
     type Error = Infallible;
 
     fn export(&self, project: &Project) -> Result<Value, Infallible> {
-        let mut state = ExportState::new();
-        let stage_json = export_stage(&project.stage, &mut state);
+        // Block IDs and the `blocks` map are per-target in the Scratch 3
+        // format, so each target gets its own `ExportState`. Sharing one state
+        // would leak every target's blocks into every other target's map.
+        let stage_json = export_stage(&project.stage, &mut ExportState::new());
 
         let mut targets = Vec::new();
         targets.push(stage_json);
         for sprite in &project.sprites {
-            targets.push(export_sprite(sprite, &mut state));
+            targets.push(export_sprite(sprite, &mut ExportState::new()));
         }
 
         Ok(json!({

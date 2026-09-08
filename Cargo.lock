@@ -521,6 +521,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "scratcharch-validation"
+version = "0.1.0"
+dependencies = [
+ "scratcharch-analyzer",
+ "scratcharch-sb3",
+ "scratcharch-scratchgraph",
+ "scratcharch-transform",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "scratcharch-vm"
 version = "0.1.0"
 dependencies = [

@@ -420,7 +420,7 @@ impl ProjectParser {
                 let value = self.parse_input(block, "ITEM", blocks)?;
                 Stmt::SetListItem { list, index, value }
             }
-            "data_deleteitemoflist" => {
+            "data_deleteoflist" | "data_deleteitemoflist" => {
                 let list = self.field_string(block, "LIST")?;
                 let index = self.parse_input(block, "INDEX", blocks)?;
                 Stmt::DeleteListItem { list, index }
@@ -561,6 +561,11 @@ impl ProjectParser {
     ) -> Result<Vec<Stmt>, ParseError> {
         let inputs = block.get("inputs").and_then(Value::as_object).cloned().unwrap_or_default();
         let input = inputs.get(input_name).cloned().unwrap_or(json!(null));
+        // A missing or `null` substack is an empty body (e.g. `if` with no
+        // else-branch exports `SUBSTACK2: null`), not an error.
+        if input.is_null() {
+            return Ok(Vec::new());
+        }
         let arr = input.as_array().ok_or(ParseError::InvalidInputShape)?;
         if arr.len() < 2 {
             return Ok(Vec::new());
