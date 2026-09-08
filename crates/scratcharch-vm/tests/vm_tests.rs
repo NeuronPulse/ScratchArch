@@ -270,14 +270,14 @@ fn test_conditional_branch_false() {
 
 #[test]
 fn test_division_by_zero_error() {
-    let mut prog = build_single_func_program(vec![
+    let prog = build_single_func_program(vec![
         Instruction::ConstI32(42),
         Instruction::ConstI32(0),
         Instruction::I32Div,
         Instruction::Return,
     ]);
     let mut vm = Vm::new(65536, 4096);
-    vm.load_program(&mut prog).expect("failed to load program");
+    vm.load_program(&prog).expect("failed to load program");
     let result = vm.run();
     assert!(result.is_err());
 }

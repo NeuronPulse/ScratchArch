@@ -1,4 +1,4 @@
-use scratcharch_pipeline::{Diagnostic, DiagnosticLevel, DiagnosticSink, Pipeline, PipelineConfig};
+use scratcharch_pipeline::{Diagnostic, DiagnosticSink, Pipeline, PipelineConfig};
 
 fn minimal_project_json() -> serde_json::Value {
     serde_json::json!({
@@ -11,19 +11,6 @@ fn minimal_project_json() -> serde_json::Value {
             "blocks": {}
         }]
     })
-}
-
-fn simple_sair_module() -> String {
-    r#"sair 0.1
-entry "main"
-
-func @main -> i32 entry "entry" {
-  block "entry":
-    %0 = const i32 42
-    ret i32 %0
-}
-"#
-    .to_string()
 }
 
 #[test]
@@ -105,7 +92,7 @@ fn test_diagnostic_json_output() {
 #[test]
 fn test_decompile_with_procedure() {
     use scratcharch_scratchgraph::ir::{
-        EventHat, Expr, Procedure, Project, Script, Stage, Stmt, Value as SgValue,
+        Expr, Procedure, Project, Stage, Stmt, Value as SgValue,
     };
 
     let mut project = Project::new();
