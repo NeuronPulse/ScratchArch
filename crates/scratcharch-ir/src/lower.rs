@@ -281,11 +281,7 @@ impl IsaLowerer {
             SairInstr::Load { ty, addr } => {
                 let limbs = self.vm_limbs(*ty)?;
                 if limbs == 1 {
-                    self.emit_load(*addr, ctx, f)?;
-                    f.push(IsaInstr::Load);
-                    if let Some(id) = result_id {
-                        self.emit_store(id, ctx, f)?;
-                    }
+                    self.lower_load_single(*ty, *addr, result_id, ctx, f)?;
                 } else {
                     self.lower_wide_load(*addr, result_id, ctx, f)?;
                 }
@@ -293,11 +289,7 @@ impl IsaLowerer {
             SairInstr::Store { ty, value, addr } => {
                 let limbs = self.vm_limbs(*ty)?;
                 if limbs == 1 {
-                    // The VM expects the value on top of the operand stack and the
-                    // address underneath it, so emit the address first.
-                    self.emit_load(*addr, ctx, f)?;
-                    self.emit_load(*value, ctx, f)?;
-                    f.push(IsaInstr::Store);
+                    self.lower_store_single(*ty, *value, *addr, ctx, f)?;
                 } else {
                     self.lower_wide_store(*value, *addr, ctx, f)?;
                 }
@@ -329,7 +321,7 @@ impl IsaLowerer {
                 }
             }
             SairInstr::Cast { op, from_ty, to_ty, value } => {
-                self.lower_cast(*op, *from_ty, *to_ty, *value, result_id, ctx, f)?;
+                self.lower_cast(*op, *from_ty, *to_ty, *value, result_id, ctx, f, select_counter)?;
             }
             SairInstr::Select {
                 ty,
@@ -646,9 +638,12 @@ impl IsaLowerer {
         Ok(())
     }
 
-    /// Turn the i1 flag on top of the operand stack into an I32 0/1 word so the
-    /// boolean result can flow through the ISA's integer `And`/`Or`.
-    fn widen_top_flag(&self, f: &mut FuncEmitter<'_>) {
+    /// Canonicalize the single cell on top of the operand stack to a plain I32
+    /// word of the same bit content. An `I1` flag becomes `0`/`1` (so boolean
+    /// results can flow through the ISA's integer `And`/`Or`); a `Pointer`
+    /// carrier becomes the equivalent `I32` address (so a reinterpreted pointer
+    /// can reach the strict `i32` word ops unchanged). An `I32` is untouched.
+    fn canonicalize_top_word(&self, f: &mut FuncEmitter<'_>) {
         f.push(IsaInstr::ConstI32(0));
         f.push(IsaInstr::I32Add);
     }
@@ -743,7 +738,7 @@ impl IsaLowerer {
         f.push(IsaInstr::LocalGet(slot_a + limb));
         f.push(IsaInstr::LocalGet(slot_b + limb));
         f.push(op);
-        self.widen_top_flag(f);
+        self.canonicalize_top_word(f);
     }
 
     /// Load an i64 from `addr`: low limb at `addr`, high limb at `addr + 4`.
@@ -786,15 +781,168 @@ impl IsaLowerer {
         Ok(())
     }
 
+    // ---- Width-accurate single-limb memory ---------------------------------
+    //
+    // A single-limb type (i1/i8/i16/i32/ptr) occupies one profile cell, but its
+    // *memory* width is `size_in_bytes()` bytes, not the VM word's 4. `Load` and
+    // `Store` must therefore write exactly that many bytes so neighbouring bytes
+    // are never clobbered or misread (little-endian, matching the interpreter's
+    // `size_in_bytes`-exact reads/writes). Word-width types (i32/ptr) keep the
+    // word `Load`/`Store`; sub-word types use `Load8`/`Store8`. Alignment is
+    // never enforced by either engine, so no padding or alignment logic is
+    // needed here.
+
+    /// Load a single-limb value of `ty` from `addr`, exactly `ty.size_in_bytes()`
+    /// bytes (little-endian), and store the result cell.
+    fn lower_load_single(
+        &self,
+        ty: IrType,
+        addr: ValueId,
+        result_id: Option<ValueId>,
+        ctx: &LowerCtx,
+        f: &mut FuncEmitter<'_>,
+    ) -> Result<(), LowerError> {
+        // Push the loaded value cell(s) onto the operand stack.
+        match ty {
+            IrType::I32 | IrType::Pointer => {
+                self.emit_load(addr, ctx, f)?;
+                f.push(IsaInstr::Load);
+            }
+            IrType::I1 => {
+                // Load the byte; a nonzero byte is the boolean true (the
+                // interpreter reads `bytes[0] != 0`). `Load8` yields 0..255, so
+                // `byte > 0` ⟺ `byte != 0`, producing a genuine i1 flag that
+                // `Branch`/`select` can consume.
+                self.emit_load(addr, ctx, f)?;
+                f.push(IsaInstr::Load8);
+                f.push(IsaInstr::ConstI32(0));
+                f.push(IsaInstr::Gt);
+            }
+            IrType::I8 => {
+                self.emit_load(addr, ctx, f)?;
+                f.push(IsaInstr::Load8);
+            }
+            IrType::I16 => {
+                // lo = Load8(addr), hi = Load8(addr + 1); value = (hi << 8) | lo.
+                self.emit_load(addr, ctx, f)?;
+                f.push(IsaInstr::Load8); // lo
+                self.emit_load(addr, ctx, f)?;
+                f.push(IsaInstr::ConstI32(1));
+                f.push(IsaInstr::I32Add);
+                f.push(IsaInstr::Load8); // hi
+                f.push(IsaInstr::ConstI32(8));
+                f.push(IsaInstr::Shl);
+                f.push(IsaInstr::Or);
+            }
+            _ => {
+                return Err(LowerError::UnsupportedType(format!(
+                    "single-limb load of {ty} is not supported on the VM backend"
+                )))
+            }
+        }
+        if let Some(id) = result_id {
+            self.emit_store(id, ctx, f)?;
+        }
+        Ok(())
+    }
+
+    /// Store a single-limb `value` of type `ty` to `addr`, writing exactly
+    /// `ty.size_in_bytes()` bytes (little-endian).
+    ///
+    /// The stored cell is the interpreter's wider-carrier convention: a sub-word
+    /// value may travel in an `I32` word whose low `w` bits are the value, so
+    /// each byte written is masked to its 8-bit slice of the value's width — the
+    /// byte count and the byte values both derive from `ty`, never from the
+    /// carrier.
+    fn lower_store_single(
+        &self,
+        ty: IrType,
+        value: ValueId,
+        addr: ValueId,
+        ctx: &LowerCtx,
+        f: &mut FuncEmitter<'_>,
+    ) -> Result<(), LowerError> {
+        match ty {
+            // Word-width stores keep the VM's word `Store` (the value cell is an
+            // `I32`/pointer of exactly 4 bytes).
+            IrType::I32 | IrType::Pointer => {
+                // The VM expects the value on top of the operand stack and the
+                // address underneath it, so emit the address first.
+                self.emit_load(addr, ctx, f)?;
+                self.emit_load(value, ctx, f)?;
+                f.push(IsaInstr::Store);
+            }
+            // Sub-word stores write `Store8`s: `Store8` masks its byte to `&0xFF`
+            // (and accepts an `I1` flag cell), so the low byte is exact even when
+            // the carrier holds garbage above the value's width.
+            IrType::I1 | IrType::I8 => {
+                self.emit_load(addr, ctx, f)?;
+                self.emit_load(value, ctx, f)?;
+                f.push(IsaInstr::Store8);
+            }
+            IrType::I16 => {
+                // lo = value & 0xFF at addr, hi = (value >> 8) & 0xFF at
+                // addr + 1. The carrier is masked to 16 bits before splitting so
+                // both bytes are exact regardless of any higher garbage bits.
+                self.emit_load(addr, ctx, f)?;
+                self.emit_load(value, ctx, f)?;
+                f.push(IsaInstr::ConstI32(0xFF));
+                f.push(IsaInstr::And);
+                f.push(IsaInstr::Store8); // low byte at addr
+                self.emit_load(addr, ctx, f)?;
+                f.push(IsaInstr::ConstI32(1));
+                f.push(IsaInstr::I32Add); // addr + 1
+                self.emit_load(value, ctx, f)?;
+                f.push(IsaInstr::ConstI32(0xFFFF));
+                f.push(IsaInstr::And);
+                f.push(IsaInstr::ConstI32(8));
+                f.push(IsaInstr::Shr);
+                f.push(IsaInstr::Store8); // high byte at addr + 1
+            }
+            _ => {
+                return Err(LowerError::UnsupportedType(format!(
+                    "single-limb store of {ty} is not supported on the VM backend"
+                )))
+            }
+        }
+        Ok(())
+    }
+
     /// Lower a width-changing integer cast (LLVM `zext`/`sext`/`trunc`) to
-    /// limb arithmetic. Bitcasts and pointer-integer reinterpretations have no
-    /// ISA form and are still rejected explicitly.
+    /// limb arithmetic. Bitcasts and pointer-integer reinterpretations that are
+    /// representation-preserving under the target profile are lowered by
+    /// [`IsaLowerer::lower_reinterpret_cast`] as zero-cost cell operations;
+    /// those that would require a value transformation LLVM does not call for
+    /// are rejected explicitly (nothing is approximated).
     ///
     /// The `result_id: Option<ValueId>` makes the arity (op + value + optional
-    /// result + ctx + emitter) exceed clippy's default, matching the other
-    /// `lower_*` helpers' threading style.
+    /// result + ctx + emitter + label counter) exceed clippy's default,
+    /// matching the other `lower_*` helpers' threading style.
     #[allow(clippy::too_many_arguments)]
     fn lower_cast(
+        &self,
+        op: CastOp,
+        from_ty: IrType,
+        to_ty: IrType,
+        value: ValueId,
+        result_id: Option<ValueId>,
+        ctx: &LowerCtx,
+        f: &mut FuncEmitter<'_>,
+        counter: &mut usize,
+    ) -> Result<(), LowerError> {
+        match op {
+            CastOp::Zext | CastOp::Sext | CastOp::Trunc => {
+                self.lower_int_width_cast(op, from_ty, to_ty, value, result_id, ctx, f)
+            }
+            CastOp::Bitcast | CastOp::PtrToInt | CastOp::IntToPtr => self
+                .lower_reinterpret_cast(op, from_ty, to_ty, value, result_id, ctx, f, counter),
+        }
+    }
+
+    /// Lower a width-changing integer cast (`zext`/`sext`/`trunc`). These operate
+    /// on integer types only; pointer-typed forms are the reinterpret casts.
+    #[allow(clippy::too_many_arguments)]
+    fn lower_int_width_cast(
         &self,
         op: CastOp,
         from_ty: IrType,
@@ -838,14 +986,7 @@ impl IsaLowerer {
                     )));
                 }
             }
-            _ => {
-                return Err(LowerError::UnsupportedInstruction(format!(
-                    "{} ({} -> {}) is not supported on the VM backend: no ISA instruction reinterprets bits",
-                    op.name(),
-                    from_ty,
-                    to_ty,
-                )));
-            }
+            _ => unreachable!(),
         }
 
         let Some(id) = result_id else { return Ok(()) };
@@ -923,6 +1064,149 @@ impl IsaLowerer {
         Ok(())
     }
 
+    /// Lower a representation-preserving reinterpretation (`bitcast`,
+    /// `ptrtoint`, `inttoptr`) to zero-cost cell moves on the VM.
+    ///
+    /// SA48 pointers are single 32-bit cells, so every reinterpretation the
+    /// LLVM frontend can express is a pure cell copy — never a value
+    /// transformation:
+    ///
+    /// - `ptrtoint ptr → i32` copies the pointer cell (canonicalized to an `I32`
+    ///   word); `ptrtoint ptr → i64` zero-extends it into the `(low, high)` limb
+    ///   pair.
+    /// - `inttoptr` from a single-cell integer copies the cell into the pointer
+    ///   slot; from an `i64` it keeps the low limb and **traps** when the high
+    ///   limb is nonzero, mirroring the interpreter's refusal to silently
+    ///   truncate an address that does not fit the 32-bit pointer.
+    /// - `bitcast` is accepted only when it is a genuine no-op reinterpretation
+    ///   (equal-size, equal-kind: pointer→pointer or same-width integer→integer)
+    ///   and copies the source cells through.
+    ///
+    /// Forms that would require a value transformation are rejected explicitly
+    /// (never approximated), with a diagnostic naming the offending conversion.
+    #[allow(clippy::too_many_arguments)]
+    fn lower_reinterpret_cast(
+        &self,
+        op: CastOp,
+        from_ty: IrType,
+        to_ty: IrType,
+        value: ValueId,
+        result_id: Option<ValueId>,
+        ctx: &LowerCtx,
+        f: &mut FuncEmitter<'_>,
+        counter: &mut usize,
+    ) -> Result<(), LowerError> {
+        let Some(id) = result_id else { return Ok(()) };
+        let q = ctx.first_slot(id)?;
+
+        // ---- Form validation (mirrors the interpreter's `cast_value`). ----
+        match op {
+            CastOp::PtrToInt => {
+                if from_ty != IrType::Pointer {
+                    return Err(LowerError::UnsupportedInstruction(format!(
+                        "ptrtoint source must be a pointer, got {from_ty}"
+                    )));
+                }
+                if !matches!(to_ty, IrType::I32 | IrType::I64) {
+                    return Err(LowerError::UnsupportedInstruction(format!(
+                        "ptrtoint target must be a pointer-sized integer (i32/i64), got {to_ty}"
+                    )));
+                }
+            }
+            CastOp::IntToPtr => {
+                if to_ty != IrType::Pointer {
+                    return Err(LowerError::UnsupportedInstruction(format!(
+                        "inttoptr target must be a pointer, got {to_ty}"
+                    )));
+                }
+                if !from_ty.is_integer() && from_ty != IrType::Pointer {
+                    return Err(LowerError::UnsupportedInstruction(format!(
+                        "inttoptr source must be an integer or pointer, got {from_ty}"
+                    )));
+                }
+            }
+            CastOp::Bitcast => {
+                if from_ty.size_in_bytes() != to_ty.size_in_bytes() {
+                    return Err(LowerError::UnsupportedInstruction(format!(
+                        "bitcast requires equal byte sizes, got {from_ty} -> {to_ty}"
+                    )));
+                }
+                // Only a same-kind, same-width reinterpretation preserves the
+                // cell bit pattern. Pointer↔integer bitcasts are not valid LLVM
+                // IR at all, and an `f64` cell has no faithful word form here.
+                let same_width_int = from_ty.is_integer()
+                    && to_ty.is_integer()
+                    && from_ty.integer_width() == to_ty.integer_width();
+                let ptr_to_ptr = from_ty == IrType::Pointer && to_ty == IrType::Pointer;
+                if !same_width_int && !ptr_to_ptr {
+                    return Err(LowerError::UnsupportedInstruction(format!(
+                        "bitcast ({from_ty} -> {to_ty}) is not a representation-preserving \
+                         reinterpretation on the VM backend"
+                    )));
+                }
+            }
+            _ => unreachable!(),
+        }
+
+        // ---- Emission. ----
+        match op {
+            CastOp::PtrToInt => match to_ty {
+                // Address -> single i32 cell (canonical word so the result can
+                // reach the strict `i32` word ops).
+                IrType::I32 => {
+                    self.emit_load(value, ctx, f)?;
+                    self.canonicalize_top_word(f);
+                    f.push(IsaInstr::LocalSet(q));
+                }
+                // Address -> i64: zero-extend into the (low, high) limb pair.
+                IrType::I64 => {
+                    self.emit_load(value, ctx, f)?;
+                    self.canonicalize_top_word(f);
+                    f.push(IsaInstr::LocalSet(q));
+                    f.push(IsaInstr::ConstI32(0));
+                    f.push(IsaInstr::LocalSet(q + 1));
+                }
+                _ => unreachable!(),
+            },
+            CastOp::IntToPtr => {
+                if from_ty == IrType::I64 {
+                    // The address must fit the 32-bit pointer. Trap when the
+                    // high limb is nonzero instead of silently truncating it
+                    // (the interpreter rejects the same value); otherwise the
+                    // low limb is the address.
+                    let n = *counter;
+                    *counter += 1;
+                    let ok_label = format!("__inttoptr_{n}_ok");
+                    let fail_label = format!("__inttoptr_{n}_fail");
+                    self.emit_load_limb(value, 1, ctx, f)?;
+                    f.push(IsaInstr::ConstI32(0));
+                    f.push(IsaInstr::Eq); // i1 flag: high limb == 0
+                    f.push(IsaInstr::Branch(ok_label.clone(), fail_label.clone()));
+                    f.set_label(&fail_label);
+                    f.push(IsaInstr::Trap);
+                    f.set_label(&ok_label);
+                    self.emit_load_limb(value, 0, ctx, f)?;
+                    self.canonicalize_top_word(f);
+                    f.push(IsaInstr::LocalSet(q));
+                } else {
+                    // Single-cell source (i1/i8/i16/i32, or a pointer
+                    // passthrough in degenerate IR): copy into the pointer slot.
+                    self.emit_load(value, ctx, f)?;
+                    self.canonicalize_top_word(f);
+                    f.push(IsaInstr::LocalSet(q));
+                }
+            }
+            CastOp::Bitcast => {
+                // Same-kind, same-width no-op: copy the source cells through to
+                // the result slot (one cell, or two for an i64↔i64 form).
+                self.emit_load(value, ctx, f)?;
+                self.emit_store(id, ctx, f)?;
+            }
+            _ => unreachable!(), // routed to lower_int_width_cast
+        }
+        Ok(())
+    }
+
     /// Push the single-cell integer `value` as an I32 word, widening an i1
     /// (whose slot holds an `I1` value) by adding it to a zero constant.
     fn emit_cast_source_as_i32(
@@ -934,7 +1218,7 @@ impl IsaLowerer {
     ) -> Result<(), LowerError> {
         self.emit_load(value, ctx, f)?;
         if from_ty == IrType::I1 {
-            self.widen_top_flag(f);
+            self.canonicalize_top_word(f);
         }
         Ok(())
     }
