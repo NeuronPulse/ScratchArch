@@ -149,8 +149,8 @@ the last non-declaration) is used as the module entry point.
   names
 - `getelementptr` with constant or dynamic (typed) indices → byte offsets
 - Global variables: data globals lower to a module static-data segment; `@name`
-  operands become absolute-address constants; word-granular segments are
-  VM-exact, byte-granular segments run exactly on the interpreter
+  operands become absolute-address constants; seeding is byte-exact, so
+  word-granular *and* byte-granular segments are VM-exact
 - LLVM bit intrinsics: `llvm.bswap`, `llvm.ctpop`, `llvm.ctlz`, `llvm.cttz`
   (widths 8/16/32/64), resolved by the interpreter as pure expansions
 - `llvm.memcpy`/`llvm.memmove`/`llvm.memset` and runtime intrinsics
@@ -181,9 +181,16 @@ array indexed by a dynamic value (low limb into the 32-bit address space) or a
 multi-byte element array scaled by the same software `mul` — lowers and runs.
 Divide-by-zero is manufactured as the word `0/0` error inside the divrem
 helper, so the VM and interpreter raise the same `DivisionByZero` on the same
-module. Sub-word/byte global data and `llvm.*`/runtime intrinsics remain
-interpreter-exact; the VM rejects those modules with a named diagnostic instead
-of misreading bytes. Nothing is approximated.
+module. Sub-word memory is byte-exact on the VM too: a single-limb
+load/store writes exactly `IrType::size_in_bytes()` bytes via `Load8`/`Store8`
+(`i16` = two little-endian byte accesses, `i1` load = `byte > 0`), and
+reinterpretation (`bitcast`/`ptrtoint`/`inttoptr`) lowers to a zero-cost
+cell-preserving copy — `ptrtoint i64` zero-extends into the limb pair, `inttoptr
+i64` traps on a nonzero high limb rather than truncating, and `bitcast` is
+accepted only as a same-size same-kind no-op. Only `llvm.*`/runtime intrinsics
+remain interpreter-exact (no `define`d body for the VM to call); the VM rejects
+those modules with a named diagnostic instead of misreading bytes. Nothing is
+approximated.
 
 ### Known gaps (see LLVM_COMPATIBILITY.md)
 

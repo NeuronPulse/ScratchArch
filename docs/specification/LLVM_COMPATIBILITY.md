@@ -147,9 +147,9 @@ width (`i1`–`i64`), on the interpreter and on the VM's two-limb path alike.
 | `sext` | `Sext` | **S** | Sign-extend; VM fills the high limb / sign-extends the low cell exactly |
 | `trunc` | `Trunc` | **S** | Wider → narrower, low bits kept; VM reads the low limb for `i64→…` |
 | `bitcast ptr→ptr` | — | **S** | No-op passthrough |
-| `bitcast` int↔int | `Bitcast` | **IO** | Same-width reinterpretation; interpreter exact, VM rejects (`"no ISA instruction reinterprets bits"`) — a no-op path is compatible and tracked |
-| `ptrtoint` | `PtrToInt` | **IO** | Address → integer of pointer width (interpreter); VM rejects pending the same no-op path |
-| `inttoptr` | `IntToPtr` | **IO** | Integer → address (interpreter); VM rejects pending the same no-op path |
+| `bitcast` int↔int | `Bitcast` | **S** | Same-width reinterpretation; both engines copy the cell(s) through unchanged |
+| `ptrtoint` | `PtrToInt` | **S** | Address → integer of pointer width; `i32` copies the address cell, `i64` zero-extends into the `(low, high)` limb pair |
+| `inttoptr` | `IntToPtr` | **S** | Integer → address: any single-cell integer copies through; an `i64` source **traps on a nonzero high limb** (never a silent truncation — same value the interpreter rejects), else its low limb is the address (§6.1) |
 | float conversions (`fptosi`, …) | — | **U** | Floats unsupported |
 
 ### 5.4 Memory
@@ -157,10 +157,10 @@ width (`i1`–`i64`), on the interpreter and on the VM's two-limb path alike.
 | LLVM | SAIR | Status | Notes |
 |------|------|--------|-------|
 | `alloca T` / `alloca T, i32 N` | `Alloca` (byte array) | **S** | Sized from the target layout; constant count |
-| `load` / `store` | `Load` / `Store` | **S** | Typed; `i64` = two limbs at `addr`/`addr+4` on the VM |
+| `load` / `store` | `Load` / `Store` | **S** | Typed; `i64` = two limbs at `addr`/`addr+4` on the VM. Sub-word types (`i1`/`i8`/`i16`) write exactly `ty.size_in_bytes()` bytes via `Load8`/`Store8`, little-endian, neighbours preserved (§6.1) |
 | `getelementptr` | single byte-offset `Gep` over `i8` | **S** | Constant indices fold to a byte offset (works everywhere); a *dynamic* index on a byte array carries its low limb into the 32-bit address space; a dynamic index on a multi-byte-element array multiplies the index by the element size with the same software `mul` the VM uses for full-width `i64` multiply (§5.1). Interpreter and VM are exact for all three |
 | `volatile` / `atomic` | — | **U** | Rejected (alignment and other attributes are tolerated) |
-| global data (`@g = global T init`) | static data segment; uses of `@g` are its absolute address (I32) | **P** | Flat segment laid out below the stack floor (`STATIC_DATA_BASE`); the region below `stack_limit` is never stack-allocated, so it is safe static data. Interpreter seeding is **byte-exact**. Supported initializers: scalar integers (`i1/i8/i16/i32/i64`), `zeroinitializer`, `null`, pointer relocations (`ptr @other`), `c"…"` byte strings, and flat arrays of scalars. Rejected with explicit diagnostics: struct/void globals, `undef`/`poison`, nested-aggregate (array-of-array) initializers, and relocations to undeclared globals. **Address-of-function is rejected** (no function-pointer ABI — see the indirect-`call` row in §5.5). VM split: word-granular data is VM-exact; sub-word/byte data is interpreter-only (§6.1) |
+| global data (`@g = global T init`) | static data segment; uses of `@g` are its absolute address (I32) | **P** | Flat segment laid out below the stack floor (`STATIC_DATA_BASE`); the region below `stack_limit` is never stack-allocated, so it is safe static data. Seeding is **byte-exact on both backends**, so word- *and* sub-word/byte leaves run on the interpreter and the VM alike (§6.1); a segment that does not fit below the stack floor is rejected on either engine. Supported initializers: scalar integers (`i1/i8/i16/i32/i64`), `zeroinitializer`, `null`, pointer relocations (`ptr @other`), `c"…"` byte strings, and flat arrays of scalars. Rejected with explicit diagnostics: struct/void globals, `undef`/`poison`, nested-aggregate (array-of-array) initializers, and relocations to undeclared globals. **Address-of-function is rejected** (no function-pointer ABI — see the indirect-`call` row in §5.5) |
 
 ### 5.5 Calls, intrinsics, and control flow
 
@@ -202,15 +202,16 @@ the frozen ISA VM backend can lower the resulting SAIR:
 | `and`/`or`/`xor` (all integer widths) | Supported | Supported (word op; `i64` per-limb) | Supported |
 | `shl`/`lshr`/`ashr` (all integer widths) | Supported | Supported (software helpers `__sair_shl64`/`__sair_lshr64`/`__sair_ashr64`) | Supported |
 | `unreachable` | trap | Supported — `Trap` terminal primitive (§5.6) | Supported |
-| `bitcast`/`ptrtoint`/`inttoptr` | Supported | Rejected — no reinterpret ISA | Interpreter only |
+| `i1`/`i8`/`i16` loads and stores (byte memory) | Supported | Supported — width-exact `Load8`/`Store8` sequences (§6.1 below) | Supported |
+| `bitcast`/`ptrtoint`/`inttoptr` | Supported | Supported — cell-preserving reinterpretation; `inttoptr i64` traps on a nonzero high limb | Supported |
 | `llvm.*` bit intrinsics, `llvm.memcpy`/`memset`, runtime intrinsics | Supported | No `define`d body to run | Interpreter only |
 | global data, word-granular (aligned `i32`/`i64`/`ptr` leaves) | Supported | Supported (VM-exact static segment) | Supported |
-| global data, sub-word/byte leaves (`i1`/`i8`/`i16`, byte strings, arrays with byte elements) | Supported | Rejected — `sub-word or byte` diagnostic | Interpreter only |
+| global data, sub-word/byte leaves (`i1`/`i8`/`i16`, byte strings, arrays with byte elements) | Supported | Supported (byte-exact static segment; neighbouring bytes preserved) | Supported |
 
 No `VM unsupported` row remains: every construct the VM can express — exactly,
 or via a program-level software helper (§5.8) — is marked Supported, and what
-it cannot (reinterpret no-ops, byte-granular globals, bodyless calls) is on the
-`Interpreter only` side with a compatible, tracked path.
+it cannot (bodyless runtime-intrinsic calls) is on the `Interpreter only` side
+with a compatible, tracked path.
 
 The VM gaps above are **backend** limitations, not translator ones. Nothing is
 approximated: constructs the VM cannot execute faithfully are rejected with a
@@ -222,14 +223,29 @@ collide with the downward-growing stack.
 **v0.3 ISA extension.** The frozen word ISA gains three **additive** stack-machine
 primitives — `Load8`, `Store8`, `Trap` — defined normatively in
 [`ISA.md`](./ISA.md) Appendix A and [`EXECUTION_MODEL.md`](./EXECUTION_MODEL.md)
-§5.6. They are target-independent (no Scratch/LLVM/libc semantics). Of the rows
-these were expected to move from `Rejected` toward the exact-VM column, the
-**trap path has now landed**: `unreachable` and the interpreter/VM `Trap` rows
-above are re-stated and exercised by `diff_unreachable_traps_both_engines`. The
-**`sub-word/byte globals`** and the **reinterpret no-op path**
-(`bitcast`/`ptrtoint`/`inttoptr`) rows remain on the `Interpreter only` side and
-are tracked as gaps (§8). Word `Load`/`Store` are unchanged — the matrix never
-claims a VM capability before the VM exercises it.
+§5.6. They are target-independent (no Scratch/LLVM/libc semantics). Word
+`Load`/`Store` are unchanged — the matrix never claims a VM capability before the
+VM exercises it.
+
+**Byte-exact memory and reinterpretation on the VM.** `Load8`/`Store8` give the VM
+width-exact sub-word memory and close the last byte-granular gaps. A single-limb
+load/store writes exactly `ty.size_in_bytes()` bytes, little-endian, so an `i8`
+store never touches its neighbours and an `i16` is two byte accesses
+(`hi << 8 | lo`); an `i1` load is `byte > 0` after `Load8`, a genuine flag.
+Static data is seeded **byte-exact** on both backends, so sub-word/byte leaves
+(`i1`/`i8`/`i16`, byte strings, arrays with byte elements) run on the VM too, not
+just the interpreter. Reinterpretation is lowered as a **zero-cost
+cell-preserving** copy — never a conversion where LLVM requires a value
+transformation: `ptrtoint` copies the 32-bit address cell (`i64` zero-extends into
+the limb pair), `inttoptr` copies a single-cell integer back (an `i64` source
+**traps on a nonzero high limb** — the interpreter rejects the same value — rather
+than truncating), and `bitcast` is accepted only as a same-size, same-kind no-op
+(pointer→pointer or equal-width integer→integer). Both engines drive memory width
+from the IR type (`IrType::size_in_bytes`) and cell decomposition from the
+`TargetProfile`, so interpreter and VM agree byte-for-byte; the differential suite
+and the `bytes`/`reinterp` corpus fixtures (native exit 412 / 331, §9) pin it.
+Layout decisions flow through the profile and the source layout
+(`scratcharch_target::layout`); no width is hard-coded in the VM backend.
 
 **Full-width arithmetic on the VM.** Closing `i64 mul`/`div`/`rem` required no
 further ISA change. The two-limb forms lower to calls on program-level software
@@ -270,17 +286,13 @@ frozen ISA semantics merely to satisfy a frontend case.
 
 ## 8. Known gaps
 
-1. **No reinterpret casts on the VM** (`bitcast`, `ptrtoint`, `inttoptr`):
-   the interpreter is exact; a VM no-op path is compatible and tracked.
-2. **Call-runtime constructs are interpreter-only** (`llvm.memcpy` family,
+1. **Call-runtime constructs are interpreter-only** (`llvm.memcpy` family,
    bit intrinsics): no `define`d body exists for the VM to call.
-3. **Globals with sub-word/byte data are interpreter-only**; the VM's word ops
-   cannot read them. Word-granular globals run on both backends (§6.1).
-4. **Hex literals are not lexed** (`0x…`); integer constants are decimal.
-5. **Poison is not modeled.** Per SAIR's no-poison policy, overflow wraps and
+2. **Hex literals are not lexed** (`0x…`); integer constants are decimal.
+3. **Poison is not modeled.** Per SAIR's no-poison policy, overflow wraps and
    zero-operand `ctlz`/`cttz` return the width even when LLVM would permit
    poison. This is a deliberate, documented divergence.
-6. **`switch` is a linear chain**, not a jump table or binary search.
+4. **`switch` is a linear chain**, not a jump table or binary search.
 
 ## 9. Verification
 
@@ -294,7 +306,11 @@ and the generated status report):
    family with sign-fill and cross-limb shift amounts (`bitwise`, native exit
    `293345`), full-width `i64` multiply/divide/remainder over real clang
    `mul`/`udiv`/`urem`/`sdiv`/`srem` (`i64muldiv`, native checksum `3579139508`
-   — high-limb weighted so a dropped limb or carry perturbs it), structs,
+   — high-limb weighted so a dropped limb or carry perturbs it), byte/sub-word
+   globals and mixed-width loads and stores with little-endian neighbour checks
+   (`bytes`, native checksum `412` — each width/order/clobber check adds a
+   distinct flag), pointer↔integer reinterpretation through integer-carried
+   pointers (`reinterp`, native checksum `331`), structs,
    arrays, globals, `llvm.*`/runtime intrinsics, memory intrinsics, and
    function calls. `phi` loops do not appear in clang `-O0` output (clang keeps
    induction variables in memory at `-O0`); loop-carried `phi` is exercised by
@@ -313,13 +329,17 @@ and the generated status report):
    `i64::MIN/-1`), `phi_icmp_tests.rs` (phi + signed `icmp`), `memintrin_tests.rs`
    (memcpy/memmove/memset), `reject_tests.rs` (indirect calls), the driver's
    `vm_backend_tests.rs` (interpreter/VM agreement incl. the multi-cell `i64`
-   corpus and profile-driven limb counts), and the interpreter's
-   `vm_differential_tests.rs` (24 tests requiring bit-for-bit
+   corpus and profile-driven limb counts, byte-granular globals, `i1`/`i8`/`i16`
+   loads/stores, and reinterpret round-trips with `inttoptr` overflow trapping
+   on both engines), and the interpreter's
+   `vm_differential_tests.rs` (31 tests requiring bit-for-bit
    interpreter-vs-VM agreement: `and`/`or`/`xor`/`shl`/`lshr`/`ashr` across
    `i1`–`i64`, poison-region shift amounts, negative sign-fill, cross-limb `i64`
    shifts, full-width `i64` `mul`/`udiv`/`urem` — carry-across-limbs, exact
    long-division matches, boundary divisors, and an `lcg` random sweep over both
-   — plus `unreachable` trapping in both engines).
+   — plus `unreachable` trapping in both engines, `i1`/`i8`/`i16` memory
+   round-trips, and cell-preserving `ptrtoint`/`inttoptr`/`bitcast`
+   reinterpretation with the `inttoptr i64` overflow trap).
 
 `scripts/run_c_tests.sh` drives the C corpus as a gate.
 
@@ -332,7 +352,16 @@ and the generated status report):
   the VM by the program-level software helpers `__sair_shl64`/`__sair_lshr64`/
   `__sair_ashr64` (§5.7); full-width `i64` multiply/divide/remainder close with
   two further software helpers `__sair_mul64`/`__sair_udivrem64` (§5.8), which
-  also carry dynamic scaled `getelementptr` to Supported. The `VM unsupported`
+  also carry dynamic scaled `getelementptr` to Supported. The reinterpret and
+  byte-memory completion then closes the last VM gaps of that milestone:
+  `Load8`/`Store8` give width-exact `i1`/`i8`/`i16` loads and stores
+  (neighbour-preserving, little-endian) and make the static-data segment
+  byte-exact, so sub-word/byte globals are VM-supported; `bitcast`/`ptrtoint`/
+  `inttoptr` lower to zero-cost cell-preserving copies (`ptrtoint i64`
+  zero-extends; `inttoptr i64` traps on a nonzero high limb), so reinterpret
+  casts are VM-supported. Two real-clang fixtures (`bytes` = 412, `reinterp` =
+  331) join the corpus with three-way native/interpreter/VM agreement, and the
+  differential suite grows to 31 tests. The `VM unsupported`
   column is now empty (that classification remains defined for future
   capability boundaries); the remaining gaps are the tracked `Interpreter only`
   paths (§8).

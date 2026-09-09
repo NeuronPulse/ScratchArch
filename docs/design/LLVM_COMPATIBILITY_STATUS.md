@@ -47,15 +47,7 @@ SAIR/ISA `Call` names a static callee. A call through a function-pointer *value*
 `UnsupportedInstruction` naming the missing ABI — there is no wrong-dispatch
 path.
 
-### 3. Byte-granular (sub-word) globals are interpreter-only
-
-Word-granular global data (aligned `i32`/`i64`/`ptr` leaves) is **VM-exact** via
-the module static-data segment. Sub-word/byte leaves (`i1`/`i8`/`i16`, byte
-strings, arrays with byte elements) run exactly on the interpreter; the VM's
-word ops cannot read them and the module is rejected with a `sub-word or byte`
-diagnostic.
-
-### 4. `llvm.*` and runtime intrinsics have no VM body
+### 3. `llvm.*` and runtime intrinsics have no VM body
 
 `llvm.memcpy`/`memmove`/`memset`, `llvm.bswap`/`ctpop`/`ctlz`/`cttz`, and the
 `__scratcharch_*` runtime intrinsics are resolved by the SAIR interpreter
@@ -64,23 +56,17 @@ are **interpreter-only**: there is no `define`d body for the VM to call, and the
 VM rejects such modules with an explicit diagnostic rather than running a
 bodyless call.
 
-### 5. `switch` is a linear chain
+### 4. `switch` is a linear chain
 
 `switch` lowers to a chain of `eq` + `CondBranch` against a shared default.
 Correct at every supported width on both the interpreter and the VM, but a huge
 case table is not specialised into a jump table or binary search.
 
-### 6. Reinterpret casts are interpreter-only
-
-`bitcast` (int↔int), `ptrtoint`, and `inttoptr` are exact on the interpreter; the
-VM has no reinterpret/address-no-op path yet. A no-op path is compatible with the
-frozen ISA and tracked as a gap (§8 of the spec).
-
-### 7. Hex literals are not lexed
+### 5. Hex literals are not lexed
 
 Integer constants are decimal; `0x…` literals are not yet accepted by the lexer.
 
-### 8. Poison is not modeled (deliberate)
+### 6. Poison is not modeled (deliberate)
 
 Per SAIR's no-poison policy, overflow wraps and zero-operand `ctlz`/`cttz`
 return the width even where LLVM would permit poison. This is a documented,
@@ -113,7 +99,17 @@ are listed so a stale copy of this list is not mistaken for the current one:
   Dynamic scaled `getelementptr` (an `i64`/`i32` `mul` in the byte-offset
   computation) runs for free.
 - **`phi`**: first-class SAIR `Phi`, edge copies on the VM.
-- **Global data**: module static-data segment; word-granular leaves VM-exact.
+- **Byte-granular memory and sub-word/byte globals**: `Load8`/`Store8` give the
+  VM width-exact `i1`/`i8`/`i16` loads and stores (little-endian,
+  neighbour-preserving), and the static-data segment is seeded byte-exact, so
+  sub-word/byte leaves (`i1`/`i8`/`i16`, byte strings, arrays with byte
+  elements) run on the interpreter *and* the VM.
+- **Reinterpret casts** (`bitcast`/`ptrtoint`/`inttoptr`): lowered as zero-cost
+  cell-preserving copies on the VM — `ptrtoint i64` zero-extends into the limb
+  pair, `inttoptr i64` traps on a nonzero high limb (same value the interpreter
+  rejects), `bitcast` only as a same-size same-kind no-op. Both engines exact.
+- **Global data**: module static-data segment; word- and byte-granular leaves
+  VM-exact (byte-exact seeding).
 - **`llvm.memcpy`/`memmove`/`memset`**: handled by the interpreter's memory
   intrinsic family.
 - **Indirect calls**: *rejected explicitly* (named diagnostic) — never a wrong
@@ -133,13 +129,17 @@ are listed so a stale copy of this list is not mistaken for the current one:
   where it is not (exit codes compared `& 0xFF`).
 - **VM-backend suite** (`scratcharch-driver/tests/vm_backend_tests.rs`) forces
   interpreter/VM agreement, including the multi-cell `i64` corpus (two-limb
-  arithmetic and the software-helper multiply/divide/remainder) and
-  profile-driven limb counts.
+  arithmetic and the software-helper multiply/divide/remainder),
+  profile-driven limb counts, byte-granular globals, `i1`/`i8`/`i16`
+  loads/stores (LE, neighbour-preserving, unaligned), and reinterpret
+  round-trips with `inttoptr` overflow trapping on both engines.
 - **Differential suite** (`scratcharch-sair-interpreter/tests/
-  vm_differential_tests.rs`, 24 tests) requires bit-for-bit interpreter-vs-VM
+  vm_differential_tests.rs`, 31 tests) requires bit-for-bit interpreter-vs-VM
   agreement for the bitwise/shift family, full-width `i64`
   `mul`/`udiv`/`urem` (long-division matches, boundary divisors, an `lcg` random
-  sweep), and the `unreachable` trap in both engines.
+  sweep), the `unreachable` trap in both engines, `i1`/`i8`/`i16` memory
+  round-trips, and cell-preserving `ptrtoint`/`inttoptr`/`bitcast`
+  reinterpretation including the `inttoptr i64` overflow trap.
 - **Frontend-focused suites**: `translator_tests.rs`, `phi_icmp_tests.rs`,
   `memintrin_tests.rs`, `reject_tests.rs`, plus hand-written loop/`phi` fixtures
   for the VM corpus (`clang -O0` never emits `phi`; loop-carried `phi` is covered

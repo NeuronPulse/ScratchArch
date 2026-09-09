@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 cargo build                          # build all crates
-cargo test --workspace               # run all workspace tests (540 total)
+cargo test --workspace               # run all workspace tests (564 total)
 cargo test -p scratcharch-transform  # test a single crate
 cargo test -p scratcharch-llvm -- test_name --nocapture  # run one test
 cargo clippy --workspace --all-targets  # lint (zero warnings required)
@@ -93,9 +93,13 @@ runs per-limb word ops, and every shift and full-width
 translator to magnitudes) is realised by a demand-appended program-level
 software helper — `__sair_shl64`/`__sair_lshr64`/`__sair_ashr64`,
 `__sair_mul64`, `__sair_udivrem64` — built from the word ops, so no widening
-ISA was needed. Remaining constructs are `Interpreter only`: reinterpret casts
-(`bitcast`/`ptrtoint`/`inttoptr`), sub-word/byte global data, and `llvm.*`/
-runtime intrinsics (no `define`d body to call). The VM never approximates —
+ISA was needed. Sub-word memory is byte-exact: `i1`/`i8`/`i16` loads/stores
+lower to width-exact `Load8`/`Store8` sequences and the static-data segment is
+seeded byte-exact on both backends; reinterpret casts
+(`bitcast`/`ptrtoint`/`inttoptr`) lower to zero-cost cell-preserving copies
+(`ptrtoint i64` zero-extends, `inttoptr i64` traps on a nonzero high limb). The
+remaining constructs are `Interpreter only`: `llvm.*`/runtime intrinsics (no
+`define`d body to call). The VM never approximates —
 what it cannot execute faithfully it rejects with a named diagnostic.
 
 The authoritative per-construct status lives in
