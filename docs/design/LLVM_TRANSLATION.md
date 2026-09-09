@@ -90,6 +90,8 @@ unsupported types produce a clear **UnsupportedType** error at parse time.
 | `add`/`sub`/`mul` | `Add`/`Sub`/`Mul` | Wrapping (SAIR semantics) |
 | `udiv`/`urem` | `Div`/`Rem` | SAIR Div/Rem are unsigned floor — one-to-one, any width |
 | `sdiv`/`srem` | expansion | Signed, trunc toward zero, dividend sign; built from magnitudes (`translate_signed_divrem`) |
+| `and`/`or`/`xor` | `And`/`Or`/`Xor` | Width-preserving; `i8`/`i16` masked carriers, `i64` per-limb word ops on the VM (EXECUTION_MODEL.md §5.7) |
+| `shl`/`lshr`/`ashr` | `Shl`/`Lshr`/`Ashr` | Effective amount = `amount mod width` (deterministic poison region); `ashr` sign-replicates bit `w-1`. VM realises every shift via software helpers `__sair_shl64`/`__sair_lshr64`/`__sair_ashr64` (§5.7) |
 | `icmp eq/ne/ult/ugt/ule/uge` | `Eq`/`Lt`/`Gt` (+negation) | Unsigned bit-pattern compare, one-to-one, any width |
 | `icmp slt/sgt/sle/sge` | sign-bit select (`emit_signed_lt`) | Exact for negatives and mixed signs: `slt(a,b) = sign(a)!=sign(b) ? sign(a) : a <u b`; the other three derive from it |
 | `alloca` | `Alloca` | Byte array sized from layout |
@@ -107,7 +109,6 @@ unsupported types produce a clear **UnsupportedType** error at parse time.
 
 | `phi` | SAIR `Phi` | Loop-carried and merge phi, one-to-one; predecessor labels remapped to SAIR block names; verified on the interpreter and the VM (edge copies) |
 | `llvm.memcpy`/`llvm.memmove`/`llvm.memset` | calls resolved at runtime | Handled by the SAIR interpreter's memory-intrinsic family; the VM has no body to run and rejects these with an explicit diagnostic |
-| bitwise ops (`and`/`or`/`xor`/`shl`/`lshr`/`ashr`) | — | **not** translated; explicit **UnsupportedInstruction** error |
 | global variables | static data segment + address constants | Data globals lower to a module `StaticData` image; `@name` references become absolute-address `I32` constants (§ module symbols) |
 
 Floating-point ops, `float`/`double` types, vectors, and indirect calls are
@@ -134,6 +135,10 @@ the last non-declaration) is used as the module entry point.
 - `define`/`declare` with `i1`, `i8`, `i16`, `i32`, `i64`, `ptr`, `void`
 - Arithmetic: `add`, `sub`, `mul`, `udiv`, `urem`, `sdiv`, `srem`
   (signed ops are exact including negative operands)
+- Bitwise and shift: `and`, `or`, `xor`, `shl`, `lshr`, `ashr` at every supported
+  width; the full sign-fill and cross-limb `i64` behaviour is proven end-to-end by
+  the `bitwise` corpus fixture and the interpreter/VM differential suite
+  (`vm_differential_tests.rs`)
 - Comparison: `icmp eq/ne`, all unsigned predicates at all widths, and the
   signed predicates (`slt`/`sgt`/`sle`/`sge`) expanded exactly via the sign-bit
   identity — correct for negatives and mixed signs at `i8/i16/i32/i64`
@@ -156,13 +161,16 @@ the last non-declaration) is used as the module entry point.
 
 - Floating-point values/ops (`float`/`double`/`fadd`/`fsub`/…), vectors,
   `i128` and other unsupported types
-- Bitwise ops (`and`/`or`/`xor`/`shl`/`lshr`/`ashr`) — SAIR has no bitwise ops
 - Indirect calls through function pointers (no function-pointer ABI)
 
 ### VM-backend limitations
 
 The VM carries 64-bit integers as two 32-bit limbs for add/sub/compare/cast/
-load/store/select/phi. `i64` mul/div/rem are rejected with an explicit
+load/store/select/phi. Bitwise/logical ops (`and`/`or`/`xor`) run per-limb at any
+width; every shift runs through a software helper
+(`__sair_shl64`/`__sair_lshr64`/`__sair_ashr64`) that handles single- and
+two-limb operands with exact sign-fill (EXECUTION_MODEL.md §5.7). `i64`
+mul/div/rem are rejected with an explicit
 diagnostic (no 64-bit divide/widen ISA). Dynamic `getelementptr` into a byte
 array (i64 index, scale 1) lowers and runs; dynamic scaling by multi-byte
 element sizes needs an `i64 mul` and is rejected. Sub-word/byte global data and
@@ -171,8 +179,6 @@ with a named diagnostic instead of misreading bytes. Nothing is approximated.
 
 ### Known gaps (see LLVM_COMPATIBILITY.md)
 
-- Bitwise ops have no SAIR form, so C code that compiles to `and`/`or`/`xor`/
-  shifts at `-O0` is rejected rather than approximated.
 - `switch` lowers to a linear chain of `eq`+`CondBranch` compared at the
   switch's own type width; huge case tables are not specialised into a jump
   table or binary search.
@@ -250,6 +256,7 @@ plus a fresh-clang re-compile of each `.c` on every run:
 | `factorial`, `fib`, `recursion` | control flow, recursion, multi-block |
 | `signedcmp` | signed `icmp` on negatives/mixed signs (exact expansion) |
 | `i64arith` | `i64` add/sub across the limb boundary, signed `i64` compare, trunc |
+| `bitwise` | `and`/`or`/`xor` and every shift width/sign-fill combination incl. cross-limb `i64` amounts (native exit 293345) |
 | `memory`, `memintrin` | memory intrinsics (`__scratcharch_memcpy`, `llvm.memcpy`/`memmove`/`memset`) |
 | `intrinsics` | `llvm.bswap/ctpop/ctlz/cttz`, 16/32/64-bit, `i1 true` immarg |
 | `signed` | negative `sdiv`/`srem` (trunc-toward-zero, dividend sign) |
@@ -266,13 +273,14 @@ signed & unsigned division (including negatives and `i64::MIN / -1` wrapping),
 signed `icmp`, `phi`, and explicit rejection of unknown intrinsics and
 unsupported constructs. `scratcharch-driver`'s VM-backend tests run the
 i32-representable fixtures and the multi-cell `i64` corpus through the VM and
-require interpreter/VM agreement; `scratcharch-llvm/tests/` adds hand-written
+require interpreter/VM agreement; the interpreter's `vm_differential_tests.rs`
+adds bit-for-bit interpreter-vs-VM agreement for the whole bitwise/shift family
+plus the `unreachable` trap on both engines;
+`scratcharch-llvm/tests/` adds hand-written
 loop/`phi` fixtures and the memory-intrinsic matrix.
 
 ## 8. Future work
 
-- **Bitwise operations**: `and`, `or`, `xor`, `shl`, `lshr`, `ashr` (needs SAIR
-  ops; currently an explicit UnsupportedInstruction).
 - **Floating point**: `fadd`, `fsub`, `fmul`, `fdiv` (SAIR has `f64`, but the
   LLVM frontend rejects float types for now).
 - **Indirect calls**: a function-pointer ABI (currently rejected at parse time).

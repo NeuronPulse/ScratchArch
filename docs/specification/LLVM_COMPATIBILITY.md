@@ -113,8 +113,8 @@ Every row is exact on the SAIR interpreter unless the notes say otherwise.
 | `mul` | `Mul` | **P** | VM single-cell exact; **VU** for `i64` (needs 64-bit multiply — no widening ISA op) |
 | `udiv` / `urem` | `Div` / `Rem` | **P** | Unsigned floor, one-to-one; **VU** for `i64` (needs 64-bit divide) |
 | `sdiv` / `srem` | expansion | **P** | Exact trunc-toward-zero magnitude expansion over unsigned ops; **VU** for `i64` (inherits the `udiv`/`urem` limit) |
-| `and` / `or` / `xor` | — | **U** | Not translated (SAIR/ISA carry them; frontend does not expose them yet) |
-| `shl` / `lshr` / `ashr` | — | **U** | Not translated |
+| `and` / `or` / `xor` | `And` / `Or` / `Xor` | **S** | Width-preserving, wrapping; `i8/i16` masked carriers, `i32` word, `i64` per-limb word ops on the VM (EXECUTION_MODEL.md §5.7) |
+| `shl` / `lshr` / `ashr` | `Shl` / `Lshr` / `Ashr` | **S** | Effective amount = `amount mod w` (deterministic poison region, §5.7); `ashr` sign-replicates bit `w-1`. VM realises every shift via software helpers `__sair_shl64`/`__sair_lshr64`/`__sair_ashr64` (single-limb and two-limb) |
 
 ### 5.2 Comparison (`icmp`)
 
@@ -173,7 +173,7 @@ width (`i1`–`i64`), on the interpreter and on the VM's two-limb path alike.
 | `phi` | `Phi` | **S** | Frontend keeps `phi` as SAIR `Phi` with edge-selected semantics; the VM lowers it to edge copies (no frontend flattening) |
 | `select i1 %c, a, b` | `Select` | **S** | Cell-count generic, incl. `i64` values on the VM |
 | `switch` | chain of `eq` + `CondBranch` | **S** | Linear chain against a shared default |
-| `unreachable` | `Unreachable` | **IO** | Interpreter trap; the VM rejects it (`"needs a trap ISA instruction"`) |
+| `unreachable` | `Unreachable` | **S** | Both engines halt in a well-defined terminal trap state: interpreter `InterpError::Trap`, VM `VmError::Trap` at the trap location (EXECUTION_MODEL.md §5.6) |
 
 Control-flow translation is expressed purely in SAIR terms — it never depends on
 Scratch-specific behavior.
@@ -194,7 +194,9 @@ the frozen ISA VM backend can lower the resulting SAIR:
 | dynamic `getelementptr` into `i32`/wider elements | Supported | Rejected — `i64 mul` | VM unsupported |
 | `select` / `switch` | Supported | Supported | Supported |
 | `phi` | Supported | Supported (edge copies) | Supported |
-| `unreachable` | trap | Rejected — no trap ISA | Interpreter only |
+| `and`/`or`/`xor` (all integer widths) | Supported | Supported (word op; `i64` per-limb) | Supported |
+| `shl`/`lshr`/`ashr` (all integer widths) | Supported | Supported (software helpers `__sair_shl64`/`__sair_lshr64`/`__sair_ashr64`) | Supported |
+| `unreachable` | trap | Supported — `Trap` terminal primitive (§5.6) | Supported |
 | `bitcast`/`ptrtoint`/`inttoptr` | Supported | Rejected — no reinterpret ISA | Interpreter only |
 | `llvm.*` bit intrinsics, `llvm.memcpy`/`memset`, runtime intrinsics | Supported | No `define`d body to run | Interpreter only |
 | global data, word-granular (aligned `i32`/`i64`/`ptr` leaves) | Supported | Supported (VM-exact static segment) | Supported |
@@ -206,6 +208,18 @@ diagnostic that names the ISA need. Static data lives below `stack_limit` on
 *both* backends — a segment that does not fit below the stack floor is rejected
 (`StaticDataTooLarge` / "does not fit below the stack floor"), never allowed to
 collide with the downward-growing stack.
+
+**v0.3 ISA extension.** The frozen word ISA gains three **additive** stack-machine
+primitives — `Load8`, `Store8`, `Trap` — defined normatively in
+[`ISA.md`](./ISA.md) Appendix A and [`EXECUTION_MODEL.md`](./EXECUTION_MODEL.md)
+§5.6. They are target-independent (no Scratch/LLVM/libc semantics). Of the rows
+these were expected to move from `Rejected` toward the exact-VM column, the
+**trap path has now landed**: `unreachable` and the interpreter/VM `Trap` rows
+above are re-stated and exercised by `diff_unreachable_traps_both_engines`. The
+**`sub-word/byte globals`** and the **reinterpret no-op path**
+(`bitcast`/`ptrtoint`/`inttoptr`) rows remain on the `Interpreter only` side and
+are tracked as gaps (§8). Word `Load`/`Store` are unchanged — the matrix never
+claims a VM capability before the VM exercises it.
 
 ### 6.2 Scratch backend
 
@@ -223,35 +237,31 @@ matrix is not misread as implying Scratch exportability.
 ## 7. Explicitly rejected — summary
 
 Anything not listed above is rejected with an explicit, actionable diagnostic
-(`UnsupportedInstruction` / `UnsupportedType`), including: bitwise/logical ops
-and shifts, float ops and float conversions, aggregate values, indirect calls,
-the unsupported global shapes named in §5.4 (`undef`/`poison`, struct/void
-globals, nested aggregates, relocations to undeclared globals), unknown
-`llvm.*` intrinsics,
+(`UnsupportedInstruction` / `UnsupportedType`), including: float ops and float
+conversions, aggregate values, indirect calls, the unsupported global shapes
+named in §5.4 (`undef`/`poison`, struct/void globals, nested aggregates,
+relocations to undeclared globals), unknown `llvm.*` intrinsics,
 `i128`/vectors, and `volatile`/`atomic`. ScratchArch never silently drops an
 instruction, never lowers a test standard to force a PASS, and never changes
 frozen ISA semantics merely to satisfy a frontend case.
 
 ## 8. Known gaps
 
-1. **Bitwise ops and shifts are not translated** (`and`/`or`/`xor`/
-   `shl`/`lshr`/`ashr`). SAIR and the VM both have the ops; the LLVM frontend
-   has not yet wired them. Real clang code that needs them is rejected.
-2. **`i64 mul`/`div`/`rem` on the VM.** Two-limb add/sub/compare/cast/memory
+1. **`i64 mul`/`div`/`rem` on the VM.** Two-limb add/sub/compare/cast/memory
    exist; multiply/divide need a 64-bit widening operation the frozen ISA does
    not have. The interpreter is exact; the VM rejects with a diagnostic naming
    the requirement.
-3. **No reinterpret casts on the VM** (`bitcast`, `ptrtoint`, `inttoptr`):
+2. **No reinterpret casts on the VM** (`bitcast`, `ptrtoint`, `inttoptr`):
    the interpreter is exact; a VM no-op path is compatible and tracked.
-4. **Call-runtime constructs are interpreter-only** (`llvm.memcpy` family,
+3. **Call-runtime constructs are interpreter-only** (`llvm.memcpy` family,
    bit intrinsics): no `define`d body exists for the VM to call.
-5. **Globals with sub-word/byte data are interpreter-only**; the VM's word ops
+4. **Globals with sub-word/byte data are interpreter-only**; the VM's word ops
    cannot read them. Word-granular globals run on both backends (§6.1).
-6. **Hex literals are not lexed** (`0x…`); integer constants are decimal.
-7. **Poison is not modeled.** Per SAIR's no-poison policy, overflow wraps and
+5. **Hex literals are not lexed** (`0x…`); integer constants are decimal.
+6. **Poison is not modeled.** Per SAIR's no-poison policy, overflow wraps and
    zero-operand `ctlz`/`cttz` return the width even when LLVM would permit
    poison. This is a deliberate, documented divergence.
-8. **`switch` is a linear chain**, not a jump table or binary search.
+7. **`switch` is a linear chain**, not a jump table or binary search.
 
 ## 9. Verification
 
@@ -261,8 +271,10 @@ and the generated status report):
 1. **Committed real-clang fixtures** (`tests/c_programs/*.{c,ll}`): clang `-O0`
    output, committed, run through `translate_llvm` → interpreter. The corpus
    covers signed comparisons on negatives/mixed signs (`signedcmp`), `i64`
-   arithmetic across the limb boundary (`i64arith`), structs, arrays, globals,
-   `llvm.*`/runtime intrinsics, memory intrinsics, and function calls. `phi`
+   arithmetic across the limb boundary (`i64arith`), the full bitwise/shift
+   family with sign-fill and cross-limb shift amounts (`bitwise`, native exit
+   `293345`), structs, arrays, globals, `llvm.*`/runtime intrinsics, memory
+   intrinsics, and function calls. `phi`
    loops do not appear in clang `-O0` output (clang keeps induction variables in
    memory at `-O0`); loop-carried `phi` is exercised by the hand-written VM
    corpus `tests/c_programs_vm/phi_sum.ll`/`neg_countdown.ll` and the focused
@@ -278,9 +290,13 @@ and the generated status report):
 4. **Focused unit tests** per part: `translator_tests.rs` (constants, i64
    arithmetic, conversions, signed comparisons incl. negatives and
    `i64::MIN/-1`), `phi_icmp_tests.rs` (phi + signed `icmp`), `memintrin_tests.rs`
-   (memcpy/memmove/memset), `reject_tests.rs` (indirect calls), and the driver's
+   (memcpy/memmove/memset), `reject_tests.rs` (indirect calls), the driver's
    `vm_backend_tests.rs` (interpreter/VM agreement incl. the multi-cell `i64`
-   corpus and profile-driven limb counts).
+   corpus and profile-driven limb counts), and the interpreter's
+   `vm_differential_tests.rs` (17 tests requiring bit-for-bit interpreter-vs-VM
+   agreement for `and`/`or`/`xor`/`shl`/`lshr`/`ashr` across `i1`–`i64`,
+   poison-region shift amounts, negative sign-fill, and cross-limb `i64`
+   shifts, plus `unreachable` trapping in both engines).
 
 `scripts/run_c_tests.sh` drives the C corpus as a gate.
 

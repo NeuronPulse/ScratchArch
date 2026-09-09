@@ -228,7 +228,18 @@ halt()                       if no caller (program end)
 
 #### `unreachable`
 
-Must never be executed. If reached, behavior is undefined.
+Must never be executed. At the architecture level, if reached, behavior is undefined
+(§8). The **reference implementations** realize this deterministically rather than leaving
+it arbitrary:
+
+- On the SAIR interpreter, executing `unreachable` stops the program in a **trap** — a
+  well-defined terminal state, distinct from a normal return and from the machine-error
+  classes (§7.1).
+- On the ISA VM, `unreachable` lowers to the `trap` primitive ([`ISA.md`](./ISA.md)
+  Appendix A, §A.5) whose execution model is defined in §5.6.
+
+This is a *realization choice* the architecture permits (§8: an implementation may define
+its behavior on UB); it does not make the architecture-level terminator defined.
 
 ---
 
@@ -442,6 +453,119 @@ value can be stored in a slot at the end of one block and loaded from the same
 slot at the start of another, regardless of the operand-stack shape at the
 block boundary.
 
+### 5.6 Byte-memory and trap primitives (`Load8`, `Store8`, `Trap`)
+
+The VM's word `Load`/`Store` transfer a whole 32-bit cell (4 bytes) at an address.
+The three primitives below give the realized machine byte-granular memory and a
+program-declared terminal stop. They are additive (§A.6 of `ISA.md`): the word ops
+are unchanged. `byte` below means the low 8 bits of a 32-bit cell value.
+
+#### `Load8` — byte load, zero-extended
+
+Stack: `( addr → byte )`.
+
+1. Pop `addr`.
+2. Read the single byte at `⟦addr⟧` (`memory.read_byte`).
+3. Push the byte **zero-extended** to a 32-bit cell (`0x00 ..= 0xFF`).
+
+`Load8` reads exactly one byte and never sign-extends. Addressing and bounds follow
+the memory model exactly as word `Load` (address `0` and out-of-range are UB, §6).
+
+#### `Store8` — byte store
+
+Stack: `( addr byte → )`.
+
+1. Pop the byte value; take `byte = value & 0xFF`.
+2. Pop `addr`.
+3. Write exactly one byte: `memory.write_byte(⟦addr⟧, byte)`.
+
+`Store8` leaves `⟦addr⟧ ± 1` untouched — the property word `Store` lacks. Addressing
+and bounds follow the memory model exactly as word `Store`.
+
+#### Composition (how typed memory is realized)
+
+A typed load/store of a value narrower than a cell is composed from `Load8`/`Store8`
+in little-endian byte order by the lowering layer:
+
+| Type `T` | `load T` (via `Load8`) | `store T` (via `Store8`) |
+|---|---|---|
+| `i8` / `i1` | one `Load8` (mask bit 0 for `i1`) | one `Store8` |
+| `i16` | two `Load8`, combine `lo | hi<<8` | two `Store8`, low byte first |
+| `i32` | four `Load8`, assemble LE | four `Store8` |
+
+`i64` (two cells, 8 bytes) is assembled/disassembled as two `i32`-shaped halves over
+the same byte primitives. Nothing in the primitives is endian-sensitive; only their
+composition is.
+
+#### `Trap` — terminal, program-declared stop
+
+Stack: `( → )` — the operand stack is left unchanged.
+
+Executing `Trap` **terminates the program in a well-defined trap state** (`VmError::Trap`).
+The contract:
+
+- The program did **not** complete: there is no return value, and control does not
+  resume at any caller.
+- The state is distinguishable from every *machine-error* class (stack underflow, type
+  mismatch, division by zero, invalid address, call-stack exhaustion, undefined
+  function/label). Those report a defect in the *program's use of the machine*; a trap
+  is a stop the *program itself declared*.
+- It is **not** a host panic/unwind and **not** an arbitrary continuation.
+- The trap state records the location (function / block / program counter) that executed
+  it, so the host can report where the program's assumptions were violated.
+
+`Trap` is the VM realization of the `unreachable` terminator (§3.4).
+
+### 5.7 Bitwise and shift semantics (`and` / `or` / `xor` / `shl` / `lshr` / `ashr`)
+
+SAIR bitwise and shift instructions are width-preserving integer ops. This section
+fixes their realized semantics so the interpreter and the VM agree bit-for-bit.
+All arithmetic is on the stored two's-complement bits; nothing here is
+Scratch/`f64`-shaped.
+
+**Width carrier.** As with the arithmetic ops (§2.1), a sub-32-bit value is carried
+in a 32-bit word whose low `w` bits are the value; results are masked to `w` on
+write. A 64-bit value is carried as two 32-bit limbs (low limb at the lower
+slot / byte offset). `w = 1|8|16|32` occupy one limb; `w = 64` occupies two.
+
+**`and` / `or` / `xor`.** Applied per limb over the width bit pattern: single-limb
+values use the 32-bit word op on the masked cell; `i64` applies the word op to each
+limb independently. There is no cross-limb interaction.
+
+**Shift amount and the poison region.** LLVM treats a shift amount `≥ w` as poison.
+This stack chooses a deterministic definition so both engines can match exactly:
+the **effective amount is `amount mod w`** — `amount & (w - 1)` for single-limb
+values, `amount & 63` for `i64`. Amounts inside `[0, w)` therefore shift exactly;
+amounts at or above `w` are folded by the same mask instead of being UB or
+host-dependent.
+
+- `shl` zero-fills the vacated low bits; bits shifted out of the `w`-bit pattern are
+  discarded (the result is remasked to `w`).
+- `lshr` zero-fills the vacated high bits.
+- `ashr` replicates the sign bit (bit `w - 1` of the `w`-bit pattern) into the vacated
+  high bits.
+
+**VM realization.** The word ISA only exposes a 32-bit logical `Shr` (no shift of a
+masked sub-32 sign, no `ashr`, no 64-bit crossing). The lowerer therefore realises
+every shift by a small program-level software helper (`__sair_shl64` /
+`__sair_lshr64` / `__sair_ashr64`) that steps one bit per iteration over a
+`(lo, hi)` pair:
+
+- A single-limb value is widened into the pair: `shl`/`lshr` zero-extend (`hi = 0`),
+  while `ashr` **sign-extends across both limbs** — bits `w..31` of the low limb as
+  well as `hi` become `0` or `0xFFFF_FFFF` from bit `w - 1`. Sign-extending only
+  `hi` while leaving bits `w..31` of the low limb zero would not be the true
+  `w`-bit pattern and would shift the wrong negative value.
+- An `i64` value is passed as its two limbs directly.
+- After the helper returns, a single-limb result is remasked to `w` (an `i1` is
+  reduced to a flag), so the cell stays canonical (§2.1).
+
+The interpreter computes the same semantics directly on masked `w`-bit values
+(`scratcharch-sair-interpreter` `int_bitop`); the two engines are differentially
+tested over the boundary and poison-region cases (`vm_differential_tests.rs`). The
+interpreter/VM agreement is what makes these ops part of the executable
+LLVM→SAIR→ISA loop rather than an interpreter-only feature.
+
 ---
 
 ## 6. Memory Model
@@ -585,6 +709,12 @@ An implementation may trap, produce a distinguished result, or behave
 arbitrarily on undefined behavior. The architecture does not prescribe
 the behavior.
 
+> **Realized behavior of `unreachable`.** Although the row above is UB at the
+> architecture level, neither reference implementation leaves it arbitrary: the
+> SAIR interpreter and the ISA VM both realize it as a **trap** (§3.4, §5.6).
+> A host that reaches `unreachable` therefore observes a well-defined terminal
+> state, never a silent wrong value.
+
 ---
 
 ## 9. Frozen Decisions (v0.1)
@@ -606,3 +736,8 @@ the behavior.
     equivalent under correct lowering (§7.3).
 11. Local slots are a VM realization detail for stable cross-block SSA value
     storage; they do not alter the architecture-level SSA model (§5.5).
+12. `Load8`/`Store8`/`Trap` are the realized stack machine's byte-memory and
+    terminal primitives (§5.6, `ISA.md` Appendix A): `Load8` zero-extends a
+    byte, `Store8` writes the low byte only, `Trap` terminates in the
+    distinguished `VmError::Trap` state. They are additive — the word
+    `Load`/`Store` are unchanged — and target-independent.

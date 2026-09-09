@@ -456,8 +456,12 @@ documented in the matrix — nothing is silently approximated.
 
 ### Short-term
 
-- [ ] **Bitwise operations** (`and`, `or`, `xor`, `shl`, `lshr`, `ashr`)
-      — needs SAIR bitwise ops; currently rejected with an explicit diagnostic
+- [x] **Bitwise operations** (`and`, `or`, `xor`, `shl`, `lshr`, `ashr`) —
+      landed in the v0.3 milestone (bitwise + trap slice): SAIR/ISA bitwise ops
+      and `Trap`, LLVM translator + parser wiring, sub-32 `ashr` sign-fill fix,
+      software-helper shifts on the VM, and the `unreachable` trap model. Proven
+      by the `bitwise` corpus fixture and 17 interpreter/VM differential tests
+      (`vm_differential_tests.rs`); see EXECUTION_MODEL.md §5.7
 - [ ] **Floating point**: `fadd`/`fsub`/`fmul`/`fdiv` (SAIR has `f64`; the LLVM
       frontend still rejects float types)
 - [ ] **VM i64 mul/div/rem and widening** — two-limb add/sub/cmp/select/phi are

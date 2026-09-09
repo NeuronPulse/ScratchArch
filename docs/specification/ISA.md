@@ -293,6 +293,13 @@ sequence of non-terminator instructions followed by exactly one **terminator**:
 There is **no fall-through**: every block ends in a terminator. This is identical to LLVM and
 independent of how a runtime dispatches between blocks.
 
+> **Realized-machine note.** The reference VM realization of `unreachable` is **not** silent:
+> it lowers to the `trap` primitive defined in [Appendix A](#appendix-a--realized-stack-machine-byte-memory-and-trap-primitives),
+> which terminates the machine in a well-defined trap state. `trap` is a *realization choice*
+> for the architecture-level "undefined if it does [reach here]": a runtime may define any
+> behavior for unreachable, and this realization defines it as a distinguishable terminal
+> state rather than arbitrary continuation.
+
 > **Why not "one procedure per block"?** The prototype compiled each block to a Scratch
 > custom procedure and each branch to a procedure call — and offered a "branch jump table"
 > alternative for TurboWarp. Both are **dispatch strategies of a runtime**, not properties of
@@ -485,3 +492,115 @@ These are proposed **frozen** for v0.1 (rationale consolidated in [`README.md`](
 7. `phi` has simultaneous, edge-selected semantics.
 8. The type grammar is LLVM-shaped with opaque pointers.
 9. Intrinsics form an extensible registry with reference expansions.
+
+---
+
+## Appendix A — Realized stack machine: byte memory and trap primitives (normative)
+
+> **Scope.** The v0.1 reference toolchain realizes the architecture-level ISA on a
+> **stack machine over 32-bit word cells** (`scratcharch-core` `Instruction` values emitted by
+> `scratcharch-ir::lower`, executed by `scratcharch-vm`). Its fixed primitive set is:
+> word arithmetic (`I32Add/Sub/Mul/Div/Rem`), word bitwise (`And/Or/Xor/Shl/Shr`),
+> word compare (`Eq/Lt/Gt`), constants (`ConstI32/ConstF64/ConstI1`), stack control
+> (`Drop/Dup/Pick`), locals (`LocalGet/LocalSet`), memory (`Load/Store/Alloc`), and control
+> (`Jump/Branch/Call/Return`). A **cell** in this realization is one 32-bit unsigned word;
+> a multi-word value (`i64`) decomposes into cells little-endian exactly as §2.4 specifies
+> for a profile with `W = 32`.
+>
+> This appendix is normative for that realized machine only. It does not add registers or
+> typed instructions to the architecture-level ISA in the body of this document; it defines
+> three **additive** primitives — `Load8`, `Store8`, `Trap` — that close two genuine
+> expressive gaps in the realized set. The relationship to the architecture-level ISA is the
+> same one §9 already draws: the realized set is a *subset-plus-realization*; these three
+> are added to that subset because no existing primitive can express their semantics.
+
+### A.1 Why these two gaps are not expressible with the existing primitives
+
+1. **Byte/sub-word memory writes.** The realized `Load`/`Store` are fixed 4-byte word ops
+   (they read/write a whole `u32` cell at an address). The memory model
+   ([`MEMORY.md`](./MEMORY.md) §5.2–§5.3) defines `load`/`store` at byte granularity for
+   types narrower than a cell (`i1`/`i8`/`i16`, byte strings, byte arrays). Writing the *low
+   byte only* of an address — the operation a `store i8` needs — cannot be synthesized from a
+   4-byte word store without read-modify-write hazards on neighbouring bytes, and a read of a
+   single byte cannot be produced by a word load without also reading (and wrongly exposing)
+   its neighbours. A byte-granular memory primitive is the minimal additive capability.
+2. **`unreachable`.** The architecture-level terminator has "undefined if reached". The
+   realized machine must give every executed instruction an observable outcome — it cannot
+   "do nothing", because that would silently continue into wrong control flow, and it must
+   not be a host panic or an accidental value. A distinguishable terminal `trap` primitive is
+   the minimal additive capability.
+
+### A.2 Target-independence
+
+`Load8`, `Store8`, and `Trap` are **generic stack-machine primitives**. None of their
+semantics references Scratch, an LLVM `llvm.*` intrinsic, a C runtime, or a libc routine:
+they operate on byte addresses, byte values, and machine state defined purely by
+[`MEMORY.md`](./MEMORY.md) and the cell model. Higher-level constructs (e.g. LLVM `memcpy`,
+Scratch byte lists) are *lowered onto* these primitives by other layers; the primitives
+themselves carry no such flavour.
+
+### A.3 `Load8`
+
+Stack effect: `( addr → byte )`.
+
+```
+b = memory.read_byte(⟦addr⟧)          ; the single byte at address ⟦addr⟧
+push(zero_extend_32(b))               ; 0x00 ..= 0xFF, as an unsigned u32 cell
+```
+
+- Reads exactly one byte. The value pushed is the byte **zero-extended** to the 32-bit cell;
+  `Load8` never sign-extends.
+- Addressing and bounds follow [`MEMORY.md`](./MEMORY.md): address `0` is the null pointer
+  and out-of-range addresses are undefined, exactly as for word `Load`.
+
+### A.4 `Store8`
+
+Stack effect: `( addr byte → )`.
+
+```
+val = pop() & 0xFF                    ; low 8 bits of the byte operand
+addr = pop()
+memory.write_byte(⟦addr⟧, val)        ; writes exactly one byte
+```
+
+- Writes exactly one byte. The low 8 bits of the byte operand are stored; the upper 24 bits
+  (if any) are ignored.
+- `Store8` does not disturb the neighbouring bytes at `addr±1` — this is precisely the
+  property word `Store` lacks.
+- Addressing and bounds follow [`MEMORY.md`](./MEMORY.md) as for `Load8`.
+
+### A.5 `Trap`
+
+Stack effect: `( → )` — the operand stack is left untouched.
+
+`Trap` is a **terminal** instruction: executing it stops the machine. The program does not
+return a value and does not continue; it terminates in a **well-defined trap state** that
+is observable by the host:
+
+- the state is distinguishable from a normal `Return` (the program did **not** complete);
+- it is distinguishable from every defined error class that indicates a *bug in the
+  program's use of the machine* (stack underflow, type mismatch, division by zero, invalid
+  address, call-stack exhaustion) — a trap is a *program-declared* stop, not an
+  infrastructure failure;
+- it is **not** a host panic/unwind and it is **not** an arbitrary continuation;
+- it carries the location of the trap (function / basic block / program counter) so the host
+  can report where control fell off the end of the program's assumptions.
+
+Semantically `Trap` is the realized-machine realization of the architecture-level
+`unreachable` terminator (see §5.1): the program asserts control cannot reach here; if it
+does, the machine halts in the trap state.
+
+### A.6 Additive contract
+
+- Existing word `Load`/`Store` (4-byte) are **unchanged** in semantics; no instruction is
+  removed or redefined.
+- Multi-byte typed access (`i16`, `i32`, `i64`, packed reads/writes) and the guard for
+  sub-word masking are **composed by the lowering layer** from `Load8`/`Store8` with
+  little-endian byte order per [`MEMORY.md`](./MEMORY.md) §6. The primitives themselves are
+  single-byte and endian-independent.
+- The realized instruction set remains exactly the word set above plus `Load8`, `Store8`,
+  `Trap`. Nothing LLVM-specific (e.g. `memcpy`) or libc-specific is added; those are
+  synthesized from these primitives by higher layers.
+- The observable semantics of the three primitives are defined normatively in
+  [`EXECUTION_MODEL.md`](./EXECUTION_MODEL.md) §5.6, which is the execution-model home for
+  how they compose into a running program.
