@@ -468,6 +468,7 @@ dependencies = [
  "scratcharch-ir",
  "scratcharch-sair-interpreter",
  "scratcharch-target",
+ "scratcharch-vm",
 ]
 
 [[package]]

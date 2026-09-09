@@ -540,6 +540,164 @@ pub fn translate(program: &LlvmProgram) -> Result<IrModule, LlvmError> {
     Ok(module)
 }
 
+/// Largest constant length expanded inline by
+/// [`try_lower_mem_intrinsic`]. Longer constant-length and all runtime-length
+/// memory ops stay as calls: the SAIR interpreter resolves them through its
+/// runtime-intrinsic dispatch, and the VM reports its named
+/// "undefined function" diagnostic — never a silent approximation.
+const MAX_INLINE_MEMOP: i64 = 4096;
+
+/// Result of deciding how a `llvm.mem*`/`__scratcharch_memcpy` call lowers.
+enum MemIntrinsicLowering {
+    /// The call was replaced by an inline byte sequence. `result` is the value
+    /// the call produces (`__scratcharch_memcpy` yields its `dst` argument;
+    /// the void `llvm.mem*` intrinsics produce nothing).
+    Expanded(Option<ValueId>),
+    /// Not a constant-length, non-volatile memory op: emit an ordinary call
+    /// (resolved by the interpreter at runtime).
+    NotExpanded,
+}
+
+/// The memory-copy/set family a callee belongs to. Only the *canonical*
+/// families are ever expanded: `llvm.memcpy.p0.p0.i(32|64)`,
+/// `llvm.memmove.p0.p0.i(32|64)`, `llvm.memset.p0.i(32|64)`, plus the
+/// three-operand `__scratcharch_memcpy` runtime helper. Variants the
+/// interpreter deliberately rejects (`llvm.memcpy.inline.*`,
+/// `llvm.memcpy.element.unordered.*`) are *not* canonical, so they stay as
+/// calls and keep their explicit diagnostic — never silently copied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemFamily {
+    LlvmMemcpy,
+    LlvmMemmove,
+    LlvmMemset,
+    RuntimeMemcpy,
+}
+
+/// Classify a callee name into a memory family, or `None` if it is not one of
+/// the canonical constant-length memory ops this translator expands.
+fn classify_mem_callee(callee: &str) -> Option<MemFamily> {
+    if callee == "__scratcharch_memcpy" {
+        return Some(MemFamily::RuntimeMemcpy);
+    }
+    // A canonical pointer-typed intrinsic suffix: `p0.p0.i64` / `p0.i32`.
+    let copy_suffix_ok = |rest: &str| {
+        let segs: Vec<&str> = rest.split('.').collect();
+        segs.len() == 3 && segs[0].starts_with('p') && segs[1].starts_with('p')
+    };
+    if let Some(rest) = callee.strip_prefix("llvm.memcpy.") {
+        if copy_suffix_ok(rest) {
+            return Some(MemFamily::LlvmMemcpy);
+        }
+    }
+    if let Some(rest) = callee.strip_prefix("llvm.memmove.") {
+        if copy_suffix_ok(rest) {
+            return Some(MemFamily::LlvmMemmove);
+        }
+    }
+    if let Some(rest) = callee.strip_prefix("llvm.memset.") {
+        let segs: Vec<&str> = rest.split('.').collect();
+        if segs.len() == 2 && segs[0].starts_with('p') {
+            return Some(MemFamily::LlvmMemset);
+        }
+    }
+    None
+}
+
+/// Expand constant-length `llvm.memcpy`/`llvm.memmove`/`llvm.memset` and
+/// `__scratcharch_memcpy` into width-exact `i8` load/store sequences so the
+/// whole program runs on the VM as well as the interpreter (Part 4).
+///
+/// The copy reads *every* source byte into SSA values before storing any
+/// destination byte, which gives the as-if-through-a-temporary semantics that
+/// `memmove` promises for overlapping regions at no extra cost. `memset` is a
+/// straight store of the resolved value per byte. Only constant-length,
+/// non-volatile calls are expanded; anything else is left to the interpreter's
+/// runtime-intrinsic dispatch and stays a documented VM gap.
+fn try_lower_mem_intrinsic(
+    builder: &mut IrBuilder,
+    structs: &HashMap<String, Vec<LlvmType>>,
+    syms: &ModuleSyms<'_>,
+    st: &mut FnState,
+    callee: &str,
+    args: &[LlvmValue],
+) -> Result<MemIntrinsicLowering, LlvmError> {
+    let Some(family) = classify_mem_callee(callee) else {
+        return Ok(MemIntrinsicLowering::NotExpanded);
+    };
+    // A `llvm.mem*` intrinsic is only expanded when its `isvolatile` operand is
+    // a literal `false` — volatile semantics are not expressible as ordinary
+    // loads/stores. The three-operand `__scratcharch_memcpy` has no such gate.
+    let is_intrinsic = family != MemFamily::RuntimeMemcpy;
+    if is_intrinsic {
+        if args.len() < 4 {
+            return Ok(MemIntrinsicLowering::NotExpanded);
+        }
+        if !matches!(
+            args[3],
+            LlvmValue::Const(LlvmConst {
+                value: 0,
+                ty: LlvmType::I1
+            })
+        ) {
+            return Ok(MemIntrinsicLowering::NotExpanded);
+        }
+    }
+
+    // The length (arg 2) must be a small compile-time constant in bytes.
+    let len = match &args[2] {
+        LlvmValue::Const(LlvmConst {
+            value,
+            ty: LlvmType::I32 | LlvmType::I64,
+        }) => *value,
+        _ => return Ok(MemIntrinsicLowering::NotExpanded),
+    };
+    if !(0..=MAX_INLINE_MEMOP).contains(&len) {
+        return Ok(MemIntrinsicLowering::NotExpanded);
+    }
+    let len = len as u64;
+
+    let dst = resolve_value_or_emit(builder, structs, syms, st, &args[0])?;
+    let returns_dst = family == MemFamily::RuntimeMemcpy;
+    match family {
+        MemFamily::LlvmMemset => {
+            let value = resolve_value_or_emit(builder, structs, syms, st, &args[1])?;
+            emit_byte_set(builder, dst, value, len);
+            Ok(MemIntrinsicLowering::Expanded(None))
+        }
+        MemFamily::LlvmMemcpy | MemFamily::LlvmMemmove | MemFamily::RuntimeMemcpy => {
+            let src = resolve_value_or_emit(builder, structs, syms, st, &args[1])?;
+            emit_byte_copy(builder, dst, src, len);
+            Ok(MemIntrinsicLowering::Expanded(returns_dst.then_some(dst)))
+        }
+    }
+}
+
+/// Emit `len` byte copies from `src` to `dst`: load every source byte into an
+/// SSA value first, then store each into `dst + i`. All loads precede all
+/// stores, so overlapping regions behave exactly like a temporary buffer.
+fn emit_byte_copy(builder: &mut IrBuilder, dst: ValueId, src: ValueId, len: u64) {
+    let mut bytes = Vec::with_capacity(len as usize);
+    for i in 0..len {
+        let off = builder.const_i32(i as u32);
+        let sa = builder.gep(IrType::I8, src, vec![GepIndex::Dynamic(off)]);
+        bytes.push(builder.load(IrType::I8, sa));
+    }
+    for (i, byte) in bytes.into_iter().enumerate() {
+        let off = builder.const_i32(i as u32);
+        let da = builder.gep(IrType::I8, dst, vec![GepIndex::Dynamic(off)]);
+        builder.store(IrType::I8, byte, da);
+    }
+}
+
+/// Emit `len` stores of `value` at `dst + i` (`llvm.memset`).
+fn emit_byte_set(builder: &mut IrBuilder, dst: ValueId, value: ValueId, len: u64) {
+    for i in 0..len {
+        let off = builder.const_i32(i as u32);
+        let da = builder.gep(IrType::I8, dst, vec![GepIndex::Dynamic(off)]);
+        builder.store(IrType::I8, value, da);
+    }
+}
+
 fn translate_instruction(
     builder: &mut IrBuilder,
     structs: &HashMap<String, Vec<LlvmType>>,
@@ -728,16 +886,30 @@ fn translate_instruction(
             builder.store(ir_ty, val_id, addr_id);
         }
         LlvmInstr::Call { dest, return_ty, callee, args } => {
-            let ir_ret_ty = llvm_type_to_ir(return_ty)?;
-            let mut arg_ids = Vec::new();
-            for arg in args {
-                let id = resolve_value_or_emit(builder, structs, syms, st, arg)?;
-                arg_ids.push(id);
-            }
-            let result = builder.call(ir_ret_ty, callee.clone(), arg_ids);
-            if let Some(name) = dest {
-                if let Some(id) = result {
-                    st.values.insert(name.clone(), id);
+            // Constant-length memory ops are expanded inline so they execute on
+            // the VM as well as the interpreter (Part 4); anything else falls
+            // through to an ordinary (interpreter-resolved) call.
+            match try_lower_mem_intrinsic(builder, structs, syms, st, callee, args)? {
+                MemIntrinsicLowering::Expanded(result) => {
+                    if let Some(name) = dest {
+                        if let Some(id) = result {
+                            st.values.insert(name.clone(), id);
+                        }
+                    }
+                }
+                MemIntrinsicLowering::NotExpanded => {
+                    let ir_ret_ty = llvm_type_to_ir(return_ty)?;
+                    let mut arg_ids = Vec::new();
+                    for arg in args {
+                        let id = resolve_value_or_emit(builder, structs, syms, st, arg)?;
+                        arg_ids.push(id);
+                    }
+                    let result = builder.call(ir_ret_ty, callee.clone(), arg_ids);
+                    if let Some(name) = dest {
+                        if let Some(id) = result {
+                            st.values.insert(name.clone(), id);
+                        }
+                    }
                 }
             }
         }

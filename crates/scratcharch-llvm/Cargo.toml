@@ -9,3 +9,4 @@ scratcharch-target = { path = "../scratcharch-target" }
 
 [dev-dependencies]
 scratcharch-sair-interpreter = { path = "../scratcharch-sair-interpreter" }
+scratcharch-vm = { path = "../scratcharch-vm" }
