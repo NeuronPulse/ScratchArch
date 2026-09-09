@@ -1,0 +1,1080 @@
+{
+  "clang": "Debian clang version 19.1.7 (3+b1)",
+  "classes": {
+    "parse-failure": 4,
+    "scratch-backend-failure": 7,
+    "success": 10,
+    "vm-failure": 4
+  },
+  "corpus_version": "0.1",
+  "date": "2026-09-09",
+  "failures": [],
+  "features": {
+    "array": {
+      "percent": 50,
+      "semantic_mismatches": 0,
+      "success": 1,
+      "total": 2,
+      "unsupported": 1
+    },
+    "atomic": {
+      "percent": 0,
+      "semantic_mismatches": 0,
+      "success": 0,
+      "total": 1,
+      "unsupported": 1
+    },
+    "bitwise": {
+      "percent": 0,
+      "semantic_mismatches": 0,
+      "success": 0,
+      "total": 1,
+      "unsupported": 1
+    },
+    "float": {
+      "percent": 0,
+      "semantic_mismatches": 0,
+      "success": 0,
+      "total": 1,
+      "unsupported": 1
+    },
+    "global": {
+      "percent": 0,
+      "semantic_mismatches": 0,
+      "success": 0,
+      "total": 2,
+      "unsupported": 2
+    },
+    "i64": {
+      "percent": 0,
+      "semantic_mismatches": 0,
+      "success": 0,
+      "total": 3,
+      "unsupported": 3
+    },
+    "indirect-call": {
+      "percent": 0,
+      "semantic_mismatches": 0,
+      "success": 0,
+      "total": 1,
+      "unsupported": 1
+    },
+    "integer": {
+      "percent": 53,
+      "semantic_mismatches": 0,
+      "success": 9,
+      "total": 17,
+      "unsupported": 8
+    },
+    "intrinsic": {
+      "percent": 0,
+      "semantic_mismatches": 0,
+      "success": 0,
+      "total": 4,
+      "unsupported": 4
+    },
+    "memory": {
+      "percent": 38,
+      "semantic_mismatches": 0,
+      "success": 3,
+      "total": 8,
+      "unsupported": 5
+    },
+    "phi": {
+      "percent": 75,
+      "semantic_mismatches": 0,
+      "success": 3,
+      "total": 4,
+      "unsupported": 1
+    },
+    "pointer": {
+      "percent": 40,
+      "semantic_mismatches": 0,
+      "success": 2,
+      "total": 5,
+      "unsupported": 3
+    },
+    "shift": {
+      "percent": 0,
+      "semantic_mismatches": 0,
+      "success": 0,
+      "total": 1,
+      "unsupported": 1
+    },
+    "struct": {
+      "percent": 100,
+      "semantic_mismatches": 0,
+      "success": 1,
+      "total": 1,
+      "unsupported": 0
+    },
+    "switch": {
+      "percent": 100,
+      "semantic_mismatches": 0,
+      "success": 1,
+      "total": 1,
+      "unsupported": 0
+    },
+    "vector": {
+      "percent": 0,
+      "semantic_mismatches": 0,
+      "success": 0,
+      "total": 1,
+      "unsupported": 1
+    }
+  },
+  "fixtures": [
+    {
+      "class": "success",
+      "fresh_ir": false,
+      "interpreter": "I32(42)",
+      "name": "hello",
+      "native_exit": 42,
+      "stages": [
+        {
+          "message": null,
+          "stage": "parser",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "sair",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "optimizer",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "interpreter",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "vm",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "scratch",
+          "status": "pass"
+        }
+      ],
+      "violations": [],
+      "vm": "I32(42)"
+    },
+    {
+      "class": "success",
+      "fresh_ir": false,
+      "interpreter": "I32(42)",
+      "name": "add",
+      "native_exit": 42,
+      "stages": [
+        {
+          "message": null,
+          "stage": "parser",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "sair",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "optimizer",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "interpreter",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "vm",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "scratch",
+          "status": "pass"
+        }
+      ],
+      "violations": [],
+      "vm": "I32(42)"
+    },
+    {
+      "class": "success",
+      "fresh_ir": false,
+      "interpreter": "I32(120)",
+      "name": "factorial",
+      "native_exit": 120,
+      "stages": [
+        {
+          "message": null,
+          "stage": "parser",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "sair",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "optimizer",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "interpreter",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "vm",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "scratch",
+          "status": "pass"
+        }
+      ],
+      "violations": [],
+      "vm": "I32(120)"
+    },
+    {
+      "class": "success",
+      "fresh_ir": false,
+      "interpreter": "I32(55)",
+      "name": "fib",
+      "native_exit": 55,
+      "stages": [
+        {
+          "message": null,
+          "stage": "parser",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "sair",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "optimizer",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "interpreter",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "vm",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "scratch",
+          "status": "pass"
+        }
+      ],
+      "violations": [],
+      "vm": "I32(55)"
+    },
+    {
+      "class": "success",
+      "fresh_ir": false,
+      "interpreter": "I32(42)",
+      "name": "array",
+      "native_exit": 42,
+      "stages": [
+        {
+          "message": null,
+          "stage": "parser",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "sair",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "optimizer",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "interpreter",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "vm",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "scratch",
+          "status": "pass"
+        }
+      ],
+      "violations": [],
+      "vm": "I32(42)"
+    },
+    {
+      "class": "success",
+      "fresh_ir": false,
+      "interpreter": "I32(30)",
+      "name": "struct",
+      "native_exit": 30,
+      "stages": [
+        {
+          "message": null,
+          "stage": "parser",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "sair",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "optimizer",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "interpreter",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "vm",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "scratch",
+          "status": "pass"
+        }
+      ],
+      "violations": [],
+      "vm": "I32(30)"
+    },
+    {
+      "class": "success",
+      "fresh_ir": false,
+      "interpreter": "I32(42)",
+      "name": "pointer",
+      "native_exit": 42,
+      "stages": [
+        {
+          "message": null,
+          "stage": "parser",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "sair",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "optimizer",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "interpreter",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "vm",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "scratch",
+          "status": "pass"
+        }
+      ],
+      "violations": [],
+      "vm": "I32(42)"
+    },
+    {
+      "class": "success",
+      "fresh_ir": false,
+      "interpreter": "I32(15)",
+      "name": "recursion",
+      "native_exit": 15,
+      "stages": [
+        {
+          "message": null,
+          "stage": "parser",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "sair",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "optimizer",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "interpreter",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "vm",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "scratch",
+          "status": "pass"
+        }
+      ],
+      "violations": [],
+      "vm": "I32(15)"
+    },
+    {
+      "class": "success",
+      "fresh_ir": false,
+      "interpreter": "I32(78)",
+      "name": "signed",
+      "native_exit": 78,
+      "stages": [
+        {
+          "message": null,
+          "stage": "parser",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "sair",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "optimizer",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "interpreter",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "vm",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "scratch",
+          "status": "pass"
+        }
+      ],
+      "violations": [],
+      "vm": "I32(78)"
+    },
+    {
+      "class": "scratch-backend-failure",
+      "fresh_ir": false,
+      "interpreter": "I32(293345)",
+      "name": "bitwise",
+      "native_exit": 225,
+      "stages": [
+        {
+          "message": null,
+          "stage": "parser",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "sair",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "optimizer",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "interpreter",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "vm",
+          "status": "pass"
+        },
+        {
+          "message": "unsupported instruction: ashr cannot be lowered to Scratch numbers",
+          "stage": "scratch",
+          "status": "unsupported"
+        }
+      ],
+      "violations": [],
+      "vm": "I32(293345)"
+    },
+    {
+      "class": "scratch-backend-failure",
+      "fresh_ir": false,
+      "interpreter": "I32(3579139508)",
+      "name": "i64muldiv",
+      "native_exit": 180,
+      "stages": [
+        {
+          "message": null,
+          "stage": "parser",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "sair",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "optimizer",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "interpreter",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "vm",
+          "status": "pass"
+        },
+        {
+          "message": "unsupported instruction: lshr cannot be lowered to Scratch numbers",
+          "stage": "scratch",
+          "status": "unsupported"
+        }
+      ],
+      "violations": [],
+      "vm": "I32(3579139508)"
+    },
+    {
+      "class": "scratch-backend-failure",
+      "fresh_ir": false,
+      "interpreter": "I32(95)",
+      "name": "globals",
+      "native_exit": 95,
+      "stages": [
+        {
+          "message": null,
+          "stage": "parser",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "sair",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "optimizer",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "interpreter",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "vm",
+          "status": "pass"
+        },
+        {
+          "message": "unsupported instruction: sext i8 to i32 cannot be lowered to Scratch numbers",
+          "stage": "scratch",
+          "status": "unsupported"
+        }
+      ],
+      "violations": [],
+      "vm": "I32(95)"
+    },
+    {
+      "class": "scratch-backend-failure",
+      "fresh_ir": false,
+      "interpreter": "I32(59)",
+      "name": "signedcmp",
+      "native_exit": 59,
+      "stages": [
+        {
+          "message": null,
+          "stage": "parser",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "sair",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "optimizer",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "interpreter",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "vm",
+          "status": "pass"
+        },
+        {
+          "message": "unsupported instruction: zext i1 to i32 cannot be lowered to Scratch numbers",
+          "stage": "scratch",
+          "status": "unsupported"
+        }
+      ],
+      "violations": [],
+      "vm": "I32(59)"
+    },
+    {
+      "class": "scratch-backend-failure",
+      "fresh_ir": false,
+      "interpreter": "I32(8)",
+      "name": "i64arith",
+      "native_exit": 8,
+      "stages": [
+        {
+          "message": null,
+          "stage": "parser",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "sair",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "optimizer",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "interpreter",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "vm",
+          "status": "pass"
+        },
+        {
+          "message": "unsupported instruction: trunc i64 to i32 cannot be lowered to Scratch numbers",
+          "stage": "scratch",
+          "status": "unsupported"
+        }
+      ],
+      "violations": [],
+      "vm": "I32(8)"
+    },
+    {
+      "class": "scratch-backend-failure",
+      "fresh_ir": false,
+      "interpreter": "I32(412)",
+      "name": "bytes",
+      "native_exit": 156,
+      "stages": [
+        {
+          "message": null,
+          "stage": "parser",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "sair",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "optimizer",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "interpreter",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "vm",
+          "status": "pass"
+        },
+        {
+          "message": "unsupported instruction: zext i8 to i32 cannot be lowered to Scratch numbers",
+          "stage": "scratch",
+          "status": "unsupported"
+        }
+      ],
+      "violations": [],
+      "vm": "I32(412)"
+    },
+    {
+      "class": "scratch-backend-failure",
+      "fresh_ir": false,
+      "interpreter": "I32(331)",
+      "name": "reinterp",
+      "native_exit": 75,
+      "stages": [
+        {
+          "message": null,
+          "stage": "parser",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "sair",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "optimizer",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "interpreter",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "vm",
+          "status": "pass"
+        },
+        {
+          "message": "unsupported instruction: ptrtoint ptr to i64 cannot be lowered to Scratch numbers",
+          "stage": "scratch",
+          "status": "unsupported"
+        }
+      ],
+      "violations": [],
+      "vm": "I32(331)"
+    },
+    {
+      "class": "vm-failure",
+      "fresh_ir": false,
+      "interpreter": "I32(5)",
+      "name": "string",
+      "native_exit": 5,
+      "stages": [
+        {
+          "message": null,
+          "stage": "parser",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "sair",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "optimizer",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "interpreter",
+          "status": "pass"
+        },
+        {
+          "message": "undefined function: __scratcharch_strlen",
+          "stage": "vm",
+          "status": "unsupported"
+        },
+        {
+          "message": null,
+          "stage": "scratch",
+          "status": "pass"
+        }
+      ],
+      "violations": [],
+      "vm": null
+    },
+    {
+      "class": "vm-failure",
+      "fresh_ir": false,
+      "interpreter": "I32(6)",
+      "name": "memory",
+      "native_exit": 6,
+      "stages": [
+        {
+          "message": null,
+          "stage": "parser",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "sair",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "optimizer",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "interpreter",
+          "status": "pass"
+        },
+        {
+          "message": "undefined function: __scratcharch_memcpy",
+          "stage": "vm",
+          "status": "unsupported"
+        },
+        {
+          "message": null,
+          "stage": "scratch",
+          "status": "pass"
+        }
+      ],
+      "violations": [],
+      "vm": null
+    },
+    {
+      "class": "vm-failure",
+      "fresh_ir": false,
+      "interpreter": "I32(1)",
+      "name": "memintrin",
+      "native_exit": 1,
+      "stages": [
+        {
+          "message": null,
+          "stage": "parser",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "sair",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "optimizer",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "interpreter",
+          "status": "pass"
+        },
+        {
+          "message": "undefined function: llvm.memcpy.p0.p0.i64",
+          "stage": "vm",
+          "status": "unsupported"
+        },
+        {
+          "message": null,
+          "stage": "scratch",
+          "status": "pass"
+        }
+      ],
+      "violations": [],
+      "vm": null
+    },
+    {
+      "class": "vm-failure",
+      "fresh_ir": false,
+      "interpreter": "I32(2018928754)",
+      "name": "intrinsics",
+      "native_exit": 114,
+      "stages": [
+        {
+          "message": null,
+          "stage": "parser",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "sair",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "optimizer",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "interpreter",
+          "status": "pass"
+        },
+        {
+          "message": "undefined function: llvm.bswap.i16",
+          "stage": "vm",
+          "status": "unsupported"
+        },
+        {
+          "message": "unsupported instruction: zext i16 to i32 cannot be lowered to Scratch numbers",
+          "stage": "scratch",
+          "status": "unsupported"
+        }
+      ],
+      "violations": [],
+      "vm": null
+    },
+    {
+      "class": "success",
+      "fresh_ir": false,
+      "interpreter": "I32(30)",
+      "name": "switch",
+      "native_exit": 30,
+      "stages": [
+        {
+          "message": null,
+          "stage": "parser",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "sair",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "optimizer",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "interpreter",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "vm",
+          "status": "pass"
+        },
+        {
+          "message": null,
+          "stage": "scratch",
+          "status": "pass"
+        }
+      ],
+      "violations": [],
+      "vm": "I32(30)"
+    },
+    {
+      "class": "parse-failure",
+      "fresh_ir": false,
+      "interpreter": null,
+      "name": "float",
+      "native_exit": null,
+      "stages": [
+        {
+          "message": "unsupported type: Ident(\"double\")",
+          "stage": "parser",
+          "status": "unsupported"
+        }
+      ],
+      "violations": [],
+      "vm": null
+    },
+    {
+      "class": "parse-failure",
+      "fresh_ir": false,
+      "interpreter": null,
+      "name": "vector",
+      "native_exit": null,
+      "stages": [
+        {
+          "message": "unsupported type: Ident(\"<\")",
+          "stage": "parser",
+          "status": "unsupported"
+        }
+      ],
+      "violations": [],
+      "vm": null
+    },
+    {
+      "class": "parse-failure",
+      "fresh_ir": false,
+      "interpreter": null,
+      "name": "indirect-call",
+      "native_exit": null,
+      "stages": [
+        {
+          "message": "parse error: indirect call through '3' is unsupported: the SAIR/ISA call ABI requires a statically-named callee (no function-pointer ABI)",
+          "stage": "parser",
+          "status": "unsupported"
+        }
+      ],
+      "violations": [],
+      "vm": null
+    },
+    {
+      "class": "parse-failure",
+      "fresh_ir": false,
+      "interpreter": null,
+      "name": "atomic",
+      "native_exit": null,
+      "stages": [
+        {
+          "message": "unsupported instruction: atomicrmw",
+          "stage": "parser",
+          "status": "unsupported"
+        }
+      ],
+      "violations": [],
+      "vm": null
+    }
+  ],
+  "gate_green": true,
+  "overall": 84,
+  "semantic_mismatches": [],
+  "stages": {
+    "interpreter": 84,
+    "parser": 84,
+    "sair": 84,
+    "scratch": 52,
+    "vm": 68
+  },
+  "total": 25,
+  "unsupported_features": {
+    "array": 1,
+    "atomic": 1,
+    "bitwise": 1,
+    "float": 1,
+    "global": 2,
+    "i64": 3,
+    "indirect-call": 1,
+    "integer": 8,
+    "intrinsic": 4,
+    "memory": 5,
+    "phi": 1,
+    "pointer": 3,
+    "shift": 1,
+    "vector": 1
+  }
+}
