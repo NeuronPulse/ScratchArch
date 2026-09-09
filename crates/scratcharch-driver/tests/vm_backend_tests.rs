@@ -11,12 +11,15 @@ fn project_root() -> PathBuf {
 }
 
 /// The VM lowers to a 32-bit-word ISA. 64-bit integers split into two 32-bit
-/// limbs for add/sub/compare/cast/load/store (see the multi-cell tests below),
-/// but the VM has no 64-bit multiply/divide and only carries exactly two limbs
-/// per value — profiles that split an i64 differently are rejected. Real clang
-/// IR uses i64 GEP indices, so the file-based VM corpus is a dedicated set of
-/// i32-representable fixtures (`tests/c_programs_vm/`); the full real-clang
-/// corpus runs on the SAIR interpreter.
+/// limbs for add/sub/compare/cast/load/store (see the multi-cell tests below);
+/// i64 multiply and unsigned divide/remainder lower to software helpers
+/// (`__sair_mul64`, `__sair_udivrem64`) built from the 32-bit word ops, so real
+/// clang i64 mul/udiv/urem and (via the translator's signed expansion) sdiv/srem
+/// all run on the VM too. The VM still only carries exactly two limbs per value —
+/// profiles that split an i64 differently are rejected. Real clang IR uses i64
+/// GEP indices, so the file-based VM corpus is a dedicated set of i32-representable
+/// fixtures (`tests/c_programs_vm/`); the full real-clang corpus runs on the SAIR
+/// interpreter.
 fn c_programs_vm_dir() -> PathBuf {
     project_root().join("tests").join("c_programs_vm")
 }
@@ -262,11 +265,11 @@ fn test_vm_backend_real_clang_array() {
 /// A *dynamic* array index forces 64-bit offset arithmetic (clang types array
 /// indices `i64`). For a byte array (`scale == 1`) the offset is an i64 `add`,
 /// which the VM carries as two 32-bit limbs — the index's low limb addresses the
-/// 32-bit pointer space, so dynamic byte indices now lower and run. For an array
-/// of multi-byte elements (`scale == 4`) scaling the dynamic index needs an i64
-/// `mul`, which the VM has no widening ISA for; that must produce an explicit
-/// diagnostic — never a silent wrong result. (The SAIR interpreter executes both
-/// IRs fine.)
+/// 32-bit pointer space, so dynamic byte indices lower and run. For an array of
+/// multi-byte elements (`scale == 4`) scaling the dynamic index is an i64 `mul`,
+/// which lowers through the `__sair_mul64` software helper; the scaled index runs
+/// on the VM as well (see [`test_vm_backend_dynamic_i64_scaled_index`]). (The
+/// SAIR interpreter executes both IRs too.)
 #[test]
 fn test_vm_backend_dynamic_i64_byte_index() {
     let config = CompileConfig {
@@ -294,13 +297,11 @@ entry:
     }
 }
 
+/// Scaling a *dynamic* i64 index by a multi-byte element (`scale == 4`) needs an
+/// i64 `mul`. That now lowers through `__sair_mul64`, so this runs on the VM
+/// instead of being rejected — interpreter and VM must both return 42.
 #[test]
-fn test_vm_backend_rejects_dynamic_i64_scaled_index() {
-    let config = CompileConfig {
-        backend: ExecutionBackend::Vm,
-        ..CompileConfig::default()
-    };
-    let driver = CompileDriver::new(config);
+fn test_vm_backend_dynamic_i64_scaled_index() {
     let ir = "
 define i32 @main() {
 entry:
@@ -312,19 +313,7 @@ entry:
   ret i32 %v
 }
 ";
-    let result = driver.compile_and_run(ir);
-    match result {
-        Err(e) => {
-            let msg = e.to_string();
-            assert!(
-                msg.contains("i64 mul"),
-                "scaling a dynamic i64 index needs an i64 mul; expected that diagnostic, got: {msg}"
-            );
-        }
-        other => panic!(
-            "VM backend should reject a scaled dynamic i64 index with a mul diagnostic, got success: {other:?}"
-        ),
-    }
+    assert_agree(ir, 42, "scaled dynamic i64 index");
 }
 
 // ---------------------------------------------------------------------------
@@ -670,3 +659,4 @@ entry:
         other => panic!("sa24 should reject a 3-cell i64, got success: {other:?}"),
     }
 }
+

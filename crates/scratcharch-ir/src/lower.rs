@@ -56,6 +56,18 @@ impl IsaLowerer {
                 program.add_function(build_shift_helper(name));
             }
         }
+
+        // Two-limb multiply and division have no ISA widening op, so they lower
+        // to calls into software helpers built from the existing 32-bit-word
+        // primitives (`I32Mul`, shifts, compares) — see `build_mul_helper` and
+        // `build_udivrem_helper`. The helpers are appended only when the module
+        // actually references the corresponding SAIR op at 64-bit width.
+        if module_uses_wide_mul(module) {
+            program.add_function(build_mul_helper());
+        }
+        if module_uses_wide_divrem(module) {
+            program.add_function(build_udivrem_helper());
+        }
         Ok(program)
     }
 
@@ -170,17 +182,9 @@ impl IsaLowerer {
                     match instr {
                         SairInstr::Add { .. } => self.lower_wide_add(*lhs, *rhs, result_id, ctx, f)?,
                         SairInstr::Sub { .. } => self.lower_wide_sub(*lhs, *rhs, result_id, ctx, f)?,
-                        SairInstr::Mul { .. } | SairInstr::Div { .. } | SairInstr::Rem { .. } => {
-                            return Err(LowerError::UnsupportedInstruction(format!(
-                                "i64 {} on the VM backend needs 64-bit multiply/divide arithmetic (no ISA widening op); multi-cell add/sub/compare are supported",
-                                match instr {
-                                    SairInstr::Mul { .. } => "mul",
-                                    SairInstr::Div { .. } => "div",
-                                    SairInstr::Rem { .. } => "rem",
-                                    _ => unreachable!(),
-                                },
-                            )));
-                        }
+                        SairInstr::Mul { .. } => self.lower_wide_mul(*lhs, *rhs, result_id, ctx, f)?,
+                        SairInstr::Div { .. } => self.lower_wide_divrem(DivRemKind::Div, *lhs, *rhs, result_id, ctx, f)?,
+                        SairInstr::Rem { .. } => self.lower_wide_divrem(DivRemKind::Rem, *lhs, *rhs, result_id, ctx, f)?,
                         _ => unreachable!(),
                     }
                 }
@@ -1149,6 +1153,78 @@ impl IsaLowerer {
         }
         Ok(())
     }
+
+    /// Lower an SAIR `Mul` whose type occupies two limbs (i64) to a call on the
+    /// [`__sair_mul64`] software helper.
+    ///
+    /// The helper realises `(a0 + a1·2^32) · (b0 + b1·2^32) mod 2^64` from 32-bit
+    /// word `I32Mul` plus 16-bit schoolbook carries (there is no widening ISA
+    /// multiply). It takes the four operand limbs on the stack (`a0 a1 b0 b1`,
+    /// `b1` on top) and returns the product pair `(lo, hi)` with the high limb on
+    /// top.
+    fn lower_wide_mul(
+        &self,
+        lhs: ValueId,
+        rhs: ValueId,
+        result_id: Option<ValueId>,
+        ctx: &LowerCtx,
+        f: &mut FuncEmitter<'_>,
+    ) -> Result<(), LowerError> {
+        let Some(id) = result_id else { return Ok(()) };
+        self.emit_load(lhs, ctx, f)?; // a0 a1
+        self.emit_load(rhs, ctx, f)?; // b0 b1 (on top)
+        f.push(IsaInstr::Call(MUL64_HELPER.to_string()));
+        let q = ctx.first_slot(id)?;
+        // Stack: lo hi (hi on top) — store hi then lo.
+        f.push(IsaInstr::LocalSet(q + 1));
+        f.push(IsaInstr::LocalSet(q));
+        Ok(())
+    }
+
+    /// Lower an SAIR `Div`/`Rem` whose type occupies two limbs (i64) to a call on
+    /// the [`__sair_udivrem64`] software helper.
+    ///
+    /// The helper computes both the unsigned quotient and the unsigned remainder
+    /// of two 64-bit magnitudes by a 64-step bit-at-a-time restoring division
+    /// (see `build_udivrem_helper`), and returns `(r0 r1 q0 q1)` with the
+    /// quotient pair on top. `Div` keeps the quotient and drops the remainder;
+    /// `Rem` drops the quotient and keeps the remainder. SAIR `Div`/`Rem` are
+    /// unsigned (LLVM signed forms are already expanded to magnitudes by the
+    /// frontend), so one helper serves both.
+    #[allow(clippy::too_many_arguments)] // kind + result_id + ctx + emitter idiom
+    fn lower_wide_divrem(
+        &self,
+        kind: DivRemKind,
+        lhs: ValueId,
+        rhs: ValueId,
+        result_id: Option<ValueId>,
+        ctx: &LowerCtx,
+        f: &mut FuncEmitter<'_>,
+    ) -> Result<(), LowerError> {
+        let Some(id) = result_id else { return Ok(()) };
+        self.emit_load(lhs, ctx, f)?; // a0 a1
+        self.emit_load(rhs, ctx, f)?; // b0 b1 (on top)
+        f.push(IsaInstr::Call(UDIVREM_HELPER.to_string()));
+        // Stack after the call: r0 r1 q0 q1 (quotient pair on top).
+        let q = ctx.first_slot(id)?;
+        match kind {
+            DivRemKind::Div => {
+                // Keep q0 q1 (store hi then lo), discard the remainder pair.
+                f.push(IsaInstr::LocalSet(q + 1));
+                f.push(IsaInstr::LocalSet(q));
+                f.push(IsaInstr::Drop);
+                f.push(IsaInstr::Drop);
+            }
+            DivRemKind::Rem => {
+                // Discard q1 q0, keep the remainder pair (store hi then lo).
+                f.push(IsaInstr::Drop);
+                f.push(IsaInstr::Drop);
+                f.push(IsaInstr::LocalSet(q + 1));
+                f.push(IsaInstr::LocalSet(q));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Which shift operation a [`IsaLowerer`] shift arm is lowering.
@@ -1187,6 +1263,423 @@ fn module_uses_shift(module: &IrModule, helper: &str) -> bool {
             })
         })
     })
+}
+
+// ---- Two-limb multiply/divide software helpers ------------------------------
+//
+// The ISA multiplies and divides 32-bit words only. A 64-bit (two-limb) SAIR
+// `Mul`/`Div`/`Rem` therefore lowers to a call on a program-level software
+// helper built entirely from the existing word primitives (see the two builder
+// functions below). Only the helpers a module actually references are appended.
+
+/// Program-level helper realising a two-limb wrapping multiply (`mod 2^64`).
+const MUL64_HELPER: &str = "__sair_mul64";
+/// Program-level helper realising two-limb unsigned divide/remainder together.
+const UDIVREM_HELPER: &str = "__sair_udivrem64";
+
+/// Which result an SAIR `Div`/`Rem` instruction keeps from [`UDIVREM_HELPER`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DivRemKind {
+    Div,
+    Rem,
+}
+
+/// Whether `module` lowers an SAIR `Mul` at 64-bit width (i.e. calls
+/// [`MUL64_HELPER`]). Sub-64 multiplies are single-cell word `I32Mul`s and are
+/// deliberately not counted.
+fn module_uses_wide_mul(module: &IrModule) -> bool {
+    module.functions.iter().any(|func| {
+        func.blocks.iter().any(|block| {
+            block.instructions.iter().any(|instr| {
+                matches!(instr, SairInstr::Mul { ty: IrType::I64, .. })
+            })
+        })
+    })
+}
+
+/// Whether `module` lowers an SAIR `Div`/`Rem` at 64-bit width (i.e. calls
+/// [`UDIVREM_HELPER`]). Sub-64 divisions are single-cell `I32Div`/`I32Rem`s and
+/// are deliberately not counted.
+fn module_uses_wide_divrem(module: &IrModule) -> bool {
+    module.functions.iter().any(|func| {
+        func.blocks.iter().any(|block| {
+            block.instructions.iter().any(|instr| {
+                matches!(
+                    instr,
+                    SairInstr::Div { ty: IrType::I64, .. } | SairInstr::Rem { ty: IrType::I64, .. }
+                )
+            })
+        })
+    })
+}
+
+/// Build the program-level two-limb multiply helper.
+///
+/// Signature: takes `(a_lo, a_hi, b_lo, b_hi)` on the operand stack (`b_hi` on
+/// top, matching the `param_cells = 4` prologue convention) and returns the
+/// 64-bit product `mod 2^64` as `(lo, hi)` with the high limb on top
+/// (`return_cells = 2`).
+///
+/// The ISA only multiplies 32-bit words (`I32Mul`, which yields the low 32 bits
+/// of the 64-bit product), so the product
+/// `(a0 + a1·2^32)·(b0 + b1·2^32) mod 2^64` is expanded over 16-bit schoolbook
+/// digits, where every partial product fits in a word exactly:
+///
+/// ```text
+/// P = a0·b0 + (a0·b1 + a1·b0)·2^32  (mod 2^64; the a1·b1·2^64 term vanishes)
+/// result_lo = low32(a0·b0)
+/// result_hi = high32(a0·b0) + low32(a0·b1) + low32(a1·b0)  (mod 2^32)
+/// ```
+///
+/// `high32(a0·b0)` — the only full 64-bit product needed — is itself formed from
+/// four exact 16×16→32 products `c0..c3` with carry propagation across 16-bit
+/// digit positions (see the code).
+fn build_mul_helper() -> Function {
+    use IsaInstr as I;
+
+    const A0: u32 = 0;
+    const A1: u32 = 1;
+    const B0: u32 = 2;
+    const B1: u32 = 3;
+    const XL: u32 = 4;
+    const XH: u32 = 5;
+    const YL: u32 = 6;
+    const YH: u32 = 7;
+    const C0: u32 = 8;
+    const C1: u32 = 9;
+    const C2: u32 = 10;
+    const C3: u32 = 11;
+    const SUM1: u32 = 12;
+    const RLO: u32 = 13;
+    const RHI: u32 = 14;
+    const SUM2: u32 = 15;
+
+    let mut f = Function::new(MUL64_HELPER);
+    f.param_cells = 4;
+    f.local_count = 16;
+    f.return_cells = 2;
+
+    // Prologue: pop (a_lo, a_hi, b_lo, b_hi) into slots 0..3.
+    for slot in (0..4).rev() {
+        f.push(None::<&str>, I::LocalSet(slot));
+    }
+
+    // Split each low operand limb into 16-bit halves.
+    f.push(None::<&str>, I::LocalGet(A0));
+    f.push(None::<&str>, I::ConstI32(0xFFFF));
+    f.push(None::<&str>, I::And);
+    f.push(None::<&str>, I::LocalSet(XL));
+    f.push(None::<&str>, I::LocalGet(A0));
+    f.push(None::<&str>, I::ConstI32(16));
+    f.push(None::<&str>, I::Shr);
+    f.push(None::<&str>, I::LocalSet(XH));
+    f.push(None::<&str>, I::LocalGet(B0));
+    f.push(None::<&str>, I::ConstI32(0xFFFF));
+    f.push(None::<&str>, I::And);
+    f.push(None::<&str>, I::LocalSet(YL));
+    f.push(None::<&str>, I::LocalGet(B0));
+    f.push(None::<&str>, I::ConstI32(16));
+    f.push(None::<&str>, I::Shr);
+    f.push(None::<&str>, I::LocalSet(YH));
+
+    // Exact 16×16→32 partial products of a0·b0.
+    f.push(None::<&str>, I::LocalGet(XL));
+    f.push(None::<&str>, I::LocalGet(YL));
+    f.push(None::<&str>, I::I32Mul);
+    f.push(None::<&str>, I::LocalSet(C0));
+    f.push(None::<&str>, I::LocalGet(XL));
+    f.push(None::<&str>, I::LocalGet(YH));
+    f.push(None::<&str>, I::I32Mul);
+    f.push(None::<&str>, I::LocalSet(C1));
+    f.push(None::<&str>, I::LocalGet(XH));
+    f.push(None::<&str>, I::LocalGet(YL));
+    f.push(None::<&str>, I::I32Mul);
+    f.push(None::<&str>, I::LocalSet(C2));
+    f.push(None::<&str>, I::LocalGet(XH));
+    f.push(None::<&str>, I::LocalGet(YH));
+    f.push(None::<&str>, I::I32Mul);
+    f.push(None::<&str>, I::LocalSet(C3));
+
+    // sum1 = (c0 >> 16) + (c1 & 0xFFFF) + (c2 & 0xFFFF)  (< 2^18, exact).
+    f.push(None::<&str>, I::LocalGet(C0));
+    f.push(None::<&str>, I::ConstI32(16));
+    f.push(None::<&str>, I::Shr);
+    f.push(None::<&str>, I::LocalGet(C1));
+    f.push(None::<&str>, I::ConstI32(0xFFFF));
+    f.push(None::<&str>, I::And);
+    f.push(None::<&str>, I::I32Add);
+    f.push(None::<&str>, I::LocalGet(C2));
+    f.push(None::<&str>, I::ConstI32(0xFFFF));
+    f.push(None::<&str>, I::And);
+    f.push(None::<&str>, I::I32Add);
+    f.push(None::<&str>, I::LocalSet(SUM1));
+
+    // result_lo = (c0 & 0xFFFF) | ((sum1 & 0xFFFF) << 16): low 32 bits of a0·b0.
+    f.push(None::<&str>, I::LocalGet(C0));
+    f.push(None::<&str>, I::ConstI32(0xFFFF));
+    f.push(None::<&str>, I::And);
+    f.push(None::<&str>, I::LocalGet(SUM1));
+    f.push(None::<&str>, I::ConstI32(0xFFFF));
+    f.push(None::<&str>, I::And);
+    f.push(None::<&str>, I::ConstI32(16));
+    f.push(None::<&str>, I::Shl);
+    f.push(None::<&str>, I::Or);
+    f.push(None::<&str>, I::LocalSet(RLO));
+
+    // sum2 = (sum1 >> 16) + (c1 >> 16) + (c2 >> 16) + (c3 & 0xFFFF) (< 2^18).
+    f.push(None::<&str>, I::LocalGet(SUM1));
+    f.push(None::<&str>, I::ConstI32(16));
+    f.push(None::<&str>, I::Shr);
+    f.push(None::<&str>, I::LocalGet(C1));
+    f.push(None::<&str>, I::ConstI32(16));
+    f.push(None::<&str>, I::Shr);
+    f.push(None::<&str>, I::I32Add);
+    f.push(None::<&str>, I::LocalGet(C2));
+    f.push(None::<&str>, I::ConstI32(16));
+    f.push(None::<&str>, I::Shr);
+    f.push(None::<&str>, I::I32Add);
+    f.push(None::<&str>, I::LocalGet(C3));
+    f.push(None::<&str>, I::ConstI32(0xFFFF));
+    f.push(None::<&str>, I::And);
+    f.push(None::<&str>, I::I32Add);
+    f.push(None::<&str>, I::LocalSet(SUM2));
+
+    // high32(a0·b0) = (sum2 & 0xFFFF) | (((sum2 >> 16) + (c3 >> 16)) << 16).
+    f.push(None::<&str>, I::LocalGet(SUM2));
+    f.push(None::<&str>, I::ConstI32(0xFFFF));
+    f.push(None::<&str>, I::And);
+    f.push(None::<&str>, I::LocalGet(SUM2));
+    f.push(None::<&str>, I::ConstI32(16));
+    f.push(None::<&str>, I::Shr);
+    f.push(None::<&str>, I::LocalGet(C3));
+    f.push(None::<&str>, I::ConstI32(16));
+    f.push(None::<&str>, I::Shr);
+    f.push(None::<&str>, I::I32Add);
+    f.push(None::<&str>, I::ConstI32(16));
+    f.push(None::<&str>, I::Shl);
+    f.push(None::<&str>, I::Or);
+    f.push(None::<&str>, I::LocalSet(RHI));
+
+    // result_hi = high32(a0·b0) + low32(a0·b1) + low32(a1·b0) (mod 2^32).
+    f.push(None::<&str>, I::LocalGet(A0));
+    f.push(None::<&str>, I::LocalGet(B1));
+    f.push(None::<&str>, I::I32Mul);
+    f.push(None::<&str>, I::LocalGet(RHI));
+    f.push(None::<&str>, I::I32Add);
+    f.push(None::<&str>, I::LocalSet(RHI));
+    f.push(None::<&str>, I::LocalGet(A1));
+    f.push(None::<&str>, I::LocalGet(B0));
+    f.push(None::<&str>, I::I32Mul);
+    f.push(None::<&str>, I::LocalGet(RHI));
+    f.push(None::<&str>, I::I32Add);
+    f.push(None::<&str>, I::LocalSet(RHI));
+
+    // Return (lo, hi) — hi on top.
+    f.push(None::<&str>, I::LocalGet(RLO));
+    f.push(None::<&str>, I::LocalGet(RHI));
+    f.push(None::<&str>, I::Return);
+    f
+}
+
+/// Build the program-level two-limb unsigned divide/remainder helper.
+///
+/// Signature: takes `(a_lo, a_hi, b_lo, b_hi)` on the operand stack (`b_hi` on
+/// top, `param_cells = 4`) and returns the quotient and remainder of the
+/// unsigned 64-bit division `a / b` as `(r_lo, r_hi, q_lo, q_hi)` with the
+/// quotient pair on top (`return_cells = 4`). SAIR `Div`/`Rem` are unsigned, so
+/// one helper serves both a `udiv`/`urem` mapping and the magnitude step of the
+/// frontend's signed expansion.
+///
+/// A divisor of zero is detected up front and reported exactly like the ISA's
+/// word `I32Div`: it executes a manufactured `0 / 0` word division, which the
+/// VM deterministically fails with `VmError::DivisionByZero` (the same variant
+/// an i32 `udiv x, 0` raises). The interpreter surfaces the equal
+/// `InterpError::DivisionByZero` on the same module.
+///
+/// Quotient and remainder come from a 64-step restoring division: each iteration
+/// brings the dividend's next bit (drained from the top of `a` by shifting it
+/// left) into a running remainder `r = (r << 1) | bit`; when `r >= b` the
+/// divisor is subtracted and the quotient bit is set. The quotient is built
+/// most-significant-bit-first by appending each new bit at the bottom of `q`
+/// while shifting `q` left, so after 64 iterations `q` holds the exact quotient
+/// and `r` the exact remainder. Every step is branchless except the loop
+/// itself — comparisons select 0/1 and the subtract is masked by the "r >= b"
+/// flag (`sub = ge ? b : 0`).
+///
+/// Loop layout (labels are function-local):
+/// ```text
+/// prologue: pop b_hi b_lo a_hi a_lo → slots; count = 64
+/// zero:     (b_lo | b_hi) == 0 ? div0 : chk
+/// div0:     0 / 0               // manufactured DivisionByZero
+/// chk:      count == 0 ? done : body
+/// body:     one restoring-division step (below); goto chk
+/// done:     return r_lo r_hi q_lo q_hi (q on top)
+/// ```
+fn build_udivrem_helper() -> Function {
+    use IsaInstr as I;
+
+    const A0: u32 = 0;
+    const A1: u32 = 1;
+    const B0: u32 = 2;
+    const B1: u32 = 3;
+    const R0: u32 = 4;
+    const R1: u32 = 5;
+    const Q0: u32 = 6;
+    const Q1: u32 = 7;
+    const CNT: u32 = 8;
+    const GE: u32 = 9;
+    const BRW: u32 = 10;
+
+    let mut f = Function::new(UDIVREM_HELPER);
+    f.param_cells = 4;
+    f.local_count = 11;
+    f.return_cells = 4;
+
+    // Prologue: pop (a_lo, a_hi, b_lo, b_hi) into slots 0..3.
+    for slot in (0..4).rev() {
+        f.push(None::<&str>, I::LocalSet(slot));
+    }
+
+    // Exactly 64 restoring-division iterations.
+    f.push(None::<&str>, I::ConstI32(64));
+    f.push(None::<&str>, I::LocalSet(CNT));
+
+    // Division-by-zero guard: (b_lo | b_hi) == 0 → div0.
+    f.push(None::<&str>, I::LocalGet(B0));
+    f.push(None::<&str>, I::LocalGet(B1));
+    f.push(None::<&str>, I::Or);
+    f.push(None::<&str>, I::ConstI32(0));
+    f.push(None::<&str>, I::Eq);
+    f.push(None::<&str>, I::Branch("div0".to_string(), "chk".to_string()));
+
+    // Manufactured DivisionByZero: a 0/0 word division always errors in the VM.
+    f.push(Some("div0"), I::ConstI32(0));
+    f.push(None::<&str>, I::ConstI32(0));
+    f.push(None::<&str>, I::I32Div);
+
+    // Loop test.
+    f.push(Some("chk"), I::LocalGet(CNT));
+    f.push(None::<&str>, I::ConstI32(0));
+    f.push(None::<&str>, I::Eq);
+    f.push(None::<&str>, I::Branch("done".to_string(), "body".to_string()));
+
+    // ---- One restoring-division step ----
+    // r1' = (r1 << 1) | (r0 >> 31)
+    f.push(Some("body"), I::LocalGet(R1));
+    f.push(None::<&str>, I::Dup);
+    f.push(None::<&str>, I::I32Add);
+    f.push(None::<&str>, I::LocalGet(R0));
+    f.push(None::<&str>, I::ConstI32(31));
+    f.push(None::<&str>, I::Shr);
+    f.push(None::<&str>, I::Or);
+    f.push(None::<&str>, I::LocalSet(R1));
+    // r0' = (r0 << 1) | (a1 >> 31): bring down the dividend's next (top) bit.
+    f.push(None::<&str>, I::LocalGet(R0));
+    f.push(None::<&str>, I::Dup);
+    f.push(None::<&str>, I::I32Add);
+    f.push(None::<&str>, I::LocalGet(A1));
+    f.push(None::<&str>, I::ConstI32(31));
+    f.push(None::<&str>, I::Shr);
+    f.push(None::<&str>, I::Or);
+    f.push(None::<&str>, I::LocalSet(R0));
+    // a1' = (a1 << 1) | (a0 >> 31): drain a's next bit toward the top.
+    f.push(None::<&str>, I::LocalGet(A1));
+    f.push(None::<&str>, I::Dup);
+    f.push(None::<&str>, I::I32Add);
+    f.push(None::<&str>, I::LocalGet(A0));
+    f.push(None::<&str>, I::ConstI32(31));
+    f.push(None::<&str>, I::Shr);
+    f.push(None::<&str>, I::Or);
+    f.push(None::<&str>, I::LocalSet(A1));
+    // a0' = a0 << 1
+    f.push(None::<&str>, I::LocalGet(A0));
+    f.push(None::<&str>, I::Dup);
+    f.push(None::<&str>, I::I32Add);
+    f.push(None::<&str>, I::LocalSet(A0));
+
+    // ge = widen( !(r <u b) ), where
+    //   lt = (r1 < b1) | ((r1 == b1) & (r0 < b0)).
+    f.push(None::<&str>, I::LocalGet(R1));
+    f.push(None::<&str>, I::LocalGet(B1));
+    f.push(None::<&str>, I::Lt);
+    f.push(None::<&str>, I::ConstI32(0));
+    f.push(None::<&str>, I::I32Add);
+    f.push(None::<&str>, I::LocalGet(R1));
+    f.push(None::<&str>, I::LocalGet(B1));
+    f.push(None::<&str>, I::Eq);
+    f.push(None::<&str>, I::ConstI32(0));
+    f.push(None::<&str>, I::I32Add);
+    f.push(None::<&str>, I::LocalGet(R0));
+    f.push(None::<&str>, I::LocalGet(B0));
+    f.push(None::<&str>, I::Lt);
+    f.push(None::<&str>, I::ConstI32(0));
+    f.push(None::<&str>, I::I32Add);
+    f.push(None::<&str>, I::And);
+    f.push(None::<&str>, I::Or);
+    f.push(None::<&str>, I::ConstI32(0));
+    f.push(None::<&str>, I::Eq);
+    f.push(None::<&str>, I::ConstI32(0));
+    f.push(None::<&str>, I::I32Add);
+    f.push(None::<&str>, I::LocalSet(GE));
+
+    // subtract the divisor only when r >= b: sub = ge ? b : 0, formed with a
+    // word multiply (ge is exactly 0 or 1, so ge * b selects b or 0; a bitwise
+    // And would wrongly mask off bits of a multi-bit limb).
+    // borrow = r0 <u sub0   (an i1 flag)
+    f.push(None::<&str>, I::LocalGet(R0));
+    f.push(None::<&str>, I::LocalGet(GE));
+    f.push(None::<&str>, I::LocalGet(B0));
+    f.push(None::<&str>, I::I32Mul);
+    f.push(None::<&str>, I::Lt);
+    f.push(None::<&str>, I::LocalSet(BRW));
+    // r0' = r0 - (ge * b0)
+    f.push(None::<&str>, I::LocalGet(R0));
+    f.push(None::<&str>, I::LocalGet(GE));
+    f.push(None::<&str>, I::LocalGet(B0));
+    f.push(None::<&str>, I::I32Mul);
+    f.push(None::<&str>, I::I32Sub);
+    f.push(None::<&str>, I::LocalSet(R0));
+    // r1' = r1 - (ge * b1) - borrow
+    f.push(None::<&str>, I::LocalGet(R1));
+    f.push(None::<&str>, I::LocalGet(GE));
+    f.push(None::<&str>, I::LocalGet(B1));
+    f.push(None::<&str>, I::I32Mul);
+    f.push(None::<&str>, I::I32Sub);
+    f.push(None::<&str>, I::LocalGet(BRW));
+    f.push(None::<&str>, I::I32Sub);
+    f.push(None::<&str>, I::LocalSet(R1));
+
+    // q1' = (q1 << 1) | (q0 >> 31); the quotient bit is appended at the bottom.
+    f.push(None::<&str>, I::LocalGet(Q1));
+    f.push(None::<&str>, I::Dup);
+    f.push(None::<&str>, I::I32Add);
+    f.push(None::<&str>, I::LocalGet(Q0));
+    f.push(None::<&str>, I::ConstI32(31));
+    f.push(None::<&str>, I::Shr);
+    f.push(None::<&str>, I::Or);
+    f.push(None::<&str>, I::LocalSet(Q1));
+    // q0' = (q0 << 1) | ge
+    f.push(None::<&str>, I::LocalGet(Q0));
+    f.push(None::<&str>, I::Dup);
+    f.push(None::<&str>, I::I32Add);
+    f.push(None::<&str>, I::LocalGet(GE));
+    f.push(None::<&str>, I::Or);
+    f.push(None::<&str>, I::LocalSet(Q0));
+
+    // count -= 1; loop back to the test.
+    f.push(None::<&str>, I::LocalGet(CNT));
+    f.push(None::<&str>, I::ConstI32(1));
+    f.push(None::<&str>, I::I32Sub);
+    f.push(None::<&str>, I::LocalSet(CNT));
+    f.push(None::<&str>, I::Jump("chk".to_string()));
+
+    // Done: return (r_lo, r_hi, q_lo, q_hi) — quotient pair on top.
+    f.push(Some("done"), I::LocalGet(R0));
+    f.push(None::<&str>, I::LocalGet(R1));
+    f.push(None::<&str>, I::LocalGet(Q0));
+    f.push(None::<&str>, I::LocalGet(Q1));
+    f.push(None::<&str>, I::Return);
+    f
 }
 
 /// Build one program-level software shift helper.
