@@ -4,7 +4,9 @@
 > Status: normative (defines what `scratcharch-llvm` accepts and how it behaves)
 > Companion documents: [`LLVM_TRANSLATION.md`](../design/LLVM_TRANSLATION.md)
 > (design/mapping), [`LLVM_COMPATIBILITY_STATUS.md`](../design/LLVM_COMPATIBILITY_STATUS.md)
-> (generated status report), [`SAIR_FORMAT.md`](./SAIR_FORMAT.md),
+> (generated status report), [`LLVM_COMPATIBILITY_BENCHMARK.md`](../design/LLVM_COMPATIBILITY_BENCHMARK.md)
+> (the long-term compatibility benchmark), [`LLVM_COMPATIBILITY_BASELINE.md`](../design/LLVM_COMPATIBILITY_BASELINE.md)
+> (the recorded benchmark snapshot), [`SAIR_FORMAT.md`](./SAIR_FORMAT.md),
 > [`ISA.md`](./ISA.md), [`ABI.md`](./ABI.md), [`MEMORY.md`](./MEMORY.md).
 
 ---
@@ -28,6 +30,21 @@ than what every named execution surface actually provides: **`SUPPORTED` is
 only used when the SAIR interpreter *and* the SA48 VM backend both execute the
 construct exactly.** If only the parser/interpreter handles a construct, the row
 is `INTERPRETER_ONLY`, `PARTIAL`, or `VM_UNSUPPORTED` — never `SUPPORTED`.
+
+**Benchmark percentage vs opcode coverage.** The percentages reported by the
+compatibility benchmark
+([`LLVM_COMPATIBILITY_BENCHMARK.md`](../design/LLVM_COMPATIBILITY_BENCHMARK.md))
+are *not* opcode-coverage counts and must not be read as one. A percentage is a
+statement about whole programs: how many real clang fixtures **complete** each
+toolchain layer. A fixture dies on the first construct its current stage cannot
+handle, so a program that only needs supported ops can still read as a failure
+at a deeper layer if a single construct blocks it there. Two toolchains can
+cover the identical opcode surface yet report very different percentages,
+because programs fail on the first gap they meet. This is deliberate: the
+benchmark measures *whole-program reach through the layers*, which is what a
+user actually experiences, while the matrix above states per-construct
+guarantees. The benchmark never changes the ISA or a backend merely to raise a
+percentage, and it never reclassifies a real rejection as support.
 
 ## 2. Execution surfaces and status meanings
 
@@ -340,6 +357,15 @@ and the generated status report):
    — plus `unreachable` trapping in both engines, `i1`/`i8`/`i16` memory
    round-trips, and cell-preserving `ptrtoint`/`inttoptr`/`bitcast`
    reinterpretation with the `inttoptr i64` overflow trap).
+5. **Compatibility benchmark** (`scratcharch-compat` + `scratcharch test-compat`,
+   see [`LLVM_COMPATIBILITY_BENCHMARK.md`](../design/LLVM_COMPATIBILITY_BENCHMARK.md)):
+   runs the whole committed corpus (25 fixtures as of v0.1) through parser →
+   SAIR → optimizer → interpreter → ISA lowering → VM → ScratchGraph, records a
+   PASS/FAIL/UNSUPPORTED per stage and the semantic-core Overall, cross-checks
+   interpreter vs VM vs native full-width, and enforces the recorded
+   expectations as a regression gate. Numbers are tracked in
+   [`LLVM_COMPATIBILITY_BASELINE.md`](../design/LLVM_COMPATIBILITY_BASELINE.md)
+   and `tests/corpus/llvm/results/`.
 
 `scripts/run_c_tests.sh` drives the C corpus as a gate.
 
