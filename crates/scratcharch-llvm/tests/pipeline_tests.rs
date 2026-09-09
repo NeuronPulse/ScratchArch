@@ -209,3 +209,19 @@ fn test_pipeline_globals() {
         other => panic!("globals.ll: expected I32(95), got {:?}", other),
     }
 }
+
+/// Real clang output for the full bitwise/shift family: `and`/`or`/`xor`/
+/// `shl`/`lshr`/`ashr` at i32, an i8 arithmetic shift through trunc/sext, and
+/// two-limb i64 `and`/`xor`/`shl`/`ashr`. The VM backend of these ops is
+/// differentially tested against the interpreter in
+/// `scratcharch-sair-interpreter` (vm_differential_tests.rs); this fixture
+/// proves the translator admits them from real clang IR.
+#[test]
+fn test_pipeline_bitwise() {
+    let path = c_programs_dir().join("bitwise.ll");
+    let result = run_llvm_file(path.to_str().unwrap()).expect("pipeline failed");
+    match result {
+        Some(RuntimeValue::I32(v)) => assert_eq!(v, 293345),
+        other => panic!("bitwise.ll: expected I32(293345), got {:?}", other),
+    }
+}
