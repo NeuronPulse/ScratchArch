@@ -549,3 +549,78 @@ fn test_cli_verify_reports_unparseable_input() {
     assert!(!ok, "verify should fail on garbage input: {}", output);
     assert!(output.contains("Parse: FAIL"), "output: {}", output);
 }
+
+// ---- LLVM compatibility benchmark (test-compat) ----
+
+fn run_compat_json(args: &[&str]) -> (bool, serde_json::Value, String) {
+    let mut full: Vec<&str> = vec!["test-compat", "--no-native", "--format", "json"];
+    full.extend_from_slice(args);
+    let (ok, output) = run_cmd(&full);
+    if ok {
+        let value: serde_json::Value =
+            serde_json::from_str(output.trim()).expect("test-compat emitted valid JSON");
+        (ok, value, output)
+    } else {
+        (ok, serde_json::Value::Null, output)
+    }
+}
+
+#[test]
+fn test_cli_test_compat_json_gate_green() {
+    // The corpus manifest lives at the workspace root; the CLI must discover it
+    // from the crate directory without an explicit --corpus-root.
+    let (ok, value, output) = run_compat_json(&["--feature", "struct"]);
+    assert!(ok, "test-compat failed: {}", output);
+    assert_eq!(value["gate_green"].as_bool(), Some(true), "output: {}", output);
+    assert_eq!(value["total"].as_u64(), Some(1), "output: {}", output);
+    assert_eq!(value["classes"]["success"].as_u64(), Some(1), "output: {}", output);
+    assert_eq!(value["stages"]["scratch"].as_u64(), Some(100), "output: {}", output);
+}
+
+#[test]
+fn test_cli_test_compat_stage_filter_selects_parser_gaps() {
+    let (ok, value, output) = run_compat_json(&["--stage", "parser"]);
+    assert!(ok, "test-compat failed: {}", output);
+    assert_eq!(value["total"].as_u64(), Some(4), "output: {}", output);
+    assert_eq!(value["classes"]["parse-failure"].as_u64(), Some(4), "output: {}", output);
+}
+
+#[test]
+fn test_cli_test_compat_quiet_reports_headline() {
+    let (ok, output) = run_cmd(&[
+        "test-compat",
+        "--feature",
+        "struct",
+        "--no-native",
+        "--quiet",
+    ]);
+    assert!(ok, "test-compat failed: {}", output);
+    assert!(output.contains("Overall"), "quiet must show the headline: {}", output);
+    assert!(output.contains("Gate: green"), "quiet must show the gate: {}", output);
+}
+
+#[test]
+fn test_cli_test_compat_unknown_feature_fails() {
+    let (ok, output) = run_cmd(&[
+        "test-compat",
+        "--feature",
+        "bogus",
+        "--no-native",
+        "--quiet",
+    ]);
+    assert!(!ok, "unknown feature must be rejected: {}", output);
+    assert!(output.contains("unknown feature"), "output: {}", output);
+}
+
+#[test]
+fn test_cli_test_compat_quiet_and_verbose_conflict() {
+    let (ok, output) = run_cmd(&[
+        "test-compat",
+        "--feature",
+        "struct",
+        "--no-native",
+        "--quiet",
+        "--verbose",
+    ]);
+    assert!(!ok, "--quiet and --verbose must conflict: {}", output);
+}

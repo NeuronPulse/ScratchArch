@@ -10,6 +10,7 @@ mod inspect;
 mod optimize_cmd;
 mod pipeline_cmd;
 mod sb3_cmd;
+mod test_compat_cmd;
 mod verify_cmd;
 
 #[derive(Parser)]
@@ -133,6 +134,37 @@ enum Command {
         #[command(subcommand)]
         action: Sb3Action,
     },
+    /// Run the LLVM compatibility benchmark over the committed corpus
+    TestCompat {
+        /// Restrict to fixtures carrying this feature tag (repeatable)
+        #[arg(long, value_name = "FEATURE")]
+        feature: Vec<String>,
+        /// Restrict to fixtures whose recorded boundary stage is this
+        /// (parser, sair, interpreter, vm, scratch; repeatable)
+        #[arg(long, value_name = "STAGE")]
+        stage: Vec<String>,
+        /// Recompile every committed .c with clang before running
+        #[arg(long)]
+        fresh_clang: bool,
+        /// Skip the native differential even when a C compiler is present
+        #[arg(long)]
+        no_native: bool,
+        /// Report format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+        /// Compact text: headline, class counts, and any regressions
+        #[arg(long, conflicts_with = "verbose")]
+        quiet: bool,
+        /// Verbose text: per-fixture detail
+        #[arg(long, conflicts_with = "quiet")]
+        verbose: bool,
+        /// Force ASCII progress bars in text output
+        #[arg(long)]
+        ascii: bool,
+        /// Repo root containing tests/corpus/llvm (default: auto-discovered)
+        #[arg(long, value_name = "DIR")]
+        corpus_root: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -186,6 +218,27 @@ fn main() {
             Sb3Action::Build { input, output } => sb3_cmd::run_build(input, output.as_deref()),
             Sb3Action::Inspect { input } => sb3_cmd::run_inspect(input),
         },
+        Command::TestCompat {
+            feature,
+            stage,
+            fresh_clang,
+            no_native,
+            format,
+            quiet,
+            verbose,
+            ascii,
+            corpus_root,
+        } => test_compat_cmd::run(&test_compat_cmd::TestCompatArgs {
+            features: feature.clone(),
+            stages: stage.clone(),
+            fresh_clang: *fresh_clang,
+            no_native: *no_native,
+            format: format.clone(),
+            quiet: *quiet,
+            verbose: *verbose,
+            ascii: *ascii,
+            corpus_root: corpus_root.clone(),
+        }),
     };
     if let Err(e) = result {
         eprintln!("error: {}", e);
