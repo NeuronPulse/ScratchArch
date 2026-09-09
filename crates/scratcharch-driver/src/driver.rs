@@ -134,13 +134,12 @@ fn convert_vm_value(value: &IsaValue) -> ExecutionValue {
 
 /// Seed the VM's static data segment (LLVM globals) before execution.
 ///
-/// The ISA VM's `Load`/`Store` are 32-bit-word ops, so only word-granular data
-/// (`i32`/`i64`/`ptr` elements at aligned offsets, see
-/// [`StaticData::word_exact`]) round-trips exactly. A module with sub-word or
-/// byte data (strings, `i8` arrays) is exact on the SAIR interpreter only; the
-/// VM rejects it with an explicit diagnostic rather than silently misreading
-/// bytes. The segment must also sit below the stack floor, or the stack could
-/// overwrite it later — reported as an error, never allowed to collide.
+/// The VM's memory is byte-addressed and its `Load8`/`Store8` ops are
+/// byte-granular, and every single-limb `Load`/`Store` in `IsaLowerer` is
+/// width-accurate (`ty.size_in_bytes()`), so the byte image seeds exactly —
+/// word-granular and sub-word/byte leaves alike. The segment must still sit
+/// below the stack floor, or the stack could overwrite it later — reported as
+/// an error, never allowed to collide.
 fn seed_vm_static(
     vm: &mut Vm,
     data: &StaticData,
@@ -148,13 +147,6 @@ fn seed_vm_static(
 ) -> Result<(), String> {
     if data.image.is_empty() {
         return Ok(());
-    }
-    if !data.word_exact {
-        return Err("global static data contains sub-word or byte elements (i1/i8/i16 or \
-             byte arrays/strings); the SAIR interpreter is exact for these but the \
-             VM backend's memory ops are 32-bit-word granular, so the module is \
-             interpreter-only"
-            .to_string());
     }
     let size = data.image.len();
     let end = STATIC_DATA_BASE as usize + size;

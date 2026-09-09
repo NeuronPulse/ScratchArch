@@ -278,11 +278,11 @@ struct PhiFixup {
 /// returned here are absolute (base + offset) so instructions can refer to a
 /// global with a plain `const_i32`.
 ///
-/// The `word_exact` flag records whether every leaf is word-granular (`i32`/
-/// `i64`/`ptr`) and lands on a 4-byte-aligned absolute address — only then can
-/// the 32-bit-word VM backend access the segment exactly. Any sub-word or byte
-/// leaf (i1/i8/i16, strings) makes the segment interpreter-only, which the VM
-/// driver reports explicitly.
+/// Every leaf is serialized at its natural byte offset with its exact byte
+/// count (`IrType::size_in_bytes`), so the produced image is byte-exact:
+/// word-granular and sub-word/byte leaves (i1/i8/i16, strings) alike are read
+/// exactly by both the interpreter and the VM backend (whose single-limb
+/// `Load`/`Store` are width-accurate).
 fn layout_globals(program: &LlvmProgram) -> Result<(HashMap<String, u32>, StaticData), LlvmError> {
     let structs = &program.struct_types;
     // Pass 1: assign regions and absolute addresses.
@@ -298,9 +298,8 @@ fn layout_globals(program: &LlvmProgram) -> Result<(HashMap<String, u32>, Static
         addr_of.insert(g.name.clone(), abs);
         next += size as usize;
     }
-    // Pass 2: serialize initializers and compute VM word-exactness.
+    // Pass 2: serialize initializers into the byte-exact image.
     let mut image = vec![0u8; next];
-    let mut word_exact = true;
     for g in &program.globals {
         let abs = addr_of[&g.name];
         write_global_init(
@@ -311,9 +310,8 @@ fn layout_globals(program: &LlvmProgram) -> Result<(HashMap<String, u32>, Static
             &g.init,
             &addr_of,
         )?;
-        check_word_exact(structs, abs, &g.ty, &mut word_exact)?;
     }
-    Ok((addr_of, StaticData { image, word_exact }))
+    Ok((addr_of, StaticData { image }))
 }
 
 /// Round `n` up to a multiple of `align` (a power of two).
@@ -458,49 +456,6 @@ fn int_leaf_width(ty: &LlvmType) -> u32 {
         LlvmType::I32 => 4,
         LlvmType::I64 => 8,
         _ => 0,
-    }
-}
-
-/// Record whether the VM backend (32-bit-word memory ops) can access this leaf
-/// exactly: every leaf must be word-granular (`i32`/`i64`/`ptr`) and land on a
-/// 4-byte-aligned absolute address. Sub-word or byte leaves (i1/i8/i16, string
-/// arrays, structs whose fields may be byte-wide) make the whole segment
-/// interpreter-exact only.
-fn check_word_exact(
-    structs: &HashMap<String, Vec<LlvmType>>,
-    abs: u32,
-    ty: &LlvmType,
-    word_exact: &mut bool,
-) -> Result<(), LlvmError> {
-    match ty {
-        LlvmType::I1 | LlvmType::I8 | LlvmType::I16 => {
-            *word_exact = false;
-            Ok(())
-        }
-        LlvmType::I32 | LlvmType::I64 | LlvmType::Ptr => {
-            if !abs.is_multiple_of(4) {
-                *word_exact = false;
-            }
-            Ok(())
-        }
-        LlvmType::Array { inner, count } => {
-            let (stride, _) = type_size_align(structs, inner)?;
-            for k in 0..*count {
-                check_word_exact(
-                    structs,
-                    abs + k * stride,
-                    inner,
-                    word_exact,
-                )?;
-            }
-            Ok(())
-        }
-        // Struct globals are rejected at parse time; be conservative if one
-        // ever arrives via an array of structs.
-        LlvmType::Struct(_) | LlvmType::UnnamedStruct { .. } | LlvmType::Void => {
-            *word_exact = false;
-            Ok(())
-        }
     }
 }
 

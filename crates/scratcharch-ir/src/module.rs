@@ -18,13 +18,13 @@ pub const STATIC_DATA_BASE: u32 = 8;
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct StaticData {
     /// Byte image of the segment, seeded at [`STATIC_DATA_BASE`].
+    ///
+    /// The image is byte-exact: every leaf is serialized at its natural byte
+    /// offset (`IrType::size_in_bytes`), and each backend seeds the raw bytes
+    /// and reads them with width-accurate memory ops, so word-granular and
+    /// sub-word/byte leaves (`i1`/`i8`/`i16`, byte arrays/strings) alike are
+    /// exact.
     pub image: Vec<u8>,
-    /// `true` when every data element is 32-bit-word granular — `i32`/`i64`/`ptr`
-    /// scalar leaves at 4- or 8-aligned offsets (arrays of these included). Only
-    /// then can the 32-bit-word VM backend access the segment exactly. Sub-word
-    /// leaves (`i1`/`i8`/`i16`) and byte arrays/strings are interpreter-exact
-    /// only; the VM backend rejects such a module with an explicit diagnostic.
-    pub word_exact: bool,
 }
 
 #[derive(Debug, Clone)]
