@@ -566,6 +566,50 @@ tested over the boundary and poison-region cases (`vm_differential_tests.rs`). T
 interpreter/VM agreement is what makes these ops part of the executable
 LLVM→SAIR→ISA loop rather than an interpreter-only feature.
 
+### 5.8 Full-width multiply and divide/remainder (`i64 mul` / `udiv` / `urem`)
+
+SAIR `Mul`/`Div`/`Rem` at 64-bit width are realised on the VM by two program-level
+software helpers built from the word primitives alone — there is no widening ISA
+multiply/divide, and none is needed. A helper is appended to the ISA program only when
+the module actually contains the corresponding two-limb op (the same demand policy as
+the shift helpers, §5.7). On the interpreter the identical SAIR ops run directly as
+native 64-bit wrapping arithmetic; the helpers exist so the VM can agree bit-for-bit,
+and both engines execute the *same* lowered module.
+
+**`__sair_mul64` — two-limb wrapping multiply `mod 2⁶⁴`.**
+Stack signature `( a_lo a_hi b_lo b_hi → lo hi )`: four operand limbs in (`b_hi` on
+top), the product out as `(lo, hi)` with the high limb on top. The product
+`(a0 + a1·2³²)·(b0 + b1·2³²) mod 2⁶⁴` expands to
+`a0·b0 + (a0·b1 + a1·b0)·2³²` (the `a1·b1·2⁶⁴` term vanishes `mod 2⁶⁴`). The word
+`I32Mul` yields only the low 32 bits of a 64-bit product, so the one full product the
+formula needs — `high32(a0·b0)` — is formed from four exact `16×16→32` schoolbook
+products with carry propagation across 16-bit digit positions; every other term is a
+plain word multiply. The helper is straight-line: a fixed instruction count per call,
+no loop.
+
+**`__sair_udivrem64` — two-limb unsigned divide/remainder.**
+Stack signature `( a_lo a_hi b_lo b_hi → r_lo r_hi q_lo q_hi )`: the quotient pair on
+top. Both results of the unsigned division `a / b` are computed in one pass by a
+**64-step restoring division**. Each iteration drains the dividend's next
+(most significant) bit into a running remainder `r = (r << 1) | bit`; when `r ≥ b` the
+divisor is subtracted and the quotient bit set. The quotient is built
+most-significant-bit-first (each new bit appended at the bottom while the partial
+quotient shifts left), so after 64 iterations `q` and `r` are exact. Every step is
+branchless except the loop test: comparisons select 0/1 and the subtract is masked by
+the `r ≥ b` flag (`sub = ge ? b : 0`). SAIR `Div`/`Rem` are unsigned, so this one
+helper serves a `udiv`/`urem` mapping directly and supplies the magnitude step of the
+frontend's signed `sdiv`/`srem` expansion.
+
+Divide-by-zero is reported exactly like the word `I32Div`: the helper detects
+`b_lo | b_hi == 0` up front and executes a manufactured `0 / 0` word division, which
+the VM fails deterministically with `VmError::DivisionByZero`; the interpreter
+surfaces the equal `InterpError::DivisionByZero` on the same module.
+
+Interpreter/VM agreement for both helpers is pinned by the differential suite
+(`vm_differential_tests.rs`: carry-across-limbs multiply, sub-word and boundary
+divisors, exact long-division matches, and an `lcg` random sweep over `i64`
+mul/div/rem operands).
+
 ---
 
 ## 6. Memory Model

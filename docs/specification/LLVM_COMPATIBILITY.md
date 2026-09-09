@@ -1,6 +1,6 @@
 # LLVM Compatibility
 
-> Specification version: **v0.2**
+> Specification version: **v0.3**
 > Status: normative (defines what `scratcharch-llvm` accepts and how it behaves)
 > Companion documents: [`LLVM_TRANSLATION.md`](../design/LLVM_TRANSLATION.md)
 > (design/mapping), [`LLVM_COMPATIBILITY_STATUS.md`](../design/LLVM_COMPATIBILITY_STATUS.md)
@@ -15,7 +15,8 @@ ScratchArch accepts **LLVM textual IR** (`.ll`) as a frontend language. Real
 compilers (clang, rustc) already lower source programs to LLVM IR, so a correct
 LLVM→SAIR translation lets ScratchArch run C without language-specific parsers.
 
-The goal of v0.2 is **not** the widest possible opcode surface: it is to get
+The goal of the current milestone is **not** the widest possible opcode
+surface: it is to get
 *real* clang/Clang output as far through the toolchain as possible while keeping
 LLVM semantics **exact**, and — where a construct cannot be handled — to
 **reject it with an explicit diagnostic** rather than translate it incorrectly
@@ -54,8 +55,12 @@ some things that SAIR and the VM handle fine.
 The categories are disjoint by design. In particular, **`VM unsupported` is not
 an alias for `Interpreter only`**: `Interpreter only` names work that is
 tracked as a compatible future VM path, while `VM unsupported` names work the
-VM will keep rejecting under the frozen ISA (a widening `mul`/`div`, or a
-64-bit ALU, would be required). Both refuse to run, and both refuse to fake it.
+VM will keep rejecting because faithful execution needs capability beyond the
+frozen word ISA. (Software helpers are the bridge between the two: full-width
+`i64` arithmetic and every shift are *Supported* — not merely tracked — because
+`__sair_mul64`/`__sair_udivrem64`/`__sair_*64` realise them exactly from the
+word ops, §5.1 and EXECUTION_MODEL.md §5.7–§5.8.) Both refuse to run, and both
+refuse to fake it.
 
 ## 3. Pipeline and frontend
 
@@ -90,7 +95,7 @@ C source --clang -S -emit-llvm--> .ll text
 | `i8` | `I8` | Supported | Byte |
 | `i16` | `I16` | Supported | |
 | `i32` | `I32` | Supported | Primary integer carrier |
-| `i64` | `I64` | Partial | Interpreter exact at any width; VM carries it as two 32-bit limbs for add/sub/compare/cast/load/store/select/phi, and rejects `mul`/`div`/`rem` (§5, VM unsupported subset) |
+| `i64` | `I64` | Supported | Interpreter exact at any width; VM carries it as two 32-bit limbs for the whole arithmetic family — `add`/`sub`/compare/cast/load/store/select/phi per limb, and full-width `mul`/`udiv`/`urem` (hence the translator's signed `sdiv`/`srem`) via software helpers `__sair_mul64`/`__sair_udivrem64` built from the word ops (§5.1) |
 | `ptr` | `Pointer` | Supported | Generic byte-addressed pointer; 32-bit on SA48 |
 | `void` | `Void` | Supported | Return type / declaration only |
 | `[N x T]` | element type | Supported | As allocation/layout for `alloca`/`getelementptr` only |
@@ -110,9 +115,9 @@ Every row is exact on the SAIR interpreter unless the notes say otherwise.
 | LLVM | SAIR | Status | Notes |
 |------|------|--------|-------|
 | `add` / `sub` | `Add` / `Sub` | **S** | Wrapping; `nsw`/`nuw` ignored. `i64` = two limbs on the VM (carry/borrow across the limb boundary) |
-| `mul` | `Mul` | **P** | VM single-cell exact; **VU** for `i64` (needs 64-bit multiply — no widening ISA op) |
-| `udiv` / `urem` | `Div` / `Rem` | **P** | Unsigned floor, one-to-one; **VU** for `i64` (needs 64-bit divide) |
-| `sdiv` / `srem` | expansion | **P** | Exact trunc-toward-zero magnitude expansion over unsigned ops; **VU** for `i64` (inherits the `udiv`/`urem` limit) |
+| `mul` | `Mul` | **S** | Wrapping; `nsw`/`nuw` ignored. `i32`/narrower is a word `I32Mul`; `i64` = two limbs via the software helper `__sair_mul64` — a 16-bit schoolbook expansion of `(a0+a1·2³²)(b0+b1·2³²) mod 2⁶⁴` in which every partial product is an exact 16×16→32 word multiply, so no widening ISA op is needed (§5.8 of EXECUTION_MODEL.md) |
+| `udiv` / `urem` | `Div` / `Rem` | **S** | Unsigned floor, one-to-one at any width; `i64` = two limbs via the software helper `__sair_udivrem64` (64-step restoring division, §5.8). Divide-by-zero runs the same error path as the word `I32Div`: the helper manufactures a `0/0` word division, so both engines report `DivisionByZero` |
+| `sdiv` / `srem` | expansion | **S** | Exact trunc-toward-zero magnitude expansion over unsigned ops (`translate_signed_divrem`); `i64` inherits the unsigned helper's quotient/remainder; `INT_MIN/-1` wraps (x86-consistent) |
 | `and` / `or` / `xor` | `And` / `Or` / `Xor` | **S** | Width-preserving, wrapping; `i8/i16` masked carriers, `i32` word, `i64` per-limb word ops on the VM (EXECUTION_MODEL.md §5.7) |
 | `shl` / `lshr` / `ashr` | `Shl` / `Lshr` / `Ashr` | **S** | Effective amount = `amount mod w` (deterministic poison region, §5.7); `ashr` sign-replicates bit `w-1`. VM realises every shift via software helpers `__sair_shl64`/`__sair_lshr64`/`__sair_ashr64` (single-limb and two-limb) |
 
@@ -153,7 +158,7 @@ width (`i1`–`i64`), on the interpreter and on the VM's two-limb path alike.
 |------|------|--------|-------|
 | `alloca T` / `alloca T, i32 N` | `Alloca` (byte array) | **S** | Sized from the target layout; constant count |
 | `load` / `store` | `Load` / `Store` | **S** | Typed; `i64` = two limbs at `addr`/`addr+4` on the VM |
-| `getelementptr` | single byte-offset `Gep` over `i8` | **P** | Constant indices fold to a byte offset (works everywhere); a *dynamic* index on a byte array carries its low limb into the 32-bit address space (**S**); a dynamic index on a multi-byte-element array needs an `i64 mul` on the VM → **VU** subset. Interpreter is exact for all |
+| `getelementptr` | single byte-offset `Gep` over `i8` | **S** | Constant indices fold to a byte offset (works everywhere); a *dynamic* index on a byte array carries its low limb into the 32-bit address space; a dynamic index on a multi-byte-element array multiplies the index by the element size with the same software `mul` the VM uses for full-width `i64` multiply (§5.1). Interpreter and VM are exact for all three |
 | `volatile` / `atomic` | — | **U** | Rejected (alignment and other attributes are tolerated) |
 | global data (`@g = global T init`) | static data segment; uses of `@g` are its absolute address (I32) | **P** | Flat segment laid out below the stack floor (`STATIC_DATA_BASE`); the region below `stack_limit` is never stack-allocated, so it is safe static data. Interpreter seeding is **byte-exact**. Supported initializers: scalar integers (`i1/i8/i16/i32/i64`), `zeroinitializer`, `null`, pointer relocations (`ptr @other`), `c"…"` byte strings, and flat arrays of scalars. Rejected with explicit diagnostics: struct/void globals, `undef`/`poison`, nested-aggregate (array-of-array) initializers, and relocations to undeclared globals. **Address-of-function is rejected** (no function-pointer ABI — see the indirect-`call` row in §5.5). VM split: word-granular data is VM-exact; sub-word/byte data is interpreter-only (§6.1) |
 
@@ -189,9 +194,9 @@ the frozen ISA VM backend can lower the resulting SAIR:
 |-----------|-------------|------------|----------|
 | `i32`-representable programs | Supported | Supported | Supported |
 | `i64` add/sub/compare/cast/load/store/select/phi | Supported | Supported (two 32-bit limbs) | Supported |
-| `i64` mul/div/rem | Supported | Rejected — explicit diagnostic | VM unsupported |
+| `i64` mul/div/rem | Supported | Supported — software helpers `__sair_mul64`/`__sair_udivrem64` over the word ops (§5.8) | Supported |
 | dynamic `getelementptr` into a byte array | Supported | Supported (low limb) | Supported |
-| dynamic `getelementptr` into `i32`/wider elements | Supported | Rejected — `i64 mul` | VM unsupported |
+| dynamic `getelementptr` into `i32`/wider elements | Supported | Supported — scaled byte offset via the software `mul` helper | Supported |
 | `select` / `switch` | Supported | Supported | Supported |
 | `phi` | Supported | Supported (edge copies) | Supported |
 | `and`/`or`/`xor` (all integer widths) | Supported | Supported (word op; `i64` per-limb) | Supported |
@@ -201,6 +206,11 @@ the frozen ISA VM backend can lower the resulting SAIR:
 | `llvm.*` bit intrinsics, `llvm.memcpy`/`memset`, runtime intrinsics | Supported | No `define`d body to run | Interpreter only |
 | global data, word-granular (aligned `i32`/`i64`/`ptr` leaves) | Supported | Supported (VM-exact static segment) | Supported |
 | global data, sub-word/byte leaves (`i1`/`i8`/`i16`, byte strings, arrays with byte elements) | Supported | Rejected — `sub-word or byte` diagnostic | Interpreter only |
+
+No `VM unsupported` row remains: every construct the VM can express — exactly,
+or via a program-level software helper (§5.8) — is marked Supported, and what
+it cannot (reinterpret no-ops, byte-granular globals, bodyless calls) is on the
+`Interpreter only` side with a compatible, tracked path.
 
 The VM gaps above are **backend** limitations, not translator ones. Nothing is
 approximated: constructs the VM cannot execute faithfully are rejected with a
@@ -220,6 +230,19 @@ above are re-stated and exercised by `diff_unreachable_traps_both_engines`. The
 (`bitcast`/`ptrtoint`/`inttoptr`) rows remain on the `Interpreter only` side and
 are tracked as gaps (§8). Word `Load`/`Store` are unchanged — the matrix never
 claims a VM capability before the VM exercises it.
+
+**Full-width arithmetic on the VM.** Closing `i64 mul`/`div`/`rem` required no
+further ISA change. The two-limb forms lower to calls on program-level software
+helpers appended to the ISA program — `__sair_mul64` (16-bit schoolbook
+multiply) and `__sair_udivrem64` (64-step restoring division computing quotient
+and remainder together) — built entirely from the existing word ops
+(EXECUTION_MODEL.md §5.8). Because the *translator* already expands LLVM's
+signed `sdiv`/`srem` into magnitudes over the unsigned `Div`/`Rem`, all five
+i64 arithmetic forms reach the VM exactly, and dynamic scaled
+`getelementptr` (an `i64`/`i32` `mul` in the byte-offset computation) follows
+for free. Divide-by-zero is manufactured as the word `0/0` error inside the
+helper, so the VM and interpreter raise the same `DivisionByZero` on the same
+module.
 
 ### 6.2 Scratch backend
 
@@ -247,25 +270,21 @@ frozen ISA semantics merely to satisfy a frontend case.
 
 ## 8. Known gaps
 
-1. **`i64 mul`/`div`/`rem` on the VM.** Two-limb add/sub/compare/cast/memory
-   exist; multiply/divide need a 64-bit widening operation the frozen ISA does
-   not have. The interpreter is exact; the VM rejects with a diagnostic naming
-   the requirement.
-2. **No reinterpret casts on the VM** (`bitcast`, `ptrtoint`, `inttoptr`):
+1. **No reinterpret casts on the VM** (`bitcast`, `ptrtoint`, `inttoptr`):
    the interpreter is exact; a VM no-op path is compatible and tracked.
-3. **Call-runtime constructs are interpreter-only** (`llvm.memcpy` family,
+2. **Call-runtime constructs are interpreter-only** (`llvm.memcpy` family,
    bit intrinsics): no `define`d body exists for the VM to call.
-4. **Globals with sub-word/byte data are interpreter-only**; the VM's word ops
+3. **Globals with sub-word/byte data are interpreter-only**; the VM's word ops
    cannot read them. Word-granular globals run on both backends (§6.1).
-5. **Hex literals are not lexed** (`0x…`); integer constants are decimal.
-6. **Poison is not modeled.** Per SAIR's no-poison policy, overflow wraps and
+4. **Hex literals are not lexed** (`0x…`); integer constants are decimal.
+5. **Poison is not modeled.** Per SAIR's no-poison policy, overflow wraps and
    zero-operand `ctlz`/`cttz` return the width even when LLVM would permit
    poison. This is a deliberate, documented divergence.
-7. **`switch` is a linear chain**, not a jump table or binary search.
+6. **`switch` is a linear chain**, not a jump table or binary search.
 
 ## 9. Verification
 
-Three layers prove the matrix (counts updated at the v0.2 gate, §LLVM_TRANSLATION
+Three layers prove the matrix (counts updated at the v0.3 gate, §LLVM_TRANSLATION
 and the generated status report):
 
 1. **Committed real-clang fixtures** (`tests/c_programs/*.{c,ll}`): clang `-O0`
@@ -273,13 +292,15 @@ and the generated status report):
    covers signed comparisons on negatives/mixed signs (`signedcmp`), `i64`
    arithmetic across the limb boundary (`i64arith`), the full bitwise/shift
    family with sign-fill and cross-limb shift amounts (`bitwise`, native exit
-   `293345`), structs, arrays, globals, `llvm.*`/runtime intrinsics, memory
-   intrinsics, and function calls. `phi`
-   loops do not appear in clang `-O0` output (clang keeps induction variables in
-   memory at `-O0`); loop-carried `phi` is exercised by the hand-written VM
-   corpus `tests/c_programs_vm/phi_sum.ll`/`neg_countdown.ll` and the focused
-   translator tests, which is recorded honestly rather than forcing an `-O1`
-   output into an `-O0` corpus.
+   `293345`), full-width `i64` multiply/divide/remainder over real clang
+   `mul`/`udiv`/`urem`/`sdiv`/`srem` (`i64muldiv`, native checksum `3579139508`
+   — high-limb weighted so a dropped limb or carry perturbs it), structs,
+   arrays, globals, `llvm.*`/runtime intrinsics, memory intrinsics, and
+   function calls. `phi` loops do not appear in clang `-O0` output (clang keeps
+   induction variables in memory at `-O0`); loop-carried `phi` is exercised by
+   the hand-written VM corpus `tests/c_programs_vm/phi_sum.ll`/`neg_countdown.ll`
+   and the focused translator tests, which is recorded honestly rather than
+   forcing an `-O1` output into an `-O0` corpus.
 2. **Fresh-clang recompile harness** (`tests/corpus_clang_tests.rs`): recompiles
    each `.c` with clang on every run so the committed `.ll` cannot drift.
 3. **Five-surface corpus record** (`scratcharch-pipeline/tests/llvm_corpus_surfaces.rs`):
@@ -293,15 +314,28 @@ and the generated status report):
    (memcpy/memmove/memset), `reject_tests.rs` (indirect calls), the driver's
    `vm_backend_tests.rs` (interpreter/VM agreement incl. the multi-cell `i64`
    corpus and profile-driven limb counts), and the interpreter's
-   `vm_differential_tests.rs` (17 tests requiring bit-for-bit interpreter-vs-VM
-   agreement for `and`/`or`/`xor`/`shl`/`lshr`/`ashr` across `i1`–`i64`,
-   poison-region shift amounts, negative sign-fill, and cross-limb `i64`
-   shifts, plus `unreachable` trapping in both engines).
+   `vm_differential_tests.rs` (24 tests requiring bit-for-bit
+   interpreter-vs-VM agreement: `and`/`or`/`xor`/`shl`/`lshr`/`ashr` across
+   `i1`–`i64`, poison-region shift amounts, negative sign-fill, cross-limb `i64`
+   shifts, full-width `i64` `mul`/`udiv`/`urem` — carry-across-limbs, exact
+   long-division matches, boundary divisors, and an `lcg` random sweep over both
+   — plus `unreachable` trapping in both engines).
 
 `scripts/run_c_tests.sh` drives the C corpus as a gate.
 
 ## 10. Change log
 
+- **v0.3 (2026-09-09)**: additive `Load8`/`Store8`/`Trap` word-ISA primitives
+  (EXECUTION_MODEL.md §5.6) realise `unreachable` as a well-defined terminal
+  trap on the VM; bitwise ops (`and`/`or`/`xor`) become Supported at every
+  width (per-limb word ops for `i64`) and every shift is realised exactly on
+  the VM by the program-level software helpers `__sair_shl64`/`__sair_lshr64`/
+  `__sair_ashr64` (§5.7); full-width `i64` multiply/divide/remainder close with
+  two further software helpers `__sair_mul64`/`__sair_udivrem64` (§5.8), which
+  also carry dynamic scaled `getelementptr` to Supported. The `VM unsupported`
+  column is now empty (that classification remains defined for future
+  capability boundaries); the remaining gaps are the tracked `Interpreter only`
+  paths (§8).
 - **v0.2 (2026-09-09)**: six-level classification (`Supported` only where the
   interpreter **and** the VM backend are exact); exact signed `icmp` (Part 2);
   two-limb `i64` lowering on the VM (Part 3); `llvm.memcpy`/`memmove`/`memset`

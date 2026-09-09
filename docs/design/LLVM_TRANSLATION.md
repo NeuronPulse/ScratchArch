@@ -1,6 +1,6 @@
 # LLVM IR → SAIR Translation
 
-> Document version: 0.2
+> Document version: 0.3
 > Status: prototype
 
 ## 1. Why ScratchArch uses LLVM IR as input
@@ -165,17 +165,25 @@ the last non-declaration) is used as the module entry point.
 
 ### VM-backend limitations
 
-The VM carries 64-bit integers as two 32-bit limbs for add/sub/compare/cast/
-load/store/select/phi. Bitwise/logical ops (`and`/`or`/`xor`) run per-limb at any
+The VM carries 64-bit integers as two 32-bit limbs, and the whole `i64`
+arithmetic family now runs on it. Add/sub/compare/cast/load/store/select/phi
+operate per limb; bitwise/logical ops (`and`/`or`/`xor`) run per-limb at any
 width; every shift runs through a software helper
 (`__sair_shl64`/`__sair_lshr64`/`__sair_ashr64`) that handles single- and
-two-limb operands with exact sign-fill (EXECUTION_MODEL.md §5.7). `i64`
-mul/div/rem are rejected with an explicit
-diagnostic (no 64-bit divide/widen ISA). Dynamic `getelementptr` into a byte
-array (i64 index, scale 1) lowers and runs; dynamic scaling by multi-byte
-element sizes needs an `i64 mul` and is rejected. Sub-word/byte global data and
-`llvm.*`/runtime intrinsics are interpreter-exact; the VM rejects those modules
-with a named diagnostic instead of misreading bytes. Nothing is approximated.
+two-limb operands with exact sign-fill (EXECUTION_MODEL.md §5.7). Full-width
+`mul`/`udiv`/`urem` lower the same way to `__sair_mul64` (16-bit schoolbook
+multiply `mod 2⁶⁴`) and `__sair_udivrem64` (64-step restoring division that
+computes quotient and remainder together, §5.8); the translator's signed
+`div`/`rem` expansion already works over magnitudes, so LLVM `sdiv`/`srem`
+reach the VM through the unsigned helper unchanged. A helper is appended to the
+ISA program only when the module uses the op. Dynamic `getelementptr` — a byte
+array indexed by a dynamic value (low limb into the 32-bit address space) or a
+multi-byte element array scaled by the same software `mul` — lowers and runs.
+Divide-by-zero is manufactured as the word `0/0` error inside the divrem
+helper, so the VM and interpreter raise the same `DivisionByZero` on the same
+module. Sub-word/byte global data and `llvm.*`/runtime intrinsics remain
+interpreter-exact; the VM rejects those modules with a named diagnostic instead
+of misreading bytes. Nothing is approximated.
 
 ### Known gaps (see LLVM_COMPATIBILITY.md)
 
@@ -187,7 +195,7 @@ with a named diagnostic instead of misreading bytes. Nothing is approximated.
 - The **Scratch backend** (SAIR → ScratchGraph) is a construction surface only;
   the Scratch execution model cannot express flat memory, pointers, or arbitrary
   call frames (§6.2 of LLVM_COMPATIBILITY.md), so LLVM→Scratch semantics are out
-  of the v0.2 scope.
+  of the LLVM compatibility scope.
 
 ## 5. Crate structure
 
@@ -256,6 +264,7 @@ plus a fresh-clang re-compile of each `.c` on every run:
 | `factorial`, `fib`, `recursion` | control flow, recursion, multi-block |
 | `signedcmp` | signed `icmp` on negatives/mixed signs (exact expansion) |
 | `i64arith` | `i64` add/sub across the limb boundary, signed `i64` compare, trunc |
+| `i64muldiv` | full-width `i64` `mul`/`udiv`/`urem` and signed `sdiv`/`srem` over real clang IR; signed forms ride the translator's magnitude expansion (native checksum 3579139508) |
 | `bitwise` | `and`/`or`/`xor` and every shift width/sign-fill combination incl. cross-limb `i64` amounts (native exit 293345) |
 | `memory`, `memintrin` | memory intrinsics (`__scratcharch_memcpy`, `llvm.memcpy`/`memmove`/`memset`) |
 | `intrinsics` | `llvm.bswap/ctpop/ctlz/cttz`, 16/32/64-bit, `i1 true` immarg |
@@ -274,8 +283,9 @@ signed `icmp`, `phi`, and explicit rejection of unknown intrinsics and
 unsupported constructs. `scratcharch-driver`'s VM-backend tests run the
 i32-representable fixtures and the multi-cell `i64` corpus through the VM and
 require interpreter/VM agreement; the interpreter's `vm_differential_tests.rs`
-adds bit-for-bit interpreter-vs-VM agreement for the whole bitwise/shift family
-plus the `unreachable` trap on both engines;
+adds bit-for-bit interpreter-vs-VM agreement for the whole bitwise/shift family,
+full-width `i64` `mul`/`udiv`/`urem` (long-division matches, boundary divisors,
+an `lcg` random sweep), plus the `unreachable` trap on both engines;
 `scratcharch-llvm/tests/` adds hand-written
 loop/`phi` fixtures and the memory-intrinsic matrix.
 
