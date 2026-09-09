@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 cargo build                          # build all crates
-cargo test --workspace               # run all workspace tests (564 total)
+cargo test --workspace               # run all workspace tests (611 total)
 cargo test -p scratcharch-transform  # test a single crate
 cargo test -p scratcharch-llvm -- test_name --nocapture  # run one test
 cargo clippy --workspace --all-targets  # lint (zero warnings required)

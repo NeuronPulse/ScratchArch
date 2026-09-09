@@ -1,6 +1,6 @@
 # ScratchArch Development Roadmap
 
-> Last updated: 2026-09-09 (LLVM Compatibility v0.2 completed)
+> Last updated: 2026-09-09 (LLVM Compatibility v0.4 completed)
 > Status: living document
 
 ## Legend
@@ -441,16 +441,98 @@ VM `i64` mul/div/rem, byte-granular globals, and `llvm.*`/runtime intrinsics are
 interpreter-only and rejected on the VM with named diagnostics. Each is
 documented in the matrix — nothing is silently approximated.
 
+### LLVM Compatibility v0.4 — Real-World Coverage Expansion & Benchmark Baseline (`scratcharch-llvm` / `scratcharch-pipeline` / `scratcharch-compat` / `scratcharch-cli`)
+
+Milestone goal: move the compatibility corpus and benchmark from a capability
+probe-set to a **real-world coverage expansion**, close the highest-leverage
+target gap (constant-length memory ops on the VM), and stand up a formal,
+versioned benchmark gate. Recorded numbers:
+`docs/design/LLVM_COMPATIBILITY_BASELINE.md` (**v0.3 gate** — this is the
+benchmark-baseline axis), current bottlenecks:
+`docs/design/LLVM_COMPATIBILITY_STATUS.md`. Note the dual versioning: the spec
+change log is at v0.4 while the corpus-benchmark baseline advances to v0.3.
+
+- [x] **Real-world corpus expansion to 33 fixtures** (Part 1): 13 real clang
+      `-O0` programs committed under `tests/corpus/llvm/fixtures/` — structs,
+      arrays, nested structs, whole-struct assignment, pointer arithmetic over
+      `i64` GEP indices, an `i64` field inside a struct, string/byte scanning,
+      char-mixed padding, and an aggregate-constant global table. Unioned with
+      the classic `tests/c_programs/` corpus. Real programs only; no artificial
+      fixtures to inflate percentages.
+- [x] **Aggregate layout evaluation** (Part 3): concluded that clang bakes byte
+      offsets into GEP constant indices, so no `datalayout` parsing and no
+      aggregate-by-value ABI are needed — the existing byte-offset GEP model
+      handles struct/array/padding exactly (spec §4 note). No DataLayout engine
+      work required.
+- [x] **Constant-length memory ops on the VM** (Part 4): the translator expands
+      non-volatile, constant-length `llvm.memcpy`/`llvm.memmove`/`llvm.memset`
+      (and `__scratcharch_memcpy`) into width-exact `i8` load/store sequences
+      (load-all-then-store → overlap-safe `memmove`), moving the `memory`/
+      `memintrin`/`struct-assign` fixtures to full end-to-end success. Gated by
+      `MAX_INLINE_MEMOP = 4096`; runtime-length/volatile/oversized variants and
+      the `llvm.*` bit intrinsics stay interpreter-only with explicit
+      diagnostics (5-test differential suite `memintrin_tests.rs`).
+- [x] **Function-pointer feasibility** (Part 5): `docs/design/FUNCTION_POINTERS.md`
+      concludes an indirect-call ABI is feasible (function-id `i32` +
+      per-site dispatch lowered to eq/branch/named-`Call`/`Trap`); recommended
+      for a later milestone, not implemented here.
+- [x] **Floating-point feasibility** (Part 6): `docs/design/FLOATING_POINT.md`
+      recommends option **C** (interpreter-exact `f64` + `f32`-by-emulation)
+      near-term; VM-exact deferred. Not implemented here.
+- [x] **Compatibility benchmark v0.2** (Parts 7–8): `scratcharch-compat` report
+      now shows explicit `(pass/total)` denominators on every row and the
+      dashboard/JSON record the semantic-core `overall_pass`; new aggregate
+      fixtures get native-reference + five-surface + interpreter/VM differential
+      coverage; prior fixtures stay green (gate is the committed
+      `manifest.json` oracle).
+- [x] **Documentation** (Part 9): `LLVM_COMPATIBILITY.md` matrix refreshed
+      through v0.4 (aggregate layout note, memory-op expansion, diagnostics);
+      `LLVM_COMPATIBILITY_STATUS.md` and `LLVM_COMPATIBILITY_BASELINE.md`
+      rewritten as the v0.2 snapshot; `LLVM_COMPATIBILITY_BENCHMARK.md` and this
+      roadmap updated.
+- [x] **v0.2 benchmark baseline numbers**: Overall 85% (28/33 semantic core);
+      Parser/SAIR/Interpreter 85% (28/33); VM 79% (26/33); Scratch 45% (15/33);
+      classes success 14 / scratch-backend-failure 12 / vm-failure 2 /
+      parse-failure 5; gate green, 0 mismatches.
+- [x] **Byte-exact Scratch memory model** (P5): the ScratchGraph heap becomes
+      byte-addressable (one list item per byte, width-exact little-endian
+      load/store, exact static-data seeding, mathematical-signed value
+      convention) per `docs/specification/SCRATCH_MEMORY.md`, with a documented
+      validation boundary (`SCRATCH_NUMERIC_MODEL.md` §5) — construction and
+      formula/structural verification, *not* execution. Closes every width-cast/
+      pointer Scratch gap: `globals`, `signedcmp`, `i64arith`, `reinterp`,
+      `struct-array`, `ptrstruct`, `byte-scan`, `char-mix`, `i64-struct` →
+      Scratch construct.
+- [x] **v0.3 benchmark baseline numbers**: Overall 85% (28/33); Parser/SAIR/
+      Interpreter 85%; VM 79% (26/33); Scratch 76% (25/33); classes success 23 /
+      scratch-backend-failure 3 / vm-failure 2 / parse-failure 5; gate green,
+      0 mismatches. `string`/`global-agg` manifest pins corrected to their true
+      measured boundaries (no fixture made "Supported" by weakening a check).
+
+**Deferred / known gaps at v0.4**: floating-point types and vector types are
+still rejected by the parser (`float`, `vector` fixtures); indirect calls have
+no function-pointer ABI (`indirect-call`); `atomicrmw` is out of scope for the
+word ISA (`atomic`); aggregate-constant global *tables* (struct elements in an
+initializer) need a parser extension (`global-agg`); `__scratcharch_strlen` and
+`llvm.bswap.i16` remain interpreter-only runtime intrinsics (`string`,
+`intrinsics`); 3 fixtures are exact on interpreter+VM but unlowerable to
+Scratch (the bitwise/shift family — `and`/`ashr`/`lshr` have no Scratch
+operator). Each is recorded in the matrix with its pinned diagnostic — nothing
+is silently approximated.
+
 ### Testing
 
 - [x] All tests pass with 0 warnings and 0 clippy errors
-- [x] v0.2 gate (2026-09-09): `cargo test --workspace` = 497 passed, 0 failed
-      (1 ignored); `cargo clippy --workspace --all-targets` = 0 warnings;
+- [x] v0.4 gate (2026-09-09): `cargo test --workspace` = 611 passed, 0 failed;
+      `cargo clippy --workspace --all-targets` = 0 warnings;
       `./scripts/run_c_tests.sh` = 1 passed, 0 failed.
+      `scratcharch test-compat` v0.3 gate green (33 fixtures, Overall 85%,
+      Scratch 76%).
 
 ## In Progress
 
-(none — v0.2 delivered; see the commit proposals in the milestone report)
+**LLVM Compatibility v0.4 — byte-exact Scratch memory (P5)**: implemented and
+green; report pending (no commit made for this milestone yet).
 
 ## Future (v0.3+)
 
@@ -462,14 +544,25 @@ documented in the matrix — nothing is silently approximated.
       software-helper shifts on the VM, and the `unreachable` trap model. Proven
       by the `bitwise` corpus fixture and 17 interpreter/VM differential tests
       (`vm_differential_tests.rs`); see EXECUTION_MODEL.md §5.7
-- [ ] **Floating point**: `fadd`/`fsub`/`fmul`/`fdiv` (SAIR has `f64`; the LLVM
-      frontend still rejects float types)
-- [ ] **VM i64 mul/div/rem and widening** — two-limb add/sub/cmp/select/phi are
-      done; a widening multiply/divide ISA would lift the remaining `i64` gap
-- [ ] **VM runtime intrinsic linking** — lower or link `llvm.memcpy`/`memmove`/
-      `memset` and `__scratcharch_*` calls to run on the VM instead of the
-      interpreter-only boundary
-- [ ] **Function-pointer ABI / indirect calls** (currently rejected at parse time)
+- [x] **VM i64 mul/div/rem and widening** — landed in the v0.3 milestone as
+      demand-appended program-level software helpers (`__sair_mul64`,
+      `__sair_udivrem64`) built from the word ops; no widening ISA was needed.
+      Full-width `i64` mul/udiv/urem are now interpreter/VM-exact
+      (see EXECUTION_MODEL.md §5.8).
+- [x] **VM runtime intrinsic linking (constant-length memory ops)** — landed in
+      v0.4: the translator expands non-volatile, constant-length
+      `llvm.memcpy`/`memmove`/`memset` and `__scratcharch_memcpy` into width-exact
+      `i8` load/store sequences that run on the VM. Runtime-length/volatile/
+      oversized variants and `__scratcharch_strlen` remain interpreter-only
+      (explicit diagnostics).
+- [ ] **Floating point**: `fadd`/`fsub`/`fmul`/`fdiv` — feasibility studied in
+      v0.4 (`docs/design/FLOATING_POINT.md`, option **C** recommended near-term);
+      the LLVM frontend still rejects float types
+- [ ] **Function-pointer ABI / indirect calls** — feasibility studied in v0.4
+      (`docs/design/FUNCTION_POINTERS.md`); still rejected at parse time
+- [ ] **Aggregate-constant global tables** — struct/nested-aggregate constant
+      elements in a global initializer still hit a parser gap (`global-agg`
+      fixture, `parse error: unterminated global array initializer`)
 
 ### Medium-term
 

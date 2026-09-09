@@ -1,8 +1,8 @@
 # LLVM Compatibility Benchmark
 
-> Design/method for the **LLVM Compatibility Benchmark v0.1**.
+> Design/method for the **LLVM Compatibility Benchmark v0.3** (current gate).
 > Companion to the [`LLVM_COMPATIBILITY_BASELINE.md`](./LLVM_COMPATIBILITY_BASELINE.md)
-> (the v0.1 snapshot) and the normative matrix
+> (the recorded v0.3 snapshot; v0.2 and v0.1 kept as history) and the normative matrix
 > [`docs/specification/LLVM_COMPATIBILITY.md`](../specification/LLVM_COMPATIBILITY.md).
 > Status: normative for the benchmark harness.
 
@@ -181,4 +181,4 @@ cargo test -p scratcharch-compat                                        # unit t
 ```
 
 See `tests/corpus/llvm/manifest.json` for the oracle and
-`docs/design/LLVM_COMPATIBILITY_BASELINE.md` for the recorded v0.1 numbers.
+`docs/design/LLVM_COMPATIBILITY_BASELINE.md` for the recorded v0.3 numbers.

@@ -200,8 +200,11 @@ approximated.
 - No sign of "poison": zero-operand `ctlz`/`cttz` yield the width, and overflow
   wraps, per SAIR's no-poison policy.
 - The **Scratch backend** (SAIR → ScratchGraph) is a construction surface only;
-  the Scratch execution model cannot express flat memory, pointers, or arbitrary
-  call frames (§6.2 of LLVM_COMPATIBILITY.md), so LLVM→Scratch semantics are out
+  it carries a byte-exact, width-aware memory model
+  (`docs/specification/SCRATCH_MEMORY.md`), but the Scratch execution model
+  cannot express pointers or arbitrary call frames and there is no standalone
+  executor (§6.2 of LLVM_COMPATIBILITY.md, `SCRATCH_NUMERIC_MODEL.md` §5), so
+  LLVM→Scratch *execution* semantics are out
   of the LLVM compatibility scope.
 
 ## 5. Crate structure

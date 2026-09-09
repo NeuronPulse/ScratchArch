@@ -1,6 +1,6 @@
 # LLVM Compatibility
 
-> Specification version: **v0.3**
+> Specification version: **v0.4**
 > Status: normative (defines what `scratcharch-llvm` accepts and how it behaves)
 > Companion documents: [`LLVM_TRANSLATION.md`](../design/LLVM_TRANSLATION.md)
 > (design/mapping), [`LLVM_COMPATIBILITY_STATUS.md`](../design/LLVM_COMPATIBILITY_STATUS.md)
@@ -121,6 +121,20 @@ C source --clang -S -emit-llvm--> .ll text
 | `half`/`float`/`double`/`f128` | — | Unsupported | Explicit diagnostic at parse (SAIR has `F64` but the frontend does not expose floats) |
 | `i128`, `x86_mmx`, vectors | — | Unsupported | Explicit diagnostic at parse |
 
+**Aggregate layout (v0.4 evaluation).** The v0.4 fixtures exercise struct/array
+layout against real clang `-O0` output: field offsets, natural-alignment padding
+(`char-mix`: `{i8,i32,i16}` at offsets 0/4/8), nested structs, struct arrays,
+whole-struct `memcpy` assignment, and an `i64` field straddling the 4-byte cell
+grid. Clang bakes the final byte offsets into its `getelementptr` constant
+indices, so the toolchain never needs a `target datalayout` — it executes those
+offsets exactly over the cell model (4-byte 32-bit cells, `i64` as two limbs,
+sub-word fields byte-addressed via `Load8`/`Store8`, little-endian), and every
+fixture runs byte-exact on both engines, which validates the cell/layout model
+against the clang/x86-64 ABI the fixtures were compiled with. Aggregate
+**by value** (a struct returned from / passed to a function as a first-class
+value) remains unsupported — `alloca`+GEP+load/store is the supported model,
+and only `i64`-wide scalar values cross the call ABI as two cells.
+
 ## 5. Instruction matrix
 
 Legend for the per-row status: **S** = Supported, **P** = Partial,
@@ -177,15 +191,15 @@ width (`i1`–`i64`), on the interpreter and on the VM's two-limb path alike.
 | `load` / `store` | `Load` / `Store` | **S** | Typed; `i64` = two limbs at `addr`/`addr+4` on the VM. Sub-word types (`i1`/`i8`/`i16`) write exactly `ty.size_in_bytes()` bytes via `Load8`/`Store8`, little-endian, neighbours preserved (§6.1) |
 | `getelementptr` | single byte-offset `Gep` over `i8` | **S** | Constant indices fold to a byte offset (works everywhere); a *dynamic* index on a byte array carries its low limb into the 32-bit address space; a dynamic index on a multi-byte-element array multiplies the index by the element size with the same software `mul` the VM uses for full-width `i64` multiply (§5.1). Interpreter and VM are exact for all three |
 | `volatile` / `atomic` | — | **U** | Rejected (alignment and other attributes are tolerated) |
-| global data (`@g = global T init`) | static data segment; uses of `@g` are its absolute address (I32) | **P** | Flat segment laid out below the stack floor (`STATIC_DATA_BASE`); the region below `stack_limit` is never stack-allocated, so it is safe static data. Seeding is **byte-exact on both backends**, so word- *and* sub-word/byte leaves run on the interpreter and the VM alike (§6.1); a segment that does not fit below the stack floor is rejected on either engine. Supported initializers: scalar integers (`i1/i8/i16/i32/i64`), `zeroinitializer`, `null`, pointer relocations (`ptr @other`), `c"…"` byte strings, and flat arrays of scalars. Rejected with explicit diagnostics: struct/void globals, `undef`/`poison`, nested-aggregate (array-of-array) initializers, and relocations to undeclared globals. **Address-of-function is rejected** (no function-pointer ABI — see the indirect-`call` row in §5.5) |
+| global data (`@g = global T init`) | static data segment; uses of `@g` are its absolute address (I32) | **P** | Flat segment laid out below the stack floor (`STATIC_DATA_BASE`); the region below `stack_limit` is never stack-allocated, so it is safe static data. Seeding is **byte-exact on both backends**, so word- *and* sub-word/byte leaves run on the interpreter and the VM alike (§6.1); a segment that does not fit below the stack floor is rejected on either engine. Supported initializers: scalar integers (`i1/i8/i16/i32/i64`), `zeroinitializer`, `null`, pointer relocations (`ptr @other`), `c"…"` byte strings, and flat arrays of scalars. Rejected with explicit diagnostics: struct/void globals, `undef`/`poison`, nested-aggregate (array-of-array) initializers, aggregate-constant (struct / array-of-struct) element initializers (a parser gap — §8.5), and relocations to undeclared globals. **Address-of-function is rejected** (no function-pointer ABI — see the indirect-`call` row in §5.5) |
 
 ### 5.5 Calls, intrinsics, and control flow
 
 | LLVM | SAIR | Status | Notes |
 |------|------|--------|-------|
 | `call @f` (direct, recursion) | `Call` | **S** | Independent frames. VM path pinned for the ≤32-bit ABI; `i64`-wide arguments/returns travel the same cell-slot ABI |
-| `call @__scratcharch_*` | `Call` | **IO** | Runtime-intrinsic registry (`memcpy`/`memmove`/`memset`, …) lives in the interpreter |
-| `call @llvm.memcpy/memmove/memset.*` | `Call` | **IO** | clang's canonical forms; resolved to the runtime semantics in the interpreter; unknown variants get an explicit diagnostic |
+| `call @__scratcharch_*` | `Call` | **S** / **IO** | Three-operand `__scratcharch_memcpy(dst, src, const len)` is expanded by the translator to byte copies (§6.1) and runs on both engines. Other runtime intrinsics (e.g. `__scratcharch_strlen`) are interpreter-only: the runtime-intrinsic registry lives in the interpreter and there is no `define`d body for the VM to call |
+| `call @llvm.memcpy/memmove/memset.*` | `Call` → expansion | **S** / **IO** | Canonical constant-length, non-volatile forms (`llvm.memcpy.p0.p0.iN`, `llvm.memmove.p0.p0.iN`, `llvm.memset.p0.iN`) are expanded by the translator into width-exact `i8` load/store sequences, so they run on the interpreter *and* the VM; runtime-length, volatile, or >4096-byte calls stay interpreter-resolved. Non-canonical variants (`llvm.memcpy.inline.*`, `llvm.memcpy.element.unordered.*`) get an explicit diagnostic — never a silent copy (§6.1) |
 | `call @llvm.bswap/ctpop/ctlz/cttz` | `Call` | **IO** | Interpreter reference expansion over the declared width (`i8…i64`); see `LLVM_TRANSLATION.md` |
 | other `llvm.*` | — | **U** | Explicit `unsupported llvm intrinsic` diagnostic |
 | indirect `call` / function pointers | — | **U** | SAIR/ISA `Call`s name a static callee; there is no function-pointer ABI. Rejected with an explicit diagnostic |
@@ -221,7 +235,8 @@ the frozen ISA VM backend can lower the resulting SAIR:
 | `unreachable` | trap | Supported — `Trap` terminal primitive (§5.6) | Supported |
 | `i1`/`i8`/`i16` loads and stores (byte memory) | Supported | Supported — width-exact `Load8`/`Store8` sequences (§6.1 below) | Supported |
 | `bitcast`/`ptrtoint`/`inttoptr` | Supported | Supported — cell-preserving reinterpretation; `inttoptr i64` traps on a nonzero high limb | Supported |
-| `llvm.*` bit intrinsics, `llvm.memcpy`/`memset`, runtime intrinsics | Supported | No `define`d body to run | Interpreter only |
+| constant-length, non-volatile `llvm.memcpy`/`memmove`/`memset` and `__scratcharch_memcpy` | Supported | Supported — expanded by the translator into width-exact `i8` load/store sequences (load-all-then-store, so overlapping `memmove` is well-defined); runs on both engines | Supported |
+| runtime-length / volatile / oversized (`>4096` bytes) `llvm.memcpy`/`memmove`/`memset`; `llvm.*` bit intrinsics; `__scratcharch_strlen` | Supported | No `define`d body to run | Interpreter only |
 | global data, word-granular (aligned `i32`/`i64`/`ptr` leaves) | Supported | Supported (VM-exact static segment) | Supported |
 | global data, sub-word/byte leaves (`i1`/`i8`/`i16`, byte strings, arrays with byte elements) | Supported | Supported (byte-exact static segment; neighbouring bytes preserved) | Supported |
 
@@ -277,18 +292,44 @@ for free. Divide-by-zero is manufactured as the word `0/0` error inside the
 helper, so the VM and interpreter raise the same `DivisionByZero` on the same
 module.
 
+**Constant-length memory ops expand to the VM.** The translator expands
+constant-length, non-volatile calls to the canonical `llvm.memcpy`/`llvm.memmove`/
+`llvm.memset` families (and the three-operand `__scratcharch_memcpy`) into
+straight-line width-exact `i8` `Load8`/`Store8` sequences at compile time. A
+copy reads **every source byte into an SSA value before storing any destination
+byte** — the as-if-through-a-temporary semantics `memmove` guarantees for
+overlapping regions at no extra cost — and `memset` is a per-byte store of the
+resolved value. The expansion is bounded (`MAX_INLINE_MEMOP` = 4096 bytes) and
+gated on a literal `isvolatile = false`; runtime-length, volatile, or oversized
+calls are left as ordinary calls for the interpreter's memory-intrinsic dispatch
+and stay on the `Interpreter only` side of the VM matrix. Non-canonical names
+that merely share the `llvm.mem*` prefix (`llvm.memcpy.inline.*`,
+`llvm.memcpy.element.unordered.*`) are *not* expanded and are rejected with a
+diagnostic that names the intrinsic — the translator matches exactly the same
+canonical families the interpreter resolves, so no engine ever treats a distinct
+intrinsic as a plain byte copy. The `memory`/`memintrin`/`struct-assign` corpus
+fixtures (native 6 / 1 / 56) and the `memintrin_tests.rs` suite pin this
+end-to-end on both engines.
+
 ### 6.2 Scratch backend
 
-`scratcharch-scratchgraph::lower` can map SAIR into a ScratchGraph project, but
-the Scratch execution model is fundamentally different: per-target variables and
-lists, sprites/scripts, broadcast events, and no flat byte-addressed memory, no
-`malloc`/pointers, and no arbitrary call stack with independent frames. The
-LLVM-to-Scratch path is therefore out of the v0.2 LLVM scope. As a cross-cutting
-axis, every construct that depends on the flat linear memory model, on
-dereferenced pointers, or on recursive/stack frames is
-**Scratch backend unsupported** — even where the interpreter and the VM execute
-it exactly. This is a *model* limitation of Scratch, documented here so the
-matrix is not misread as implying Scratch exportability.
+`scratcharch-scratchgraph::lower` can map SAIR into a ScratchGraph project. Its
+memory model is **byte-addressable and width-exact**
+(`docs/specification/SCRATCH_MEMORY.md`): a stage-owned list backed the heap, one
+list item per byte, little-endian `i1`/`i8`/`i16`/`i32`/`i64`/`ptr` loads and
+stores with a mathematical-signed value convention reconciled to SAIR raw-bit
+semantics, exact static-data seeding, and `HeapAlloc`/`Load`/`Store`/`HeapIndex`
+as first-class project statements. The Scratch execution model still differs
+from the SAIR/VM memory model in the ways that matter for *execution*: per-target
+variables and lists, sprites/scripts, broadcast events, no `malloc`, and no
+arbitrary call stack with independent frames. The backend is a **construction**
+surface (it emits a `Project` and verifies the lowering by formula and
+structure), not an executor — whole-program *execution* semantics on real Scratch
+are not claimed until a standalone reference executor exists
+(`docs/design/SCRATCH_NUMERIC_MODEL.md` §5). Every construct that depends on
+constructs the model cannot build exactly is **Scratch backend unsupported** —
+even where the interpreter and the VM execute it — and is rejected with a named
+diagnostic, never approximated.
 
 ## 7. Explicitly rejected — summary
 
@@ -303,20 +344,28 @@ frozen ISA semantics merely to satisfy a frontend case.
 
 ## 8. Known gaps
 
-1. **Call-runtime constructs are interpreter-only** (`llvm.memcpy` family,
-   bit intrinsics): no `define`d body exists for the VM to call.
+1. **Bodyless runtime intrinsics are interpreter-only** — `__scratcharch_strlen`,
+   the `llvm.*` bit intrinsics, and runtime-length / volatile / oversized memory
+   ops: there is no `define`d body for the VM to call. Constant-length canonical
+   memory ops are *not* in this class — they are expanded to the VM (see §6.1).
 2. **Hex literals are not lexed** (`0x…`); integer constants are decimal.
 3. **Poison is not modeled.** Per SAIR's no-poison policy, overflow wraps and
    zero-operand `ctlz`/`cttz` return the width even when LLVM would permit
    poison. This is a deliberate, documented divergence.
 4. **`switch` is a linear chain**, not a jump table or binary search.
+5. **Aggregate-constant global initializers** (`@t = [N x %struct.S] [{…}, …]`)
+   are a parser gap: scalar / flat-array-of-scalar globals are supported, but a
+   global whose initializer embeds a struct or nested-aggregate constant is
+   rejected (`parse error: unterminated global array initializer`) rather than
+   mis-laid-out. Real static tables hit this (`global-agg` corpus fixture).
 
 ## 9. Verification
 
 Three layers prove the matrix (counts updated at the v0.3 gate, §LLVM_TRANSLATION
 and the generated status report):
 
-1. **Committed real-clang fixtures** (`tests/c_programs/*.{c,ll}`): clang `-O0`
+1. **Committed real-clang fixtures** (`tests/c_programs/*.{c,ll}` plus the
+   real-world aggregate corpus under `tests/corpus/llvm/fixtures/`): clang `-O0`
    output, committed, run through `translate_llvm` → interpreter. The corpus
    covers signed comparisons on negatives/mixed signs (`signedcmp`), `i64`
    arithmetic across the limb boundary (`i64arith`), the full bitwise/shift
@@ -327,8 +376,14 @@ and the generated status report):
    globals and mixed-width loads and stores with little-endian neighbour checks
    (`bytes`, native checksum `412` — each width/order/clobber check adds a
    distinct flag), pointer↔integer reinterpretation through integer-carried
-   pointers (`reinterp`, native checksum `331`), structs,
-   arrays, globals, `llvm.*`/runtime intrinsics, memory intrinsics, and
+   pointers (`reinterp`, native checksum `331`), structs and struct fields
+   (`struct`, `nested-struct` 156, `struct-assign` 56 — whole-struct copy via
+   constant-length `memcpy`), struct arrays and pointer-to-struct member access
+   (`struct-array` 66, `ptrstruct` 36), mixed-width packed struct fields with
+   padding (`char-mix` 7988), an `i64` member inside a struct (`i64-struct` 45),
+   byte-exact manual string scan (`byte-scan` 5), an aggregate-constant global
+   table (`global-agg` 51 — parser gap, §8.5), plus arrays, globals,
+   `llvm.*`/runtime intrinsics, memory intrinsics, and
    function calls. `phi` loops do not appear in clang `-O0` output (clang keeps
    induction variables in memory at `-O0`); loop-carried `phi` is exercised by
    the hand-written VM corpus `tests/c_programs_vm/phi_sum.ll`/`neg_countdown.ll`
@@ -359,8 +414,9 @@ and the generated status report):
    reinterpretation with the `inttoptr i64` overflow trap).
 5. **Compatibility benchmark** (`scratcharch-compat` + `scratcharch test-compat`,
    see [`LLVM_COMPATIBILITY_BENCHMARK.md`](../design/LLVM_COMPATIBILITY_BENCHMARK.md)):
-   runs the whole committed corpus (25 fixtures as of v0.1) through parser →
-   SAIR → optimizer → interpreter → ISA lowering → VM → ScratchGraph, records a
+   runs the whole committed corpus (33 fixtures as of the v0.3 gate) through
+   parser → SAIR → optimizer → interpreter → ISA lowering → VM → ScratchGraph,
+   records a
    PASS/FAIL/UNSUPPORTED per stage and the semantic-core Overall, cross-checks
    interpreter vs VM vs native full-width, and enforces the recorded
    expectations as a regression gate. Numbers are tracked in
@@ -371,6 +427,28 @@ and the generated status report):
 
 ## 10. Change log
 
+- **v0.4 (2026-09-09)**: real-world coverage expansion. The compat corpus grows
+  to 33 fixtures with aggregate programs — structs and struct fields,
+  nested/whole-struct assignment, struct arrays and pointer-to-struct member
+  access, mixed-width packed fields with padding, an `i64` member inside a
+  struct, byte-exact string scanning, and an aggregate-constant global table.
+  Constant-length `llvm.memcpy`/`llvm.memmove`/`llvm.memset` (and
+  `__scratcharch_memcpy`) are now expanded by the translator to width-exact `i8`
+  load/store sequences, moving the canonical memory ops from `Interpreter only`
+  to Supported on the VM; runtime-length/volatile/oversized calls and the bit /
+  `strlen` intrinsics stay interpreter-only (§6.1). The aggregate-constant
+  global initializer is a recorded parser gap (§8.5). Struct/aggregate layout is
+  validated against real clang output — no aggregate-by-value ABI.
+  Function-pointer and floating-point feasibility studies land as
+  `docs/design/FUNCTION_POINTERS.md` / `FLOATING_POINT.md`. The ScratchGraph
+  memory model becomes **byte-exact** (SCRATCH_MEMORY.md): a byte-addressable
+  list-backed heap with width-exact little-endian load/store, exact static-data
+  seeding, and the mathematical-signed value convention, closing every
+  width-cast/pointer Scratch gap (`globals`, `signedcmp`, `i64arith`,
+  `reinterp`, `struct-array`, `ptrstruct`, `byte-scan`, `char-mix`,
+  `i64-struct` → Scratch construct; scratch-backend-failure 12 → 3; Scratch
+  gate 45% → 76%). The backend remains a construction surface with a documented
+  validation boundary (§6.2, SCRATCH_NUMERIC_MODEL.md §5).
 - **v0.3 (2026-09-09)**: additive `Load8`/`Store8`/`Trap` word-ISA primitives
   (EXECUTION_MODEL.md §5.6) realise `unreachable` as a well-defined terminal
   trap on the VM; bitwise ops (`and`/`or`/`xor`) become Supported at every
