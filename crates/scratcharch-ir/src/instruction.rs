@@ -66,6 +66,36 @@ pub enum Instruction {
         lhs: ValueId,
         rhs: ValueId,
     },
+    And {
+        ty: IrType,
+        lhs: ValueId,
+        rhs: ValueId,
+    },
+    Or {
+        ty: IrType,
+        lhs: ValueId,
+        rhs: ValueId,
+    },
+    Xor {
+        ty: IrType,
+        lhs: ValueId,
+        rhs: ValueId,
+    },
+    Shl {
+        ty: IrType,
+        lhs: ValueId,
+        rhs: ValueId,
+    },
+    Lshr {
+        ty: IrType,
+        lhs: ValueId,
+        rhs: ValueId,
+    },
+    Ashr {
+        ty: IrType,
+        lhs: ValueId,
+        rhs: ValueId,
+    },
     Eq {
         ty: IrType,
         lhs: ValueId,
@@ -135,7 +165,13 @@ impl Instruction {
             | Instruction::Sub { ty, .. }
             | Instruction::Mul { ty, .. }
             | Instruction::Div { ty, .. }
-            | Instruction::Rem { ty, .. } => Some(*ty),
+            | Instruction::Rem { ty, .. }
+            | Instruction::And { ty, .. }
+            | Instruction::Or { ty, .. }
+            | Instruction::Xor { ty, .. }
+            | Instruction::Shl { ty, .. }
+            | Instruction::Lshr { ty, .. }
+            | Instruction::Ashr { ty, .. } => Some(*ty),
             Instruction::Eq { .. }
             | Instruction::Lt { .. }
             | Instruction::Gt { .. } => Some(IrType::I1),

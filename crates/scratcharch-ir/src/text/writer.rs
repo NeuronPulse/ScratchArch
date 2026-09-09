@@ -123,6 +123,24 @@ fn write_instruction(
         Instruction::Rem { ty, lhs, rhs } => {
             write!(out, "rem {} {}, {}", ty, val(*lhs, value_map), val(*rhs, value_map)).unwrap();
         }
+        Instruction::And { ty, lhs, rhs } => {
+            write!(out, "and {} {}, {}", ty, val(*lhs, value_map), val(*rhs, value_map)).unwrap();
+        }
+        Instruction::Or { ty, lhs, rhs } => {
+            write!(out, "or {} {}, {}", ty, val(*lhs, value_map), val(*rhs, value_map)).unwrap();
+        }
+        Instruction::Xor { ty, lhs, rhs } => {
+            write!(out, "xor {} {}, {}", ty, val(*lhs, value_map), val(*rhs, value_map)).unwrap();
+        }
+        Instruction::Shl { ty, lhs, rhs } => {
+            write!(out, "shl {} {}, {}", ty, val(*lhs, value_map), val(*rhs, value_map)).unwrap();
+        }
+        Instruction::Lshr { ty, lhs, rhs } => {
+            write!(out, "lshr {} {}, {}", ty, val(*lhs, value_map), val(*rhs, value_map)).unwrap();
+        }
+        Instruction::Ashr { ty, lhs, rhs } => {
+            write!(out, "ashr {} {}, {}", ty, val(*lhs, value_map), val(*rhs, value_map)).unwrap();
+        }
         Instruction::Eq { ty, lhs, rhs } => {
             write!(out, "eq {} {}, {}", ty, val(*lhs, value_map), val(*rhs, value_map)).unwrap();
         }

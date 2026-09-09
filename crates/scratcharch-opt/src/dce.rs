@@ -75,6 +75,12 @@ fn is_safe_to_remove(instr: &Instruction) -> bool {
         Instruction::Add { .. }
         | Instruction::Sub { .. }
         | Instruction::Mul { .. }
+        | Instruction::And { .. }
+        | Instruction::Or { .. }
+        | Instruction::Xor { .. }
+        | Instruction::Shl { .. }
+        | Instruction::Lshr { .. }
+        | Instruction::Ashr { .. }
         | Instruction::Eq { .. }
         | Instruction::Lt { .. }
         | Instruction::Gt { .. }

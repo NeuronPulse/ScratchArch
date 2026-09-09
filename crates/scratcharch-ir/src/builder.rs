@@ -85,6 +85,30 @@ impl IrBuilder {
         self.emit_value(Instruction::Rem { ty, lhs, rhs }, ty, None::<&str>)
     }
 
+    pub fn and(&mut self, ty: IrType, lhs: ValueId, rhs: ValueId) -> ValueId {
+        self.emit_value(Instruction::And { ty, lhs, rhs }, ty, None::<&str>)
+    }
+
+    pub fn or(&mut self, ty: IrType, lhs: ValueId, rhs: ValueId) -> ValueId {
+        self.emit_value(Instruction::Or { ty, lhs, rhs }, ty, None::<&str>)
+    }
+
+    pub fn xor(&mut self, ty: IrType, lhs: ValueId, rhs: ValueId) -> ValueId {
+        self.emit_value(Instruction::Xor { ty, lhs, rhs }, ty, None::<&str>)
+    }
+
+    pub fn shl(&mut self, ty: IrType, lhs: ValueId, rhs: ValueId) -> ValueId {
+        self.emit_value(Instruction::Shl { ty, lhs, rhs }, ty, None::<&str>)
+    }
+
+    pub fn lshr(&mut self, ty: IrType, lhs: ValueId, rhs: ValueId) -> ValueId {
+        self.emit_value(Instruction::Lshr { ty, lhs, rhs }, ty, None::<&str>)
+    }
+
+    pub fn ashr(&mut self, ty: IrType, lhs: ValueId, rhs: ValueId) -> ValueId {
+        self.emit_value(Instruction::Ashr { ty, lhs, rhs }, ty, None::<&str>)
+    }
+
     pub fn eq(&mut self, ty: IrType, lhs: ValueId, rhs: ValueId) -> ValueId {
         self.emit_value(Instruction::Eq { ty, lhs, rhs }, IrType::I1, None::<&str>)
     }

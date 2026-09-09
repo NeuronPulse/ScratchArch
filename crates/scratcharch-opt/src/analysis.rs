@@ -129,6 +129,12 @@ fn instruction_operands(instr: &Instruction) -> Vec<ValueId> {
         | Instruction::Mul { lhs, rhs, .. }
         | Instruction::Div { lhs, rhs, .. }
         | Instruction::Rem { lhs, rhs, .. }
+        | Instruction::And { lhs, rhs, .. }
+        | Instruction::Or { lhs, rhs, .. }
+        | Instruction::Xor { lhs, rhs, .. }
+        | Instruction::Shl { lhs, rhs, .. }
+        | Instruction::Lshr { lhs, rhs, .. }
+        | Instruction::Ashr { lhs, rhs, .. }
         | Instruction::Eq { lhs, rhs, .. }
         | Instruction::Lt { lhs, rhs, .. }
         | Instruction::Gt { lhs, rhs, .. } => vec![*lhs, *rhs],

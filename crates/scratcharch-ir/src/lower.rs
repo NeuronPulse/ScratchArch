@@ -47,6 +47,15 @@ impl IsaLowerer {
             let lowered = self.lower_function(func)?;
             program.add_function(lowered);
         }
+
+        // Shift instructions lower to calls into software shift helpers (the ISA
+        // only has 32-bit word shifts; a width-aware shift over one or two limbs
+        // is a small loop). Append exactly the helpers the module references.
+        for name in SHIFT_HELPERS {
+            if module_uses_shift(module, name) {
+                program.add_function(build_shift_helper(name));
+            }
+        }
         Ok(program)
     }
 
@@ -173,6 +182,56 @@ impl IsaLowerer {
                             )));
                         }
                         _ => unreachable!(),
+                    }
+                }
+            }
+            SairInstr::And { ty, lhs, rhs }
+            | SairInstr::Or { ty, lhs, rhs }
+            | SairInstr::Xor { ty, lhs, rhs }
+            | SairInstr::Shl { ty, lhs, rhs }
+            | SairInstr::Lshr { ty, lhs, rhs }
+            | SairInstr::Ashr { ty, lhs, rhs } => {
+                let limbs = self.vm_limbs(*ty)?;
+                if limbs == 1 {
+                    match instr {
+                        SairInstr::Shl { .. } => self.lower_shift_single(*ty, ShiftKind::Shl, *lhs, *rhs, result_id, ctx, f)?,
+                        SairInstr::Lshr { .. } => self.lower_shift_single(*ty, ShiftKind::Lshr, *lhs, *rhs, result_id, ctx, f)?,
+                        SairInstr::Ashr { .. } => self.lower_shift_single(*ty, ShiftKind::Ashr, *lhs, *rhs, result_id, ctx, f)?,
+                        _ => {
+                            let isa_op = match instr {
+                                SairInstr::And { .. } => IsaInstr::And,
+                                SairInstr::Or { .. } => IsaInstr::Or,
+                                SairInstr::Xor { .. } => IsaInstr::Xor,
+                                _ => unreachable!(),
+                            };
+                            self.emit_cast_source_as_i32(*ty, *lhs, ctx, f)?;
+                            self.emit_cast_source_as_i32(*ty, *rhs, ctx, f)?;
+                            f.push(isa_op);
+                            if let Some(id) = result_id {
+                                self.store_masked_single(*ty, id, ctx, f)?;
+                            }
+                        }
+                    }
+                } else {
+                    match instr {
+                        SairInstr::Shl { .. } => {
+                            self.lower_shift_wide(ShiftKind::Shl, *lhs, *rhs, result_id, ctx, f)?
+                        }
+                        SairInstr::Lshr { .. } => {
+                            self.lower_shift_wide(ShiftKind::Lshr, *lhs, *rhs, result_id, ctx, f)?
+                        }
+                        SairInstr::Ashr { .. } => {
+                            self.lower_shift_wide(ShiftKind::Ashr, *lhs, *rhs, result_id, ctx, f)?
+                        }
+                        _ => {
+                            let isa_op = match instr {
+                                SairInstr::And { .. } => IsaInstr::And,
+                                SairInstr::Or { .. } => IsaInstr::Or,
+                                SairInstr::Xor { .. } => IsaInstr::Xor,
+                                _ => unreachable!(),
+                            };
+                            self.lower_wide_bitwise(*ty, *lhs, *rhs, result_id, isa_op, ctx, f)?;
+                        }
                     }
                 }
             }
@@ -916,6 +975,305 @@ impl IsaLowerer {
         f.push(IsaInstr::ConstI32(mask));
         f.push(IsaInstr::And);
     }
+
+    // ---- Bitwise and shift lowering ---------------------------------------
+    //
+    // The ISA has 32-bit word `And`/`Or`/`Xor` and logical `Shl`/`Shr`. SAIR
+    // bitwise ops are width-preserving, so a single-cell (i1/i8/i16/i32) value
+    // maps to the word op directly and a two-limb i64 maps to per-limb word ops.
+    //
+    // Shifts need width-aware semantics the word ops cannot express directly:
+    // a two-limb (64-bit) value shifts across the limb boundary, and an
+    // arithmetic shift must replicate a width-derived sign. Both are realised
+    // by calling a small software shift helper appended to the program (see
+    // [`build_shift_helper`]): the value is widened to a (lo, hi) pair and the
+    // helper steps one bit at a time in a loop. The effective shift amount is
+    // `amount & (width - 1)` (amount mod width), the deterministic poison-region
+    // choice that matches the interpreter (`EXECUTION_MODEL.md` §5.7).
+
+    /// Mask the single-cell result on top of the stack to the integer width of
+    /// `ty` and store it into the result slot. Sub-32-bit results are kept
+    /// canonical (masked to their width) so later full-cell comparisons match
+    /// the interpreter's masked reads; an i1 result is reduced to a true flag.
+    fn store_masked_single(
+        &self,
+        ty: IrType,
+        id: ValueId,
+        ctx: &LowerCtx,
+        f: &mut FuncEmitter<'_>,
+    ) -> Result<(), LowerError> {
+        match ty.integer_width() {
+            Some(1) => {
+                f.push(IsaInstr::ConstI32(1));
+                f.push(IsaInstr::And);
+                self.reduce_top_to_flag(f);
+            }
+            Some(w) if w < 32 => self.mask_top_to(w, f),
+            _ => {}
+        }
+        self.emit_store(id, ctx, f)?;
+        Ok(())
+    }
+
+    /// Lower a single-cell shift (`i1|i8|i16|i32`) to a call on the matching
+    /// 64-bit software helper. The operand is sign- or zero-extended into the
+    /// helper's `(lo, hi)` pair and the helper's low-limb result is truncated
+    /// back to the cell's width.
+    #[allow(clippy::too_many_arguments)] // result_id + ctx + emitter idiom (see emit_gep_addr)
+    fn lower_shift_single(
+        &self,
+        ty: IrType,
+        kind: ShiftKind,
+        lhs: ValueId,
+        rhs: ValueId,
+        result_id: Option<ValueId>,
+        ctx: &LowerCtx,
+        f: &mut FuncEmitter<'_>,
+    ) -> Result<(), LowerError> {
+        let w = ty.integer_width().unwrap_or(32);
+        // Canonical operand: widen i1 to a word and mask sub-32 carriers so the
+        // sign computation reads clean low bits, then park it in the temp slot
+        // (the helper argument order needs the low limb pushed before the fill).
+        self.emit_cast_source_as_i32(ty, lhs, ctx, f)?;
+        if w < 32 {
+            self.mask_top_to(w, f);
+        }
+        f.push(IsaInstr::LocalSet(ctx.temp_slot));
+
+        // Low limb and high fill. For shl/lshr the value is zero-extended
+        // (hi = 0). For ashr the width-bit sign is replicated into the high
+        // limb before the helper is called.
+        match kind {
+            ShiftKind::Shl | ShiftKind::Lshr => {
+                f.push(IsaInstr::LocalGet(ctx.temp_slot));
+                f.push(IsaInstr::ConstI32(0));
+            }
+            ShiftKind::Ashr => {
+                if w < 32 {
+                    // hi = 0 - (M >> (w-1)): all-ones when the width bit is set.
+                    f.push(IsaInstr::LocalGet(ctx.temp_slot));
+                    f.push(IsaInstr::ConstI32(0));
+                    f.push(IsaInstr::LocalGet(ctx.temp_slot));
+                    f.push(IsaInstr::ConstI32(w - 1));
+                    f.push(IsaInstr::Shr);
+                    f.push(IsaInstr::I32Sub);
+                } else {
+                    // w == 32: the low limb already carries the full pattern.
+                    f.push(IsaInstr::LocalGet(ctx.temp_slot));
+                    // 0 - (M >> 31): all-ones when bit 31 is set.
+                    f.push(IsaInstr::ConstI32(0));
+                    f.push(IsaInstr::LocalGet(ctx.temp_slot));
+                    f.push(IsaInstr::ConstI32(w - 1));
+                    f.push(IsaInstr::Shr);
+                    f.push(IsaInstr::I32Sub);
+                }
+            }
+        }
+        // Amount masked to width (amount mod width). An i1 amount is widened to
+        // a word first so the ISA `And` sees an integer cell.
+        self.emit_cast_source_as_i32(ty, rhs, ctx, f)?;
+        f.push(IsaInstr::ConstI32(w - 1));
+        f.push(IsaInstr::And);
+        // Call helper, drop the (irrelevant) high limb, keep the low limb.
+        f.push(IsaInstr::Call(kind.helper().to_string()));
+        f.push(IsaInstr::Drop);
+        if let Some(id) = result_id {
+            self.store_masked_single(ty, id, ctx, f)?;
+        }
+        Ok(())
+    }
+
+    /// Lower a two-limb (i64) shift to a call on the matching software helper.
+    /// The amount's low limb is masked to 63 bits (`amount mod 64`), matching
+    /// the interpreter.
+    fn lower_shift_wide(
+        &self,
+        kind: ShiftKind,
+        lhs: ValueId,
+        rhs: ValueId,
+        result_id: Option<ValueId>,
+        ctx: &LowerCtx,
+        f: &mut FuncEmitter<'_>,
+    ) -> Result<(), LowerError> {
+        let Some(id) = result_id else { return Ok(()) };
+        let q = ctx.first_slot(id)?;
+        let lhs_first = ctx.first_slot(lhs)?;
+        let rhs_first = ctx.first_slot(rhs)?;
+        // (lo, hi, amount & 63)
+        f.push(IsaInstr::LocalGet(lhs_first));
+        f.push(IsaInstr::LocalGet(lhs_first + 1));
+        f.push(IsaInstr::LocalGet(rhs_first));
+        f.push(IsaInstr::ConstI32(63));
+        f.push(IsaInstr::And);
+        f.push(IsaInstr::Call(kind.helper().to_string()));
+        // Stack: lo', hi' (hi' on top) — store hi' then lo'.
+        f.push(IsaInstr::LocalSet(q + 1));
+        f.push(IsaInstr::LocalSet(q));
+        Ok(())
+    }
+
+    /// Lower a two-limb (i64) `and`/`or`/`xor` limb-wise.
+    #[allow(clippy::too_many_arguments)] // isa_op + result_id + ctx + emitter idiom
+    fn lower_wide_bitwise(
+        &self,
+        _ty: IrType,
+        lhs: ValueId,
+        rhs: ValueId,
+        result_id: Option<ValueId>,
+        isa_op: IsaInstr,
+        ctx: &LowerCtx,
+        f: &mut FuncEmitter<'_>,
+    ) -> Result<(), LowerError> {
+        let Some(id) = result_id else { return Ok(()) };
+        let q = ctx.first_slot(id)?;
+        let lhs_first = ctx.first_slot(lhs)?;
+        let rhs_first = ctx.first_slot(rhs)?;
+        for limb in 0..2 {
+            f.push(IsaInstr::LocalGet(lhs_first + limb));
+            f.push(IsaInstr::LocalGet(rhs_first + limb));
+            f.push(isa_op.clone());
+            f.push(IsaInstr::LocalSet(q + limb));
+        }
+        Ok(())
+    }
+}
+
+/// Which shift operation a [`IsaLowerer`] shift arm is lowering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShiftKind {
+    Shl,
+    Lshr,
+    Ashr,
+}
+
+impl ShiftKind {
+    /// The name of the program-level software helper realising this shift.
+    fn helper(&self) -> &'static str {
+        match self {
+            ShiftKind::Shl => "__sair_shl64",
+            ShiftKind::Lshr => "__sair_lshr64",
+            ShiftKind::Ashr => "__sair_ashr64",
+        }
+    }
+}
+
+/// The shift helpers, in canonical program-append order.
+const SHIFT_HELPERS: [&str; 3] = ["__sair_shl64", "__sair_lshr64", "__sair_ashr64"];
+
+/// Whether `module` contains an SAIR shift that lowers to `helper`.
+fn module_uses_shift(module: &IrModule, helper: &str) -> bool {
+    module.functions.iter().any(|func| {
+        func.blocks.iter().any(|block| {
+            block.instructions.iter().any(|instr| {
+                matches!(
+                    (helper, instr),
+                    ("__sair_shl64", SairInstr::Shl { .. })
+                        | ("__sair_lshr64", SairInstr::Lshr { .. })
+                        | ("__sair_ashr64", SairInstr::Ashr { .. })
+                )
+            })
+        })
+    })
+}
+
+/// Build one program-level software shift helper.
+///
+/// Signature: takes `(lo, hi, amount)` on the operand stack (amount on top,
+/// matching the `param_cells = 3` prologue convention) and returns the shifted
+/// `(lo', hi')` with the high limb on top (`return_cells = 2`). The helper
+/// steps one bit per loop iteration so a shift needs no 32-bit ISA primitive
+/// beyond word shifts and is exact for any amount in `[0, 64)`. The caller
+/// masks amounts to `& 63` before calling.
+///
+/// Loop layout (labels are function-local):
+/// ```text
+/// prologue: LocalSet 2, 1, 0        // lo slot0, hi slot1, amount slot2
+/// chk:      amount == 0 ? done : step
+/// step:     amount -= 1; apply one width-bit shift; goto chk
+/// done:     push lo; push hi; return
+/// ```
+fn build_shift_helper(name: &str) -> Function {
+    let mut f = Function::new(name);
+    f.param_cells = 3;
+    f.local_count = 3; // lo slot0, hi slot1, amount slot2
+    f.return_cells = 2;
+
+    // Prologue: pop (lo, hi, amount) from the operand stack into slots.
+    for slot in (0..3).rev() {
+        f.push(None::<&str>, IsaInstr::LocalSet(slot));
+    }
+
+    // Loop test.
+    f.push(Some("chk"), IsaInstr::LocalGet(2));
+    f.push(None::<&str>, IsaInstr::ConstI32(0));
+    f.push(None::<&str>, IsaInstr::Eq);
+    f.push(None::<&str>, IsaInstr::Branch("done".to_string(), "step".to_string()));
+
+    // Loop body (one bit).
+    f.push(Some("step"), IsaInstr::LocalGet(2));
+    f.push(None::<&str>, IsaInstr::ConstI32(1));
+    f.push(None::<&str>, IsaInstr::I32Sub);
+    f.push(None::<&str>, IsaInstr::LocalSet(2));
+    match name {
+        "__sair_shl64" => {
+            // hi' = (hi << 1) | (lo >> 31); then lo' = lo << 1.
+            f.push(None::<&str>, IsaInstr::LocalGet(1));
+            f.push(None::<&str>, IsaInstr::Dup);
+            f.push(None::<&str>, IsaInstr::I32Add);
+            f.push(None::<&str>, IsaInstr::LocalGet(0));
+            f.push(None::<&str>, IsaInstr::ConstI32(31));
+            f.push(None::<&str>, IsaInstr::Shr);
+            f.push(None::<&str>, IsaInstr::Or);
+            f.push(None::<&str>, IsaInstr::LocalSet(1));
+            f.push(None::<&str>, IsaInstr::LocalGet(0));
+            f.push(None::<&str>, IsaInstr::Dup);
+            f.push(None::<&str>, IsaInstr::I32Add);
+            f.push(None::<&str>, IsaInstr::LocalSet(0));
+        }
+        "__sair_lshr64" => {
+            // lo' = (lo >> 1) | (hi << 31); then hi' = hi >> 1.
+            f.push(None::<&str>, IsaInstr::LocalGet(0));
+            f.push(None::<&str>, IsaInstr::ConstI32(1));
+            f.push(None::<&str>, IsaInstr::Shr);
+            f.push(None::<&str>, IsaInstr::LocalGet(1));
+            f.push(None::<&str>, IsaInstr::ConstI32(31));
+            f.push(None::<&str>, IsaInstr::Shl);
+            f.push(None::<&str>, IsaInstr::Or);
+            f.push(None::<&str>, IsaInstr::LocalSet(0));
+            f.push(None::<&str>, IsaInstr::LocalGet(1));
+            f.push(None::<&str>, IsaInstr::ConstI32(1));
+            f.push(None::<&str>, IsaInstr::Shr);
+            f.push(None::<&str>, IsaInstr::LocalSet(1));
+        }
+        "__sair_ashr64" => {
+            // lo' = (lo >> 1) | (hi << 31); hi' = (hi >> 1) | (hi & 0x8000_0000)
+            // (arithmetic right shift by one replicates the sign bit).
+            f.push(None::<&str>, IsaInstr::LocalGet(0));
+            f.push(None::<&str>, IsaInstr::ConstI32(1));
+            f.push(None::<&str>, IsaInstr::Shr);
+            f.push(None::<&str>, IsaInstr::LocalGet(1));
+            f.push(None::<&str>, IsaInstr::ConstI32(31));
+            f.push(None::<&str>, IsaInstr::Shl);
+            f.push(None::<&str>, IsaInstr::Or);
+            f.push(None::<&str>, IsaInstr::LocalSet(0));
+            f.push(None::<&str>, IsaInstr::LocalGet(1));
+            f.push(None::<&str>, IsaInstr::ConstI32(1));
+            f.push(None::<&str>, IsaInstr::Shr);
+            f.push(None::<&str>, IsaInstr::LocalGet(1));
+            f.push(None::<&str>, IsaInstr::ConstI32(0x8000_0000));
+            f.push(None::<&str>, IsaInstr::And);
+            f.push(None::<&str>, IsaInstr::Or);
+            f.push(None::<&str>, IsaInstr::LocalSet(1));
+        }
+        _ => unreachable!("unknown shift helper: {name}"),
+    }
+    f.push(None::<&str>, IsaInstr::Jump("chk".to_string()));
+
+    // Done: return (lo', hi').
+    f.push(Some("done"), IsaInstr::LocalGet(0));
+    f.push(None::<&str>, IsaInstr::LocalGet(1));
+    f.push(None::<&str>, IsaInstr::Return);
+    f
 }
 
 /// Per-function lowering context: slot allocation and value metadata.

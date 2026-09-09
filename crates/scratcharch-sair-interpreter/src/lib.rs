@@ -274,6 +274,42 @@ impl Interpreter {
                 let result = int_binop(BinOp::Rem, *ty, &a, &b)?;
                 self.write_top_value(result);
             }
+            Instruction::And { ty, lhs, rhs } => {
+                let a = self.read_value(*lhs, *ty)?;
+                let b = self.read_value(*rhs, *ty)?;
+                let result = int_bitop(BitOp::And, *ty, &a, &b)?;
+                self.write_top_value(result);
+            }
+            Instruction::Or { ty, lhs, rhs } => {
+                let a = self.read_value(*lhs, *ty)?;
+                let b = self.read_value(*rhs, *ty)?;
+                let result = int_bitop(BitOp::Or, *ty, &a, &b)?;
+                self.write_top_value(result);
+            }
+            Instruction::Xor { ty, lhs, rhs } => {
+                let a = self.read_value(*lhs, *ty)?;
+                let b = self.read_value(*rhs, *ty)?;
+                let result = int_bitop(BitOp::Xor, *ty, &a, &b)?;
+                self.write_top_value(result);
+            }
+            Instruction::Shl { ty, lhs, rhs } => {
+                let a = self.read_value(*lhs, *ty)?;
+                let b = self.read_value(*rhs, *ty)?;
+                let result = int_bitop(BitOp::Shl, *ty, &a, &b)?;
+                self.write_top_value(result);
+            }
+            Instruction::Lshr { ty, lhs, rhs } => {
+                let a = self.read_value(*lhs, *ty)?;
+                let b = self.read_value(*rhs, *ty)?;
+                let result = int_bitop(BitOp::Lshr, *ty, &a, &b)?;
+                self.write_top_value(result);
+            }
+            Instruction::Ashr { ty, lhs, rhs } => {
+                let a = self.read_value(*lhs, *ty)?;
+                let b = self.read_value(*rhs, *ty)?;
+                let result = int_bitop(BitOp::Ashr, *ty, &a, &b)?;
+                self.write_top_value(result);
+            }
             Instruction::Eq { ty, lhs, rhs } => {
                 let a = self.read_value(*lhs, *ty)?;
                 let b = self.read_value(*rhs, *ty)?;
@@ -389,7 +425,7 @@ impl Interpreter {
                 if end > self.memory.len() {
                     return Err(InterpError::MemoryOutOfBounds(addr));
                 }
-                let bytes = runtime_to_bytes(val, *ty);
+                let bytes = store_bytes(&val, *ty)?;
                 self.memory[addr as usize..end].copy_from_slice(&bytes);
             }
             Instruction::Call { return_ty, callee, args } => {
@@ -907,9 +943,7 @@ enum BinOp {
     Mul,
     Div,
     Rem,
-}
-
-/// Apply a wrapping binary integer op on two values of the given type.
+}/// Apply a wrapping binary integer op on two values of the given type.
 ///
 /// SAIR arithmetic is wrapping two's-complement. i8/i16/i32 results are carried
 /// as masked `RuntimeValue::I32` (matching the pre-existing behaviour); i64
@@ -940,6 +974,69 @@ fn int_binop(op: BinOp, ty: IrType, a: &RuntimeValue, b: &RuntimeValue) -> Resul
         }
     };
     let _ = overflowed;
+    if w >= 64 {
+        Ok(RuntimeValue::I64(res))
+    } else {
+        Ok(RuntimeValue::I32(res as u32))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum BitOp {
+    And,
+    Or,
+    Xor,
+    Shl,
+    Lshr,
+    Ashr,
+}
+
+/// Apply a wrapping bitwise op on two values of the given type.
+///
+/// SAIR bitwise/shift semantics follow the arithmetic convention: results are
+/// two's-complement wrapping and the carrier for a sub-64-bit integer is an
+/// I32 whose low `w` bits hold the value. Shift amounts live in a poison region
+/// above the width; this stack defines them deterministically (so the VM
+/// backend can match it exactly) as `amount mod width`, i.e. the effective
+/// amount is `amount & (width - 1)`. Within the defined region (amount < width)
+/// the result is the exact width-bit shift. `Ashr` replicates the sign bit of
+/// the two's-complement `width`-bit pattern.
+fn int_bitop(op: BitOp, ty: IrType, a: &RuntimeValue, b: &RuntimeValue) -> Result<RuntimeValue, InterpError> {
+    let w = ty
+        .integer_width()
+        .ok_or_else(|| InterpError::TypeMismatch(format!("{op:?} requires integer type, got {ty}")))?;
+    let a = int_bits(a, ty);
+    let b = int_bits(b, ty);
+    let mask = if w >= 64 { u64::MAX } else { (1u64 << w) - 1 };
+    let res = match op {
+        BitOp::And => a & b,
+        BitOp::Or => a | b,
+        BitOp::Xor => a ^ b,
+        BitOp::Shl | BitOp::Lshr | BitOp::Ashr => {
+            // Effective shift amount = amount mod width (see doc comment).
+            let eff = if w >= 64 { (b & 63) as u32 } else { (b & u64::from(w - 1)) as u32 };
+            if eff == 0 {
+                a & mask
+            } else {
+                let shifted = match op {
+                    BitOp::Shl => a << eff,
+                    BitOp::Lshr => a >> eff,
+                    _ => {
+                        // Arithmetic right shift: sign-fill the top `eff` bits
+                        // of the width-bit pattern.
+                        let sign = (a & (1u64 << (w - 1))) != 0;
+                        if sign {
+                            let fill = mask ^ ((1u64 << (w - eff)) - 1);
+                            (a >> eff) | fill
+                        } else {
+                            a >> eff
+                        }
+                    }
+                };
+                shifted & mask
+            }
+        }
+    };
     if w >= 64 {
         Ok(RuntimeValue::I64(res))
     } else {
@@ -1107,15 +1204,42 @@ fn bytes_to_runtime(ty: &IrType, bytes: &[u8]) -> RuntimeValue {
     }
 }
 
-fn runtime_to_bytes(val: RuntimeValue, _ty: IrType) -> Vec<u8> {
-    match val {
-        RuntimeValue::I1(v) => vec![v as u8],
-        RuntimeValue::I8(v) => vec![v],
-        RuntimeValue::I16(v) => v.to_le_bytes().to_vec(),
-        RuntimeValue::I32(v) => v.to_le_bytes().to_vec(),
-        RuntimeValue::I64(v) => v.to_le_bytes().to_vec(),
-        RuntimeValue::F64(v) => v.to_le_bytes().to_vec(),
-        RuntimeValue::Pointer(v) => v.to_le_bytes().to_vec(),
+/// Serialize `val` for a store of static type `ty`.
+///
+/// A store writes exactly `ty.size_in_bytes()` bytes in little-endian order.
+/// The stored cell may be a wider carrier than `ty` (SAIR sub-32-bit arithmetic
+/// results travel in an I32 cell whose low `w` bits are the value, matching the
+/// interpreter's carrier convention), so the content is masked to `ty`'s width
+/// before serialization — the byte count and the value both derive from the
+/// declared store type, never from the carrier variant.
+fn store_bytes(val: &RuntimeValue, ty: IrType) -> Result<Vec<u8>, InterpError> {
+    match ty {
+        IrType::F64 => match val {
+            RuntimeValue::F64(v) => Ok(v.to_le_bytes().to_vec()),
+            _ => Err(InterpError::TypeMismatch(
+                "store f64 of a non-f64 value".into(),
+            )),
+        },
+        IrType::Pointer => {
+            let addr = match val {
+                RuntimeValue::Pointer(a) | RuntimeValue::I32(a) => *a,
+                _ => {
+                    return Err(InterpError::TypeMismatch(
+                        "store pointer of a non-pointer value".into(),
+                    ))
+                }
+            };
+            Ok(addr.to_le_bytes().to_vec())
+        }
+        ty if ty.is_integer() => {
+            let bits = int_bits(val, ty);
+            let width = ty.integer_width().unwrap();
+            let nbytes = width.div_ceil(8) as usize;
+            Ok(bits.to_le_bytes()[..nbytes].to_vec())
+        }
+        _ => Err(InterpError::TypeMismatch(format!(
+            "store of unsupported type {ty}"
+        ))),
     }
 }
 

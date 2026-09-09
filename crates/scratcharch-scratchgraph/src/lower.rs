@@ -693,6 +693,20 @@ fn lower_instruction(
                 }],
             }])
         }
+        SairInstr::And { .. }
+        | SairInstr::Or { .. }
+        | SairInstr::Xor { .. }
+        | SairInstr::Shl { .. }
+        | SairInstr::Lshr { .. }
+        | SairInstr::Ashr { .. } => {
+            // Bitwise and shift ops need exact integer bit semantics. The Scratch
+            // numeric backend is f64-only and its operator set has no bitwise or
+            // shift blocks, so the lowering reports rather than approximating.
+            Err(LowerError::UnsupportedInstruction(format!(
+                "{} cannot be lowered to Scratch numbers",
+                op_name(instr),
+            )))
+        }
         SairInstr::Cast { op, from_ty, to_ty, .. } => {
             // Width-changing casts need exact bit semantics; the Scratch numeric
             // backend is f64-only and cannot express i64/width extension, so the
@@ -718,6 +732,19 @@ fn binary_opcode(instr: &SairInstr) -> &'static str {
         SairInstr::Lt { .. } => "operator_lt",
         SairInstr::Gt { .. } => "operator_gt",
         _ => "operator_add",
+    }
+}
+
+/// The SAIR mnemonic of the bitwise/shift ops (for diagnostics).
+fn op_name(instr: &SairInstr) -> &'static str {
+    match instr {
+        SairInstr::And { .. } => "and",
+        SairInstr::Or { .. } => "or",
+        SairInstr::Xor { .. } => "xor",
+        SairInstr::Shl { .. } => "shl",
+        SairInstr::Lshr { .. } => "lshr",
+        SairInstr::Ashr { .. } => "ashr",
+        _ => "bitwise op",
     }
 }
 
