@@ -674,3 +674,72 @@ fn diff_reinterpret_inttoptr_i64_overflow_traps_both() {
         other => panic!("VM must trap on an overflowing inttoptr, got: {other:?}"),
     }
 }
+
+// ── Sign extension after truncation (VM regression) ───────────────
+//
+// A negative sub-32 value is *canonical* on both engines: after a `trunc`, the
+// cell holds only its low `fw` bits (i8 `-64` is `0xC0`, not `0xFFFFFFC0`).
+// The VM sign-extends by OR-ing an all-ones fill onto that canonical source.
+// Before the fix in `IsaLowerer::emit_sext_low32` the fill was applied raw, so
+// `sext(0xC0)` produced `0xC0 | 0xFFFFFFFF = 0xFFFFFFFF` (‑1) instead of
+// `0xFFFFFFC0` (‑64). This is exactly the IR shape clang emits for `bitwise.c`
+//'s `ashr8` (trunc → sext → ashr → trunc → sext), which returned 255 instead
+// of 252 on the VM while the interpreter was right. The interpreter is the
+// reference; agreement is asserted bit-for-bit.
+
+#[test]
+fn diff_sext_of_truncated_negative_fills_upper_bits_only() {
+    // sext(trunc(-64 i32 to i8)) -> i32 must be 0xFFFFFFC0, not all-ones.
+    assert_interp_vm_agree(32, |b| {
+        let wide = b.const_i32(0xFFFF_FFC0); // -64
+        let lo = b.cast(CastOp::Trunc, IrType::I32, IrType::I8, wide);
+        b.cast(CastOp::Sext, IrType::I8, IrType::I32, lo)
+    });
+    // Same through i16: sext(trunc(-4 i32 to i16)) -> 0xFFFFFFFC.
+    assert_interp_vm_agree(32, |b| {
+        let wide = b.const_i32(0xFFFF_FFFC); // -4
+        let lo = b.cast(CastOp::Trunc, IrType::I32, IrType::I16, wide);
+        b.cast(CastOp::Sext, IrType::I16, IrType::I32, lo)
+    });
+    // A directly canonical constant (masked low byte, as a trunc would leave it)
+    // hits the same `emit_sext_low32` path.
+    assert_interp_vm_agree(32, |b| {
+        let lo = b.const_i8(0xC0); // -64
+        b.cast(CastOp::Sext, IrType::I8, IrType::I32, lo)
+    });
+}
+
+#[test]
+fn diff_sext_i16_into_i64_low_limb_of_negative() {
+    // sext to a 64-bit target also runs `emit_sext_low32` for the low limb
+    // (fw < 32), with the sign fill in the high limb.
+    assert_interp_vm_agree(64, |b| {
+        let wide = b.const_i32(0x8000_0040); // positive high bit, low 16 = 0x0040
+        let pos = b.cast(CastOp::Trunc, IrType::I32, IrType::I16, wide);
+        let pe = b.cast(CastOp::Sext, IrType::I16, IrType::I64, pos);
+        let low = b.const_i32(0xFFFF_FFC0); // -64
+        let neg = b.cast(CastOp::Trunc, IrType::I32, IrType::I8, low);
+        let ne = b.cast(CastOp::Sext, IrType::I8, IrType::I64, neg);
+        // ne == 0xFFFFFFFFFFFFFFC0, pe == 0x0000000000000040; difference keeps
+        // the top limb all-ones so a truncated fill would be caught.
+        b.sub(IrType::I64, ne, pe)
+    });
+}
+
+#[test]
+fn diff_ashr8_fixture_shape_sext_after_trunc() {
+    // Mirror of `ashr8` in tests/c_programs/bitwise.c: the sequence clang emits
+    // for `(int)(signed char)((signed char)((signed char)a) >> b)` with a = -64,
+    // b = 4. Correct masked result: 252. The pre-fix VM returned 255.
+    assert_interp_vm_agree(32, |b| {
+        let a = b.const_i32(0xFFFF_FFC0); // -64
+        let b_sh = b.const_i32(4);
+        let t1 = b.cast(CastOp::Trunc, IrType::I32, IrType::I8, a);
+        let x = b.cast(CastOp::Sext, IrType::I8, IrType::I32, t1);
+        let s = b.ashr(IrType::I32, x, b_sh);
+        let t2 = b.cast(CastOp::Trunc, IrType::I32, IrType::I8, s);
+        let y = b.cast(CastOp::Sext, IrType::I8, IrType::I32, t2);
+        let ff = b.const_i32(0xFF);
+        b.and(IrType::I32, y, ff)
+    });
+}

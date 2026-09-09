@@ -1243,6 +1243,12 @@ impl IsaLowerer {
 
     /// Leave `source | sign_fill` on the stack: the sign extension of the
     /// single-cell source into a full 32-bit cell.
+    ///
+    /// The raw all-ones sign fill from [`Self::emit_sext_fill`] must be masked
+    /// down to the bits *above* `fw-1` before OR-ing: the canonical source is
+    /// masked to its width (e.g. a negative i8 is `0xFC`, not `0xFFFFFFFC`), so
+    /// OR-ing it with the whole fill would corrupt its low bits
+    /// (`0xFC | 0xFFFFFFFF = 0xFFFFFFFF = -1` instead of `-4`).
     fn emit_sext_low32(
         &self,
         fw: u32,
@@ -1251,7 +1257,10 @@ impl IsaLowerer {
         ctx: &LowerCtx,
         f: &mut FuncEmitter<'_>,
     ) -> Result<(), LowerError> {
+        let upper_fill = (u32::MAX >> fw) << fw;
         self.emit_sext_fill(fw, from_ty, value, ctx, f)?;
+        f.push(IsaInstr::ConstI32(upper_fill));
+        f.push(IsaInstr::And);
         self.emit_cast_source_as_i32(from_ty, value, ctx, f)?;
         f.push(IsaInstr::Or);
         Ok(())
