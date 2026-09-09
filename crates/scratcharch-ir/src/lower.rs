@@ -368,12 +368,12 @@ impl IsaLowerer {
                 f.push(IsaInstr::Return);
             }
             Terminator::Unreachable => {
-                // LLVM `unreachable` is a trap. SA48 has no trap instruction and
-                // a plain fall-through would execute the next block's code, so
-                // lowering refuses rather than inventing semantics.
-                return Err(LowerError::UnsupportedInstruction(
-                    "unreachable terminator needs a trap ISA instruction".into(),
-                ));
+                // LLVM `unreachable` is a trap. SAIR declares the path
+                // impossible, so the realized ISA marks reaching it as a
+                // terminal, program-declared stop via the `Trap` primitive
+                // (ISA.md Appendix A, EXECUTION_MODEL.md §5.6). It is not a
+                // fall-through, a silent return, or a machine error.
+                f.push(IsaInstr::Trap);
             }
         }
         Ok(())

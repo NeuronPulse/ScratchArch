@@ -961,7 +961,8 @@ impl Parser {
                 match op_name.as_str() {
                     // Raw op is kept so the translator can distinguish signed
                     // (`sdiv`/`srem`) from unsigned (`udiv`/`urem`) integer ops.
-                    "add" | "sub" | "mul" | "sdiv" | "udiv" | "rem" | "srem" | "urem" => {
+                    "add" | "sub" | "mul" | "sdiv" | "udiv" | "rem" | "srem" | "urem"
+                    | "and" | "or" | "xor" | "shl" | "lshr" | "ashr" => {
                         let ty = self.parse_type()?;
                         let lhs = self.parse_value_of_type(&ty)?;
                         self.expect(&Token::Comma)?;

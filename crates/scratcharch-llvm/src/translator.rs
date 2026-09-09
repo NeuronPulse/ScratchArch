@@ -611,6 +611,16 @@ fn translate_instruction(
                 // the dividend's sign, so they are expanded over the unsigned
                 // ops from magnitudes.
                 "sdiv" | "srem" => translate_signed_divrem(builder, ir_ty, op, l, r)?,
+                // Bitwise and shifts map one-to-one. SAIR carries each width
+                // exactly (see EXECUTION_MODEL.md §5.7): sub-32 results are
+                // masked carriers, i64 is two limbs, and the poison shift
+                // region is the deterministic `amount mod width`.
+                "and" => builder.and(ir_ty, l, r),
+                "or" => builder.or(ir_ty, l, r),
+                "xor" => builder.xor(ir_ty, l, r),
+                "shl" => builder.shl(ir_ty, l, r),
+                "lshr" => builder.lshr(ir_ty, l, r),
+                "ashr" => builder.ashr(ir_ty, l, r),
                 _ => return Err(LlvmError::UnsupportedInstruction(op.clone())),
             };
             if let Some(name) = dest {
