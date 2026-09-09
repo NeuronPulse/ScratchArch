@@ -252,6 +252,17 @@ fn test_vm_backend_real_clang_i64arith() {
     assert_i32(run_llvm_file_interp(path.to_str().unwrap(), OptLevel::Basic), 8, "i64arith (interp)");
 }
 
+/// Real clang `i64muldiv.c` drives i64 `mul`/`udiv`/`urem`/`sdiv`/`srem`
+/// through helper calls at -O0. Each lowers to a software helper on the VM
+/// (`__sair_mul64`, `__sair_udivrem64`), so both execution surfaces must agree
+/// on the native checksum 3579139508.
+#[test]
+fn test_vm_backend_real_clang_i64muldiv() {
+    let path = project_root().join("tests").join("c_programs").join("i64muldiv.ll");
+    assert_i32(run_llvm_file_vm(path.to_str().unwrap(), OptLevel::Basic), 3579139508, "i64muldiv (real clang)");
+    assert_i32(run_llvm_file_interp(path.to_str().unwrap(), OptLevel::Basic), 3579139508, "i64muldiv (interp)");
+}
+
 /// Real clang `array.c` indexes its array with *constant* i64 indices
 /// (`getelementptr [5 x i32], ptr %a, i64 0, i64 2`). Those fold to a single
 /// i32 byte offset, so even real clang IR can lower all the way to the VM when

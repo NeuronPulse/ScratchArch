@@ -194,6 +194,24 @@ fn test_pipeline_i64arith() {
     }
 }
 
+/// Real clang output for full-width i64 multiply/divide/remainder: `mul`/
+/// `udiv`/`urem`/`sdiv`/`srem` over i64 plus i64 shifts/trunc/param passing,
+/// all routed through helper calls so clang -O0 cannot fold the wide ops away.
+/// The signed forms exercise the translator's magnitude-based `sdiv`/`srem`
+/// expansion; `sdiv(INT64_MIN, 2)` covers the exact `|INT64_MIN| == 2^63`
+/// magnitude. 3579139508 = the native C checksum (high-limb weighted; the low
+/// 8 bits of that value are 180, which is all a native shell's exit status
+/// exposes).
+#[test]
+fn test_pipeline_i64muldiv() {
+    let path = c_programs_dir().join("i64muldiv.ll");
+    let result = run_llvm_file(path.to_str().unwrap()).expect("pipeline failed");
+    match result {
+        Some(RuntimeValue::I32(v)) => assert_eq!(v, 3579139508),
+        other => panic!("i64muldiv.ll: expected I32(3579139508), got {:?}", other),
+    }
+}
+
 /// Real clang output for module-level globals: read/modify/write of a mutable
 /// global, a pointer relocation (`@greeting -> @.str`), inline `getelementptr`
 /// constant expressions into global arrays, a negative i8 scalar, a byte string,
