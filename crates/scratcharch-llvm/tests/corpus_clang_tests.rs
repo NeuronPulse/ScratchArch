@@ -101,3 +101,5 @@ fresh_corpus_test!(fresh_i64arith, "i64arith", 8);
 fresh_corpus_test!(fresh_i64muldiv, "i64muldiv", 3579139508u32);
 fresh_corpus_test!(fresh_globals, "globals", 95);
 fresh_corpus_test!(fresh_bitwise, "bitwise", 293345);
+fresh_corpus_test!(fresh_bytes, "bytes", 412);
+fresh_corpus_test!(fresh_reinterp, "reinterp", 331);

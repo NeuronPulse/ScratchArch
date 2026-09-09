@@ -116,7 +116,10 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "globals",
             expected: 95,
-            vm: VmRejected("sub-word or byte"),
+            // Sub-word/byte leaves (strings, i8/i16) are byte-exact on the VM:
+            // single-limb Load/Store are width-accurate, so the byte image runs
+            // on both backends and agrees with native (exit 95).
+            vm: Exact(95),
             scratch: ScratchRejected("sext i8 to i32"),
         },
         Fixture {
@@ -130,6 +133,25 @@ fn fixtures() -> Vec<Fixture> {
             expected: 8,
             vm: Exact(8),
             scratch: ScratchRejected("zext i1 to i64"),
+        },
+        Fixture {
+            name: "bytes",
+            // Byte/sub-word globals and mixed-width loads/stores: the VM lowers
+            // i8/i16 to byte ops and reads byte-exact static data, so it agrees
+            // with native (and the interpreter) on the full checksum (exit 412,
+            // masked to 156 by the 8-bit process status).
+            expected: 412,
+            vm: Exact(412),
+            scratch: ScratchRejected("zext i8 to i32"),
+        },
+        Fixture {
+            name: "reinterp",
+            // ptrtoint/inttoptr of a 32-bit SA48 pointer is a zero-cost cell
+            // copy on the VM, so pointer/integer reinterpretation round-trips
+            // exactly on both engines.
+            expected: 331,
+            vm: Exact(331),
+            scratch: ScratchRejected("ptrtoint ptr to i64"),
         },
     ]
 }

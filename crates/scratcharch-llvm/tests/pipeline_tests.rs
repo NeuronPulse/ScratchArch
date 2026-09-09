@@ -243,3 +243,34 @@ fn test_pipeline_bitwise() {
         other => panic!("bitwise.ll: expected I32(293345), got {:?}", other),
     }
 }
+
+/// Real clang output for byte/sub-word globals and mixed-width loads/stores:
+/// i8/i16 leaves, an i8 store into a mutable global array (neighbour
+/// preservation), byte-granular reads of a stored i32 (little-endian), and an
+/// i16 reassembled from two byte stores. The committed `.ll` reads exactly at
+/// `bytes.c`; the VM path and the native reference are pinned in
+/// `llvm_corpus_surfaces.rs` and the driver's vm-backend suite.
+#[test]
+fn test_pipeline_bytes() {
+    let path = c_programs_dir().join("bytes.ll");
+    let result = run_llvm_file(path.to_str().unwrap()).expect("pipeline failed");
+    match result {
+        Some(RuntimeValue::I32(v)) => assert_eq!(v, 412),
+        other => panic!("bytes.ll: expected I32(412), got {:?}", other),
+    }
+}
+
+/// Real clang output for pointer↔integer reinterpretation: `ptrtoint` of an
+/// address into an `i64` `uintptr_t`, `inttoptr` back, an `i64` `icmp eq`, and
+/// a byte view through an integer-carried pointer. Exercises the interpreter
+/// (and, in the surfaces/driver suites, the VM) on the cell-preserving
+/// pointer/int forms.
+#[test]
+fn test_pipeline_reinterp() {
+    let path = c_programs_dir().join("reinterp.ll");
+    let result = run_llvm_file(path.to_str().unwrap()).expect("pipeline failed");
+    match result {
+        Some(RuntimeValue::I32(v)) => assert_eq!(v, 331),
+        other => panic!("reinterp.ll: expected I32(331), got {:?}", other),
+    }
+}

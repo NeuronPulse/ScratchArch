@@ -2,9 +2,10 @@
 // access shape — read/modify/write of a mutable global, a pointer relocation to
 // a global, constant-indexed global-array elements (inline getelementptr
 // constant expressions), an i8 scalar with a negative value, a byte string, and
-// a 64-bit negative constant. The interpreter result is compared against the
-// native exit code (95) in the pipeline and fresh-clang corpus tests; the VM
-// backend rejects the module (sub-word/byte data is interpreter-exact only).
+// a 64-bit negative constant. The result is compared against the native exit
+// code (95) in the pipeline and fresh-clang corpus tests; both the interpreter
+// and the ISA VM run the module byte-exact (the static-data segment is seeded
+// byte-exact, and i8/i16 leaves load via width-accurate byte ops).
 int counter = 41;
 const char *greeting = "hi";
 static int table[3] = {7, 8, 9};
