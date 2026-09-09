@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 cargo build                          # build all crates
-cargo test --workspace               # run all workspace tests (400 total)
+cargo test --workspace               # run all workspace tests (540 total)
 cargo test -p scratcharch-transform  # test a single crate
 cargo test -p scratcharch-llvm -- test_name --nocapture  # run one test
 cargo clippy --workspace --all-targets  # lint (zero warnings required)
@@ -29,7 +29,7 @@ Scratch source (.sb3 / project.json)
   ScratchGraph Project ── JsonExporter / Sb3Writer ──▶ .sb3 / .json
 
 C source → LLVM IR (.ll) → SAIR (IrModule) ──▶ interpreter
-                                       └────▶ ISA lowering → VM (partial)
+                                       └────▶ ISA lowering → VM (exact subset)
 IrModule ── scratchgraph::lower ──▶ ScratchGraph Project
 ```
 
@@ -83,9 +83,25 @@ The **SAIR interpreter path** (`scratcharch-llvm` → `scratcharch-sair-interpre
 is complete and used for all pipeline tests. It handles multi-block control
 flow, phi nodes, GEP, and recursive calls directly on SAIR.
 
-The **VM path** (`scratcharch-ir::lower` → `scratcharch-vm`) is partial:
-`lower.rs` only handles single-block functions with no phi or GEP; multi-block
-lowering is in progress (see ROADMAP.md).
+The **VM path** (`scratcharch-ir::lower` → `scratcharch-vm`) lowers validated
+SAIR to the frozen 32-bit-word ISA. It handles multi-block functions, `phi`
+(edge copies inserted by `lower.rs` via critical-edge splitting), GEP (byte
+offsets), and `select`/`switch`/`unreachable` (`Trap`). `i64` values are two
+32-bit limbs: add/sub/compare/cast/load/store/select/phi run per limb, bitwise
+runs per-limb word ops, and every shift and full-width
+`mul`/`udiv`/`urem`/`sdiv`/`srem` (the signed forms are already expanded by the
+translator to magnitudes) is realised by a demand-appended program-level
+software helper — `__sair_shl64`/`__sair_lshr64`/`__sair_ashr64`,
+`__sair_mul64`, `__sair_udivrem64` — built from the word ops, so no widening
+ISA was needed. Remaining constructs are `Interpreter only`: reinterpret casts
+(`bitcast`/`ptrtoint`/`inttoptr`), sub-word/byte global data, and `llvm.*`/
+runtime intrinsics (no `define`d body to call). The VM never approximates —
+what it cannot execute faithfully it rejects with a named diagnostic.
+
+The authoritative per-construct status lives in
+`docs/specification/LLVM_COMPATIBILITY.md` (interpreter/VM matrix, known gaps,
+verification); `docs/specification/EXECUTION_MODEL.md` §5.7–§5.8 define the
+software-helper semantics and `docs/design/LLVM_TRANSLATION.md` the mapping.
 
 ### SAIR key invariants
 
@@ -111,7 +127,17 @@ lowering is in progress (see ROADMAP.md).
 ### Test layout
 
 - `crates/scratcharch-llvm/tests/pipeline_tests.rs` — full LLVM→SAIR→interpreter
-  path over hand-written `.ll` files in `tests/c_programs/`.
+  path over committed real-clang `-O0` `.ll` output in `tests/c_programs/`.
+- `crates/scratcharch-llvm/tests/corpus_clang_tests.rs` — recompiles each
+  `tests/c_programs/*.c` with clang on every run so the committed `.ll` corpus
+  cannot drift (skips silently when clang is absent).
+- `crates/scratcharch-driver/tests/vm_backend_tests.rs` — VM/interpreter
+  agreement over real-clang fixtures, including the multi-cell `i64` corpus
+  (two-limb arithmetic and the software-helper mul/div/rem) and
+  profile-driven limb counts.
+- `crates/scratcharch-sair-interpreter/tests/vm_differential_tests.rs` —
+  bit-for-bit interpreter-vs-VM agreement for the bitwise/shift family, full-width
+  `i64` mul/udiv/urem, and the `unreachable` trap on both engines.
 - `crates/scratcharch-sb3/tests/sb3_tests.rs` — SB3 write/read roundtrips and
   asset handling.
 - `crates/scratcharch-scratchgraph/tests/parser_tests.rs` — JSON→Project parsing
