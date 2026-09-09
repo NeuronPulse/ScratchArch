@@ -568,21 +568,26 @@ fn run_compat_json(args: &[&str]) -> (bool, serde_json::Value, String) {
 #[test]
 fn test_cli_test_compat_json_gate_green() {
     // The corpus manifest lives at the workspace root; the CLI must discover it
-    // from the crate directory without an explicit --corpus-root.
+    // from the crate directory without an explicit --corpus-root. As of the v0.3
+    // expansion the `struct` feature spans all outcome classes (aggregate
+    // globals still parse-fail; the other seven construct on Scratch after the
+    // byte-exact memory model), so pin the mixed distribution rather than a
+    // single success.
     let (ok, value, output) = run_compat_json(&["--feature", "struct"]);
     assert!(ok, "test-compat failed: {}", output);
     assert_eq!(value["gate_green"].as_bool(), Some(true), "output: {}", output);
-    assert_eq!(value["total"].as_u64(), Some(1), "output: {}", output);
-    assert_eq!(value["classes"]["success"].as_u64(), Some(1), "output: {}", output);
-    assert_eq!(value["stages"]["scratch"].as_u64(), Some(100), "output: {}", output);
+    assert_eq!(value["total"].as_u64(), Some(8), "output: {}", output);
+    assert_eq!(value["classes"]["success"].as_u64(), Some(7), "output: {}", output);
+    assert_eq!(value["classes"]["parse-failure"].as_u64(), Some(1), "output: {}", output);
+    assert_eq!(value["stages"]["scratch"].as_u64(), Some(88), "output: {}", output);
 }
 
 #[test]
 fn test_cli_test_compat_stage_filter_selects_parser_gaps() {
     let (ok, value, output) = run_compat_json(&["--stage", "parser"]);
     assert!(ok, "test-compat failed: {}", output);
-    assert_eq!(value["total"].as_u64(), Some(4), "output: {}", output);
-    assert_eq!(value["classes"]["parse-failure"].as_u64(), Some(4), "output: {}", output);
+    assert_eq!(value["total"].as_u64(), Some(5), "output: {}", output);
+    assert_eq!(value["classes"]["parse-failure"].as_u64(), Some(5), "output: {}", output);
 }
 
 #[test]

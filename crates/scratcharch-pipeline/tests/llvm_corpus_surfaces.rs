@@ -96,7 +96,9 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "memory",
             expected: 6,
-            vm: VmRejected("undefined function: __scratcharch_memcpy"),
+            // Constant-length `__scratcharch_memcpy` is expanded by the
+            // translator into byte loads/stores, so it now runs exact on the VM.
+            vm: Exact(6),
             scratch: Constructs,
         },
         Fixture { name: "recursion", expected: 15, vm: Exact(15), scratch: Constructs },
@@ -104,13 +106,17 @@ fn fixtures() -> Vec<Fixture> {
             name: "intrinsics",
             expected: 2_018_928_754,
             vm: VmRejected("undefined function: llvm.bswap.i16"),
-            scratch: ScratchRejected("zext i16 to i32"),
+            scratch: Constructs,
         },
         Fixture { name: "signed", expected: 78, vm: Exact(78), scratch: Constructs },
         Fixture {
             name: "memintrin",
             expected: 1,
-            vm: VmRejected("undefined function: llvm.memcpy.p0.p0.i64"),
+            // Constant-length `llvm.memcpy`/`llvm.memmove`/`llvm.memset` are
+            // expanded by the translator, so the VM runs the fixture exactly
+            // (the overlapping `memmove` stays well-defined via the load-all
+            // expansion).
+            vm: Exact(1),
             scratch: Constructs,
         },
         Fixture {
@@ -118,40 +124,44 @@ fn fixtures() -> Vec<Fixture> {
             expected: 95,
             // Sub-word/byte leaves (strings, i8/i16) are byte-exact on the VM:
             // single-limb Load/Store are width-accurate, so the byte image runs
-            // on both backends and agrees with native (exit 95).
+            // on both backends and agrees with native (exit 95). The byte-exact
+            // ScratchGraph heap constructs the same project (SCRATCH_MEMORY.md).
             vm: Exact(95),
-            scratch: ScratchRejected("sext i8 to i32"),
+            scratch: Constructs,
         },
         Fixture {
             name: "signedcmp",
             expected: 59,
             vm: Exact(59),
-            scratch: ScratchRejected("zext i1 to i32"),
+            scratch: Constructs,
         },
         Fixture {
             name: "i64arith",
             expected: 8,
             vm: Exact(8),
-            scratch: ScratchRejected("zext i1 to i64"),
+            scratch: Constructs,
         },
         Fixture {
             name: "bytes",
             // Byte/sub-word globals and mixed-width loads/stores: the VM lowers
             // i8/i16 to byte ops and reads byte-exact static data, so it agrees
             // with native (and the interpreter) on the full checksum (exit 412,
-            // masked to 156 by the 8-bit process status).
+            // masked to 156 by the 8-bit process status). On Scratch the byte
+            // model constructs; the fixture still rejects at `and` (bitwise has
+            // no Scratch operator).
             expected: 412,
             vm: Exact(412),
-            scratch: ScratchRejected("zext i8 to i32"),
+            scratch: ScratchRejected("and cannot be lowered to Scratch numbers"),
         },
         Fixture {
             name: "reinterp",
             // ptrtoint/inttoptr of a 32-bit SA48 pointer is a zero-cost cell
             // copy on the VM, so pointer/integer reinterpretation round-trips
-            // exactly on both engines.
+            // exactly on both engines; the Scratch backend builds the same
+            // project (byte-exact heap).
             expected: 331,
             vm: Exact(331),
-            scratch: ScratchRejected("ptrtoint ptr to i64"),
+            scratch: Constructs,
         },
     ]
 }

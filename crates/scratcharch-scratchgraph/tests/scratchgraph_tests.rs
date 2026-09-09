@@ -592,16 +592,23 @@ fn test_sair_to_scratchgraph_heap_memory() {
     assert!(stage.lists.iter().any(|l| l.name == "__scratcharch_stack"));
     assert!(stage.lists.iter().any(|l| l.name == "__scratcharch_heap"));
 
-    // The procedure body should contain heap list operations and frame writes.
+    // Byte-exact store: an i32 store writes exactly 4 little-endian bytes
+    // (one SetListItem per heap byte), so neighbouring bytes are preserved.
     let body = &stage.procedures[0].body;
+    let heap_sets: Vec<&Stmt> = body
+        .iter()
+        .filter(|s| matches!(s, Stmt::SetListItem { list, .. } if list == "__scratcharch_heap"))
+        .collect();
+    assert_eq!(heap_sets.len(), 4, "i32 store must write 4 bytes");
+
+    // The load recomposes the bytes into a FrameSet value expression (no
+    // single-cell HeapLoad).
     assert!(body.iter().any(|s| matches!(
         s,
-        Stmt::SetListItem { list, .. } if list == "__scratcharch_heap"
+        Stmt::FrameSet { value, .. } if !matches!(value, Expr::HeapLoad { .. })
     )));
-    assert!(body.iter().any(|s| matches!(
-        s,
-        Stmt::FrameSet { value, .. } if matches!(value, Expr::HeapLoad { .. })
-    )));
+
+    // The alloc reserves exactly 4 bytes (i32 width).
     assert!(body.iter().any(|s| matches!(s, Stmt::HeapAlloc { .. })));
 
     let json = export_json(&project);

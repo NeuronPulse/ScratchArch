@@ -1,272 +1,616 @@
 {
-  "version": "0.1",
+  "version": "0.3",
   "fixtures": [
     {
       "name": "hello",
       "source": "tests/c_programs/hello.c",
       "llvm_ir": "tests/c_programs/hello.ll",
-      "feature_tags": ["integer"],
+      "feature_tags": [
+        "integer"
+      ],
       "expected_result": 42,
       "expected_stage": "scratch",
       "expected_status": "success",
-      "vm": { "exact": 42 },
-      "scratch": { "constructs": true }
+      "vm": {
+        "exact": 42
+      },
+      "scratch": {
+        "constructs": true
+      }
     },
     {
       "name": "add",
       "source": "tests/c_programs/add.c",
       "llvm_ir": "tests/c_programs/add.ll",
-      "feature_tags": ["integer"],
+      "feature_tags": [
+        "integer"
+      ],
       "expected_result": 42,
       "expected_stage": "scratch",
       "expected_status": "success",
-      "vm": { "exact": 42 },
-      "scratch": { "constructs": true }
+      "vm": {
+        "exact": 42
+      },
+      "scratch": {
+        "constructs": true
+      }
     },
     {
       "name": "factorial",
       "source": "tests/c_programs/factorial.c",
       "llvm_ir": "tests/c_programs/factorial.ll",
-      "feature_tags": ["integer", "phi"],
+      "feature_tags": [
+        "integer",
+        "phi"
+      ],
       "expected_result": 120,
       "expected_stage": "scratch",
       "expected_status": "success",
-      "vm": { "exact": 120 },
-      "scratch": { "constructs": true }
+      "vm": {
+        "exact": 120
+      },
+      "scratch": {
+        "constructs": true
+      }
     },
     {
       "name": "fib",
       "source": "tests/c_programs/fib.c",
       "llvm_ir": "tests/c_programs/fib.ll",
-      "feature_tags": ["integer", "phi"],
+      "feature_tags": [
+        "integer",
+        "phi"
+      ],
       "expected_result": 55,
       "expected_stage": "scratch",
       "expected_status": "success",
-      "vm": { "exact": 55 },
-      "scratch": { "constructs": true }
+      "vm": {
+        "exact": 55
+      },
+      "scratch": {
+        "constructs": true
+      }
     },
     {
       "name": "array",
       "source": "tests/c_programs/array.c",
       "llvm_ir": "tests/c_programs/array.ll",
-      "feature_tags": ["integer", "array", "memory", "pointer"],
+      "feature_tags": [
+        "integer",
+        "array",
+        "memory",
+        "pointer"
+      ],
       "expected_result": 42,
       "expected_stage": "scratch",
       "expected_status": "success",
-      "vm": { "exact": 42 },
-      "scratch": { "constructs": true }
+      "vm": {
+        "exact": 42
+      },
+      "scratch": {
+        "constructs": true
+      }
     },
     {
       "name": "struct",
       "source": "tests/c_programs/struct.c",
       "llvm_ir": "tests/c_programs/struct.ll",
-      "feature_tags": ["struct", "memory"],
+      "feature_tags": [
+        "struct",
+        "memory"
+      ],
       "expected_result": 30,
       "expected_stage": "scratch",
       "expected_status": "success",
-      "vm": { "exact": 30 },
-      "scratch": { "constructs": true }
+      "vm": {
+        "exact": 30
+      },
+      "scratch": {
+        "constructs": true
+      }
     },
     {
       "name": "pointer",
       "source": "tests/c_programs/pointer.c",
       "llvm_ir": "tests/c_programs/pointer.ll",
-      "feature_tags": ["pointer", "memory", "integer"],
+      "feature_tags": [
+        "pointer",
+        "memory",
+        "integer"
+      ],
       "expected_result": 42,
       "expected_stage": "scratch",
       "expected_status": "success",
-      "vm": { "exact": 42 },
-      "scratch": { "constructs": true }
+      "vm": {
+        "exact": 42
+      },
+      "scratch": {
+        "constructs": true
+      }
     },
     {
       "name": "recursion",
       "source": "tests/c_programs/recursion.c",
       "llvm_ir": "tests/c_programs/recursion.ll",
-      "feature_tags": ["integer", "phi"],
+      "feature_tags": [
+        "integer",
+        "phi"
+      ],
       "expected_result": 15,
       "expected_stage": "scratch",
       "expected_status": "success",
-      "vm": { "exact": 15 },
-      "scratch": { "constructs": true }
+      "vm": {
+        "exact": 15
+      },
+      "scratch": {
+        "constructs": true
+      }
     },
     {
       "name": "signed",
       "source": "tests/c_programs/signed.c",
       "llvm_ir": "tests/c_programs/signed.ll",
-      "feature_tags": ["integer"],
+      "feature_tags": [
+        "integer"
+      ],
       "expected_result": 78,
       "expected_stage": "scratch",
       "expected_status": "success",
-      "vm": { "exact": 78 },
-      "scratch": { "constructs": true }
+      "vm": {
+        "exact": 78
+      },
+      "scratch": {
+        "constructs": true
+      }
     },
     {
       "name": "bitwise",
       "source": "tests/c_programs/bitwise.c",
       "llvm_ir": "tests/c_programs/bitwise.ll",
-      "feature_tags": ["bitwise", "shift", "integer"],
+      "feature_tags": [
+        "bitwise",
+        "shift",
+        "integer"
+      ],
       "expected_result": 293345,
       "expected_stage": "scratch",
       "expected_status": "unsupported",
-      "vm": { "exact": 293345 },
-      "scratch": { "rejected": "ashr cannot be lowered to Scratch numbers" }
+      "vm": {
+        "exact": 293345
+      },
+      "scratch": {
+        "rejected": "ashr cannot be lowered to Scratch numbers"
+      }
     },
     {
       "name": "i64muldiv",
       "source": "tests/c_programs/i64muldiv.c",
       "llvm_ir": "tests/c_programs/i64muldiv.ll",
-      "feature_tags": ["i64", "integer"],
+      "feature_tags": [
+        "i64",
+        "integer"
+      ],
       "expected_result": 3579139508,
       "expected_stage": "scratch",
       "expected_status": "unsupported",
-      "vm": { "exact": 3579139508 },
-      "scratch": { "rejected": "lshr cannot be lowered to Scratch numbers" }
+      "vm": {
+        "exact": 3579139508
+      },
+      "scratch": {
+        "rejected": "lshr cannot be lowered to Scratch numbers"
+      }
     },
     {
       "name": "globals",
       "source": "tests/c_programs/globals.c",
       "llvm_ir": "tests/c_programs/globals.ll",
-      "feature_tags": ["global", "memory", "integer"],
+      "feature_tags": [
+        "global",
+        "memory",
+        "integer"
+      ],
       "expected_result": 95,
       "expected_stage": "scratch",
-      "expected_status": "unsupported",
-      "vm": { "exact": 95 },
-      "scratch": { "rejected": "sext i8 to i32" }
+      "expected_status": "success",
+      "vm": {
+        "exact": 95
+      },
+      "scratch": {
+        "constructs": true
+      }
     },
     {
       "name": "signedcmp",
       "source": "tests/c_programs/signedcmp.c",
       "llvm_ir": "tests/c_programs/signedcmp.ll",
-      "feature_tags": ["integer", "phi"],
+      "feature_tags": [
+        "integer",
+        "phi"
+      ],
       "expected_result": 59,
       "expected_stage": "scratch",
-      "expected_status": "unsupported",
-      "vm": { "exact": 59 },
-      "scratch": { "rejected": "zext i1 to i32" }
+      "expected_status": "success",
+      "vm": {
+        "exact": 59
+      },
+      "scratch": {
+        "constructs": true
+      }
     },
     {
       "name": "i64arith",
       "source": "tests/c_programs/i64arith.c",
       "llvm_ir": "tests/c_programs/i64arith.ll",
-      "feature_tags": ["i64", "integer"],
+      "feature_tags": [
+        "i64",
+        "integer"
+      ],
       "expected_result": 8,
       "expected_stage": "scratch",
-      "expected_status": "unsupported",
-      "vm": { "exact": 8 },
-      "scratch": { "rejected": "trunc i64 to i32" }
+      "expected_status": "success",
+      "vm": {
+        "exact": 8
+      },
+      "scratch": {
+        "constructs": true
+      }
     },
     {
       "name": "bytes",
       "source": "tests/c_programs/bytes.c",
       "llvm_ir": "tests/c_programs/bytes.ll",
-      "feature_tags": ["memory", "global", "array"],
+      "feature_tags": [
+        "memory",
+        "global",
+        "array"
+      ],
       "expected_result": 412,
       "expected_stage": "scratch",
       "expected_status": "unsupported",
-      "vm": { "exact": 412 },
-      "scratch": { "rejected": "zext i8 to i32" }
+      "vm": {
+        "exact": 412
+      },
+      "scratch": {
+        "rejected": "and cannot be lowered to Scratch numbers"
+      }
     },
     {
       "name": "reinterp",
       "source": "tests/c_programs/reinterp.c",
       "llvm_ir": "tests/c_programs/reinterp.ll",
-      "feature_tags": ["pointer", "i64", "integer"],
+      "feature_tags": [
+        "pointer",
+        "i64",
+        "integer"
+      ],
       "expected_result": 331,
       "expected_stage": "scratch",
-      "expected_status": "unsupported",
-      "vm": { "exact": 331 },
-      "scratch": { "rejected": "ptrtoint ptr to i64" }
+      "expected_status": "success",
+      "vm": {
+        "exact": 331
+      },
+      "scratch": {
+        "constructs": true
+      }
     },
     {
       "name": "string",
       "source": "tests/c_programs/string.c",
       "llvm_ir": "tests/c_programs/string.ll",
-      "feature_tags": ["pointer", "memory", "intrinsic"],
+      "feature_tags": [
+        "pointer",
+        "memory",
+        "intrinsic"
+      ],
       "expected_result": 5,
       "expected_stage": "vm",
       "expected_status": "unsupported",
-      "vm": { "rejected": "undefined function: __scratcharch_strlen" },
-      "scratch": { "constructs": true }
+      "vm": {
+        "rejected": "undefined function: __scratcharch_strlen"
+      },
+      "scratch": {
+        "constructs": true
+      }
     },
     {
       "name": "memory",
       "source": "tests/c_programs/memory.c",
       "llvm_ir": "tests/c_programs/memory.ll",
-      "feature_tags": ["memory", "intrinsic"],
+      "feature_tags": [
+        "memory",
+        "intrinsic"
+      ],
       "expected_result": 6,
-      "expected_stage": "vm",
-      "expected_status": "unsupported",
-      "vm": { "rejected": "undefined function: __scratcharch_memcpy" },
-      "scratch": { "constructs": true }
+      "expected_stage": "scratch",
+      "expected_status": "success",
+      "vm": {
+        "exact": 6
+      },
+      "scratch": {
+        "constructs": true
+      }
     },
     {
       "name": "memintrin",
       "source": "tests/c_programs/memintrin.c",
       "llvm_ir": "tests/c_programs/memintrin.ll",
-      "feature_tags": ["memory", "intrinsic"],
+      "feature_tags": [
+        "memory",
+        "intrinsic"
+      ],
       "expected_result": 1,
-      "expected_stage": "vm",
-      "expected_status": "unsupported",
-      "vm": { "rejected": "undefined function: llvm.memcpy.p0.p0.i64" },
-      "scratch": { "constructs": true }
+      "expected_stage": "scratch",
+      "expected_status": "success",
+      "vm": {
+        "exact": 1
+      },
+      "scratch": {
+        "constructs": true
+      }
     },
     {
       "name": "intrinsics",
       "source": "tests/c_programs/intrinsics.c",
       "llvm_ir": "tests/c_programs/intrinsics.ll",
-      "feature_tags": ["intrinsic", "integer"],
+      "feature_tags": [
+        "intrinsic",
+        "integer"
+      ],
       "expected_result": 2018928754,
       "expected_stage": "vm",
       "expected_status": "unsupported",
-      "vm": { "rejected": "undefined function: llvm.bswap.i16" },
-      "scratch": { "rejected": "zext i16 to i32" }
+      "vm": {
+        "rejected": "undefined function: llvm.bswap.i16"
+      },
+      "scratch": {
+        "constructs": true
+      }
     },
     {
       "name": "switch",
       "source": "tests/corpus/llvm/fixtures/switch.c",
       "llvm_ir": "tests/corpus/llvm/fixtures/switch.ll",
-      "feature_tags": ["switch", "integer"],
+      "feature_tags": [
+        "switch",
+        "integer"
+      ],
       "expected_result": 30,
       "expected_stage": "scratch",
       "expected_status": "success",
-      "vm": { "exact": 30 },
-      "scratch": { "constructs": true }
+      "vm": {
+        "exact": 30
+      },
+      "scratch": {
+        "constructs": true
+      }
     },
     {
       "name": "float",
       "source": "tests/corpus/llvm/fixtures/float.c",
       "llvm_ir": "tests/corpus/llvm/fixtures/float.ll",
-      "feature_tags": ["float"],
+      "feature_tags": [
+        "float"
+      ],
       "expected_result": 13,
       "expected_stage": "parser",
-      "expected_status": "unsupported"
+      "expected_status": "unsupported",
+      "vm": {
+        "rejected": "unsupported"
+      },
+      "scratch": {
+        "rejected": "unsupported"
+      }
     },
     {
       "name": "vector",
       "source": "tests/corpus/llvm/fixtures/vector.c",
       "llvm_ir": "tests/corpus/llvm/fixtures/vector.ll",
-      "feature_tags": ["vector"],
+      "feature_tags": [
+        "vector"
+      ],
       "expected_result": 3,
       "expected_stage": "parser",
-      "expected_status": "unsupported"
+      "expected_status": "unsupported",
+      "vm": {
+        "rejected": "unsupported"
+      },
+      "scratch": {
+        "rejected": "unsupported"
+      }
     },
     {
       "name": "indirect-call",
       "source": "tests/corpus/llvm/fixtures/indirect-call.c",
       "llvm_ir": "tests/corpus/llvm/fixtures/indirect-call.ll",
-      "feature_tags": ["indirect-call", "integer", "pointer"],
+      "feature_tags": [
+        "indirect-call",
+        "integer",
+        "pointer"
+      ],
       "expected_result": 42,
       "expected_stage": "parser",
-      "expected_status": "unsupported"
+      "expected_status": "unsupported",
+      "vm": {
+        "rejected": "unsupported"
+      },
+      "scratch": {
+        "rejected": "unsupported"
+      }
     },
     {
       "name": "atomic",
       "source": "tests/corpus/llvm/fixtures/atomic.c",
       "llvm_ir": "tests/corpus/llvm/fixtures/atomic.ll",
-      "feature_tags": ["atomic"],
+      "feature_tags": [
+        "atomic"
+      ],
       "expected_result": 15,
       "expected_stage": "parser",
-      "expected_status": "unsupported"
+      "expected_status": "unsupported",
+      "vm": {
+        "rejected": "unsupported"
+      },
+      "scratch": {
+        "rejected": "unsupported"
+      }
+    },
+    {
+      "name": "nested-struct",
+      "source": "tests/corpus/llvm/fixtures/nested-struct.c",
+      "llvm_ir": "tests/corpus/llvm/fixtures/nested-struct.ll",
+      "feature_tags": [
+        "struct",
+        "memory",
+        "integer"
+      ],
+      "expected_result": 156,
+      "expected_stage": "scratch",
+      "expected_status": "success",
+      "vm": {
+        "exact": 156
+      },
+      "scratch": {
+        "constructs": true
+      }
+    },
+    {
+      "name": "struct-array",
+      "source": "tests/corpus/llvm/fixtures/struct-array.c",
+      "llvm_ir": "tests/corpus/llvm/fixtures/struct-array.ll",
+      "feature_tags": [
+        "struct",
+        "array",
+        "memory",
+        "integer"
+      ],
+      "expected_result": 66,
+      "expected_stage": "scratch",
+      "expected_status": "success",
+      "vm": {
+        "exact": 66
+      },
+      "scratch": {
+        "constructs": true
+      }
+    },
+    {
+      "name": "ptrstruct",
+      "source": "tests/corpus/llvm/fixtures/ptrstruct.c",
+      "llvm_ir": "tests/corpus/llvm/fixtures/ptrstruct.ll",
+      "feature_tags": [
+        "struct",
+        "pointer",
+        "memory",
+        "integer"
+      ],
+      "expected_result": 36,
+      "expected_stage": "scratch",
+      "expected_status": "success",
+      "vm": {
+        "exact": 36
+      },
+      "scratch": {
+        "constructs": true
+      }
+    },
+    {
+      "name": "struct-assign",
+      "source": "tests/corpus/llvm/fixtures/struct-assign.c",
+      "llvm_ir": "tests/corpus/llvm/fixtures/struct-assign.ll",
+      "feature_tags": [
+        "struct",
+        "memory",
+        "integer"
+      ],
+      "expected_result": 56,
+      "expected_stage": "scratch",
+      "expected_status": "success",
+      "vm": {
+        "exact": 56
+      },
+      "scratch": {
+        "constructs": true
+      }
+    },
+    {
+      "name": "global-agg",
+      "source": "tests/corpus/llvm/fixtures/global-agg.c",
+      "llvm_ir": "tests/corpus/llvm/fixtures/global-agg.ll",
+      "feature_tags": [
+        "struct",
+        "array",
+        "global",
+        "memory",
+        "integer"
+      ],
+      "expected_result": 51,
+      "expected_stage": "parser",
+      "expected_status": "unsupported",
+      "vm": {
+        "rejected": "unsupported"
+      },
+      "scratch": {
+        "rejected": "unsupported"
+      }
+    },
+    {
+      "name": "byte-scan",
+      "source": "tests/corpus/llvm/fixtures/byte-scan.c",
+      "llvm_ir": "tests/corpus/llvm/fixtures/byte-scan.ll",
+      "feature_tags": [
+        "array",
+        "pointer",
+        "memory",
+        "global"
+      ],
+      "expected_result": 5,
+      "expected_stage": "scratch",
+      "expected_status": "success",
+      "vm": {
+        "exact": 5
+      },
+      "scratch": {
+        "constructs": true
+      }
+    },
+    {
+      "name": "char-mix",
+      "source": "tests/corpus/llvm/fixtures/char-mix.c",
+      "llvm_ir": "tests/corpus/llvm/fixtures/char-mix.ll",
+      "feature_tags": [
+        "struct",
+        "memory",
+        "integer"
+      ],
+      "expected_result": 7988,
+      "expected_stage": "scratch",
+      "expected_status": "success",
+      "vm": {
+        "exact": 7988
+      },
+      "scratch": {
+        "constructs": true
+      }
+    },
+    {
+      "name": "i64-struct",
+      "source": "tests/corpus/llvm/fixtures/i64-struct.c",
+      "llvm_ir": "tests/corpus/llvm/fixtures/i64-struct.ll",
+      "feature_tags": [
+        "struct",
+        "i64",
+        "memory",
+        "integer"
+      ],
+      "expected_result": 45,
+      "expected_stage": "scratch",
+      "expected_status": "success",
+      "vm": {
+        "exact": 45
+      },
+      "scratch": {
+        "constructs": true
+      }
     }
   ]
 }

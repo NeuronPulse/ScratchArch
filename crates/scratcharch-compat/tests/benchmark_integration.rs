@@ -34,8 +34,8 @@ fn no_native() -> RunConfig {
     }
 }
 
-/// v0.1 full-corpus snapshot values (must match LLVM_COMPATIBILITY_BASELINE.md).
-fn assert_v01_stage_snapshot(report: &scratcharch_compat::report::Report) {
+/// v0.3 full-corpus snapshot values (must match LLVM_COMPATIBILITY_BASELINE.md).
+fn assert_v03_stage_snapshot(report: &scratcharch_compat::report::Report) {
     let percent_of = |s: Stage| {
         report
             .stage_metrics
@@ -44,19 +44,19 @@ fn assert_v01_stage_snapshot(report: &scratcharch_compat::report::Report) {
             .expect("stage row present")
             .percent
     };
-    assert_eq!(report.total, 25);
-    assert_eq!(report.overall_percent, 84);
-    assert_eq!(percent_of(Stage::Parser), 84);
-    assert_eq!(percent_of(Stage::Sair), 84);
-    assert_eq!(percent_of(Stage::Interpreter), 84);
-    assert_eq!(percent_of(Stage::Vm), 68);
-    assert_eq!(percent_of(Stage::Scratch), 52);
+    assert_eq!(report.total, 33);
+    assert_eq!(report.overall_percent, 85);
+    assert_eq!(percent_of(Stage::Parser), 85);
+    assert_eq!(percent_of(Stage::Sair), 85);
+    assert_eq!(percent_of(Stage::Interpreter), 85);
+    assert_eq!(percent_of(Stage::Vm), 79);
+    assert_eq!(percent_of(Stage::Scratch), 76);
 }
 
 #[test]
-fn v01_full_corpus_gate_is_green_and_snapshot_holds() {
+fn v03_full_corpus_gate_is_green_and_snapshot_holds() {
     let outcomes = run_all(&corpus(), &no_native());
-    assert_eq!(outcomes.len(), 25, "v0.1 corpus has 25 fixtures");
+    assert_eq!(outcomes.len(), 33, "v0.3 corpus has 33 fixtures");
 
     // Regression oracle: no fixture drifts from its recorded expectation.
     for o in &outcomes {
@@ -70,7 +70,7 @@ fn v01_full_corpus_gate_is_green_and_snapshot_holds() {
 
     let report = build_report(
         &outcomes,
-        "0.1",
+        "0.3",
         "2026-09-09",
         None,
         &scratcharch_compat::status::REPORT_STAGES,
@@ -78,19 +78,20 @@ fn v01_full_corpus_gate_is_green_and_snapshot_holds() {
     assert!(report.gate_green);
     assert!(report.failures.is_empty());
     assert!(report.semantic_mismatches.is_empty());
-    assert_v01_stage_snapshot(&report);
+    assert_v03_stage_snapshot(&report);
 
-    // Classification matches the v0.1 shape: every non-success fixture is a
+    // Classification matches the v0.3 shape: every non-success fixture is a
     // *known* capability gap (frontend, runtime intrinsic, or Scratch model),
     // never a hidden correctness failure.
-    assert_eq!(report.class_counts.get("success"), Some(&10));
-    assert_eq!(report.class_counts.get("parse-failure"), Some(&4));
-    assert_eq!(report.class_counts.get("vm-failure"), Some(&4));
-    assert_eq!(report.class_counts.get("scratch-backend-failure"), Some(&7));
+    assert_eq!(report.class_counts.get("success"), Some(&23));
+    assert_eq!(report.class_counts.get("parse-failure"), Some(&5));
+    assert_eq!(report.class_counts.get("vm-failure"), Some(&2));
+    assert_eq!(report.class_counts.get("scratch-backend-failure"), Some(&3));
     assert!(!report.class_counts.contains_key("semantic-mismatch"));
 
     // Internal consistency: Overall == the semantic core recomputed from the
-    // outcomes (interpreter passed and no value mismatch).
+    // outcomes (interpreter passed and no value mismatch), via the shared
+    // nearest-percent rounding the report uses.
     let semantic_core = outcomes
         .iter()
         .filter(|o| {
@@ -100,16 +101,20 @@ fn v01_full_corpus_gate_is_green_and_snapshot_holds() {
                     .is_some_and(|s| s.outcome == Outcome::Pass)
         })
         .count();
-    assert_eq!(report.overall_percent as usize, (semantic_core * 100) / outcomes.len());
+    assert_eq!(
+        report.overall_percent,
+        scratcharch_compat::progress::percent(semantic_core, outcomes.len())
+    );
 
     // JSON is machine-readable, has the totals, and carries no progress bars.
     let json = render_json(&report);
     assert!(!json.contains('█') && !json.contains('#'), "JSON must not carry bars");
     let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON report");
-    assert_eq!(value["total"].as_u64(), Some(25));
-    assert_eq!(value["overall"].as_u64(), Some(84));
+    assert_eq!(value["total"].as_u64(), Some(33));
+    assert_eq!(value["overall"].as_u64(), Some(85));
     assert_eq!(value["gate_green"].as_bool(), Some(true));
-    assert_eq!(value["stages"]["scratch"].as_u64(), Some(52));
+    assert_eq!(value["stages"]["scratch"].as_u64(), Some(76));
+    assert_eq!(value["stages"]["vm"].as_u64(), Some(79));
 }
 
 #[test]
@@ -148,7 +153,8 @@ fn boundary_filter_selects_parser_gap_fixtures() {
     };
     let outcomes = run_all(&corpus(), &cfg);
     let names: Vec<&str> = outcomes.iter().map(|o| o.name.as_str()).collect();
-    assert_eq!(names, vec!["float", "vector", "indirect-call", "atomic"]);
+    // v0.2 adds `global-agg`, the aggregate-constant global initializer gap.
+    assert_eq!(names, vec!["float", "vector", "indirect-call", "atomic", "global-agg"]);
     for o in &outcomes {
         assert_eq!(o.class, ResultClass::ParseFailure);
     }
@@ -221,18 +227,20 @@ fn regression_oracle_flags_drift_from_the_manifest() {
 
 #[test]
 fn native_differential_agrees_when_a_compiler_is_present() {
-    // The `struct` fixture is a single, fully-successful program returning 30.
+    // The `switch` fixture is a single, fully-successful program returning 30
+    // (it and `struct` share that result); its tag is unique to one fixture, so
+    // the differential stays one-on-one after the v0.2 corpus expansion.
     let outcomes = run_all(
         &corpus(),
         &RunConfig {
-            features: vec!["struct".to_string()],
+            features: vec!["switch".to_string()],
             native: true,
             ..Default::default()
         },
     );
     assert_eq!(outcomes.len(), 1);
     let fx = &outcomes[0];
-    assert_eq!(fx.name, "struct");
+    assert_eq!(fx.name, "switch");
     match scratcharch_compat::native::cc_available() {
         Some(_) => {
             let native = fx.native.as_ref().expect("native ran");

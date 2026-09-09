@@ -1057,3 +1057,262 @@ fn signed_reinterpret(m: Expr, width: u32) -> Expr {
     )
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::Value as IrValue;
+    use scratcharch_ir::builder::IrBuilder;
+
+    /// Minimal Scratch-expression evaluator for formula-level verification.
+    ///
+    /// Evaluates the exact f64 arithmetic the emitted Scratch blocks perform:
+    /// floor-mod, boolean coercion (true/false -> 1/0), and 1-indexed list
+    /// reads against a mock byte heap. This proves the split/combine/signed
+    /// formulas, not just their shape.
+    fn eval_expr(e: &Expr, heap: &[f64]) -> f64 {
+        eval_expr_frame(e, heap, &[])
+    }
+
+    fn eval_expr_frame(e: &Expr, heap: &[f64], frame: &[f64]) -> f64 {
+        match e {
+            Expr::Literal(IrValue::Number(v)) => *v,
+            Expr::Literal(IrValue::Bool(b)) => {
+                if *b {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            Expr::ListItem { index, .. } => {
+                let i = eval_expr(index, heap);
+                heap[(i as usize) - 1]
+            }
+            Expr::ListLength { .. } => heap.len() as f64,
+            Expr::FrameGet { offset } => frame[*offset as usize],
+            Expr::Operator { opcode, args } => {
+                let mut vals = args.iter().map(|a| eval_expr_frame(a, heap, frame));
+                match opcode.as_str() {
+                    "operator_add" => vals.next().unwrap() + vals.next().unwrap(),
+                    "operator_subtract" => vals.next().unwrap() - vals.next().unwrap(),
+                    "operator_multiply" => vals.next().unwrap() * vals.next().unwrap(),
+                    "operator_divide" => vals.next().unwrap() / vals.next().unwrap(),
+                    "operator_mod" => {
+                        let a = vals.next().unwrap();
+                        let b = vals.next().unwrap();
+                        a - b * (a / b).floor()
+                    }
+                    "operator_gt" => (vals.next().unwrap() > vals.next().unwrap()) as u8 as f64,
+                    "operator_lt" => (vals.next().unwrap() < vals.next().unwrap()) as u8 as f64,
+                    "operator_equals" => (vals.next().unwrap() == vals.next().unwrap()) as u8 as f64,
+                    "operator_not" => (vals.next().unwrap() == 0.0) as u8 as f64,
+                    other => panic!("unexpected opcode {other}"),
+                }
+            }
+            other => panic!("unsupported expr variant in evaluator: {other:?}"),
+        }
+    }
+
+    fn le_bytes(v: f64, count: usize) -> Vec<f64> {
+        let u = v as u64;
+        (0..count)
+            .map(|k| ((u >> (8 * k)) & 0xFF) as f64)
+            .collect()
+    }
+
+    #[test]
+    fn split_matches_reference_bytes() {
+        let values = [
+            0.0,
+            1.0,
+            42.0,
+            127.0,
+            255.0,
+            256.0,
+            65535.0,
+            65536.0,
+            16777215.0,
+            16777216.0,
+            2147483647.0,
+            2147483648.0,
+            4294967295.0,
+        ];
+        for &count in &[1usize, 2, 4, 8] {
+            for &v in &values {
+                let m = if count == 8 {
+                    v
+                } else {
+                    (v as u64).rem_euclid(1u64 << (8 * count)) as f64
+                };
+                let bytes = split_bytes(Expr::number(m), count);
+                let got: Vec<f64> = bytes.iter().map(|b| eval_expr(b, &[])).collect();
+                let expected = le_bytes(m, count);
+                assert_eq!(got, expected, "split({m}, {count})");
+            }
+        }
+    }
+
+    #[test]
+    fn combine_matches_reference_bytes() {
+        // Little-endian combine: item at 1-based index addr+k+1 is byte k.
+        let heap: Vec<f64> = (0..16).map(|i| i as f64).collect();
+        let v = eval_expr(&recombine_bytes(&Expr::number(0.0), 4), &heap);
+        assert_eq!(v, 0.0 + 256.0 + 2.0 * 65536.0 + 3.0 * 16777216.0);
+        // Reuse the split formulas in reverse: recombine(addr) with the split
+        // bytes planted at addr recovers the value, at every width.
+        for &count in &[1usize, 2, 4] {
+            let m = (0xDEAD_BEEFu64 % (1u64 << (8 * count))) as f64;
+            let bytes = split_bytes(Expr::number(m), count);
+            let mut heap = vec![0.0; 16];
+            for (k, b) in bytes.iter().enumerate() {
+                heap[k] = eval_expr(b, &heap);
+            }
+            let loaded = recombine_bytes(&Expr::number(0.0), count);
+            assert_eq!(eval_expr(&loaded, &heap), m, "combine({count})");
+        }
+    }
+
+    #[test]
+    fn signed_reinterpret_at_boundary() {
+        let cases: &[(f64, u32, f64)] = &[
+            (0.0, 32, 0.0),
+            (2147483647.0, 32, 2147483647.0),
+            (2147483648.0, 32, -2147483648.0),
+            (4294967295.0, 32, -1.0),
+            (65535.0, 16, -1.0),
+            (32767.0, 16, 32767.0),
+            (32768.0, 16, -32768.0),
+            (255.0, 8, -1.0),
+            (127.0, 8, 127.0),
+            (128.0, 8, -128.0),
+        ];
+        for (raw, width, expect) in cases {
+            let got = eval_expr(&signed_reinterpret(Expr::number(*raw), *width), &[]);
+            assert_eq!(got, *expect, "reinterpret {raw} as i{width}");
+        }
+    }
+
+    #[test]
+    fn store_then_load_roundtrips_signed_and_raw_values() {
+        // The store reduces mod the width, so the same bytes result whether
+        // the carried value is the raw pattern or the mathematical value; the
+        // load then normalizes back to the mathematical signed value.
+        for &v in &[-5.0f64, -1.0, 0.0, 42.0, 2147483647.0, -2147483648.0] {
+            let raw = (v as i64).rem_euclid(1 << 32) as f64;
+            for &carried in &[v, raw] {
+                let reduced = Expr::operator(
+                    "operator_mod",
+                    vec![Expr::number(carried), Expr::number(4294967296.0)],
+                );
+                let bytes = split_bytes(reduced, 4);
+                let mut heap = vec![0.0; 8];
+                for (k, b) in bytes.iter().enumerate() {
+                    heap[k] = eval_expr(b, &heap);
+                }
+                let loaded = signed_reinterpret(recombine_bytes(&Expr::number(0.0), 4), 32);
+                assert_eq!(eval_expr(&loaded, &heap), v, "round-trip of {v} via {carried}");
+            }
+        }
+    }
+
+    #[test]
+    fn store_width_matches_type_size() {
+        // Structural: a store emits exactly `size_in_bytes(ty)` SetListItems.
+        let mut builder = IrBuilder::new("main");
+        builder.start_function("main", IrType::I32);
+        builder.new_block("entry");
+        let cases: &[(IrType, u32, f64)] = &[
+            (IrType::I8, 1, 7.0),
+            (IrType::I16, 2, 1000.0),
+            (IrType::I32, 4, 300.0),
+            (IrType::I64, 8, 45.0),
+            (IrType::Pointer, 4, 12.0),
+        ];
+        for (ty, _width, value) in cases {
+            let addr = builder.alloca(*ty);
+            let c = builder.const_i32(*value as u32);
+            builder.store(*ty, c, addr);
+        }
+        let project = ScratchGraphLowerer::new().lower(&builder.finish()).expect("lower");
+        let body = &project.stage.procedures[0].body;
+        let heap_sets = body
+            .iter()
+            .filter(|s| matches!(s, Stmt::SetListItem { list, .. } if list == "__scratcharch_heap"))
+            .count();
+        assert_eq!(heap_sets, 1 + 2 + 4 + 8 + 4, "one SetListItem per byte");
+    }
+
+    #[test]
+    fn neighbor_bytes_not_touched_by_i8_store() {
+        // Structural guarantee of byte-exactness: an i8 store emits exactly one
+        // SetListItem (its own byte), so neighbours are untouched.
+        let mut builder = IrBuilder::new("main");
+        builder.start_function("main", IrType::I32);
+        builder.new_block("entry");
+        let addr = builder.alloca(IrType::I32); // 4 bytes
+        let byte_val = builder.const_i32(0xAB);
+        builder.store(IrType::I8, byte_val, addr);
+        let project = ScratchGraphLowerer::new().lower(&builder.finish()).expect("lower");
+        let body = &project.stage.procedures[0].body;
+        let heap_sets: Vec<&Stmt> = body
+            .iter()
+            .filter(|s| matches!(s, Stmt::SetListItem { list, .. } if list == "__scratcharch_heap"))
+            .collect();
+        assert_eq!(heap_sets.len(), 1, "i8 store must touch one byte");
+        if let Stmt::SetListItem { index, value, .. } = heap_sets[0] {
+            // index = addr + 1 (address 0 -> list item 1).
+            let mut frame = [0.0f64; 8];
+            frame[2] = 0.0; // addr slot: first alloca returns heap length 0
+            frame[3] = 171.0; // stored-value slot
+            let i = eval_expr_frame(index, &[], &frame);
+            assert_eq!(i, 1.0, "byte address 0 is list item 1");
+            // 0xAB mod 256 = 0xAB.
+            assert_eq!(eval_expr_frame(value, &[], &frame), 171.0);
+        }
+    }
+
+    #[test]
+    fn static_data_is_seeded_into_entry_script() {
+        // A module with a static-data segment must declare the heap and seed
+        // image bytes at STATIC_DATA_BASE+1+i, padded below the base.
+        let mut builder = IrBuilder::new("main");
+        builder.start_function("main", IrType::I32);
+        builder.new_block("entry");
+        let zero = builder.const_i32(0);
+        builder.ret(Some(zero));
+        let mut module = builder.finish();
+        module.static_data.image = vec![104, 101, 108, 108, 111, 0]; // "hello\0"
+
+        let project = ScratchGraphLowerer::new().lower(&module).expect("lower");
+        assert!(project.stage.lists.iter().any(|l| l.name == "__scratcharch_heap"));
+
+        let script = project
+            .stage
+            .scripts
+            .iter()
+            .find(|s| matches!(s.entry.hat, EventHat::GreenFlag))
+            .expect("green flag script");
+        let seeds: Vec<&Stmt> = script
+            .entry
+            .body
+            .iter()
+            .filter(|s| matches!(s, Stmt::SetListItem { list, .. } if list == "__scratcharch_heap"))
+            .collect();
+        assert_eq!(seeds.len(), module.static_data.image.len());
+        for (i, stmt) in seeds.iter().enumerate() {
+            if let Stmt::SetListItem { index, value, .. } = stmt {
+                assert_eq!(
+                    eval_expr(index, &[]),
+                    (STATIC_DATA_BASE as usize + 1 + i) as f64,
+                    "image byte {i} address"
+                );
+                assert_eq!(eval_expr(value, &[]), module.static_data.image[i] as f64);
+            }
+        }
+        // The zero padding below the base is appended before the image bytes.
+        assert!(script
+            .entry
+            .body
+            .iter()
+            .any(|s| matches!(s, Stmt::Repeat { .. })));
+    }
+}

@@ -2,20 +2,20 @@
   "clang": "Debian clang version 19.1.7 (3+b1)",
   "classes": {
     "parse-failure": 5,
-    "scratch-backend-failure": 3,
-    "success": 23,
+    "scratch-backend-failure": 12,
+    "success": 14,
     "vm-failure": 2
   },
-  "corpus_version": "0.3",
+  "corpus_version": "0.2",
   "date": "2026-09-09",
   "failures": [],
   "features": {
     "array": {
-      "percent": 60,
+      "percent": 20,
       "semantic_mismatches": 0,
-      "success": 3,
+      "success": 1,
       "total": 5,
-      "unsupported": 2
+      "unsupported": 4
     },
     "atomic": {
       "percent": 0,
@@ -39,18 +39,18 @@
       "unsupported": 1
     },
     "global": {
-      "percent": 50,
+      "percent": 0,
       "semantic_mismatches": 0,
-      "success": 2,
+      "success": 0,
       "total": 4,
-      "unsupported": 2
+      "unsupported": 4
     },
     "i64": {
-      "percent": 75,
+      "percent": 0,
       "semantic_mismatches": 0,
-      "success": 3,
+      "success": 0,
       "total": 4,
-      "unsupported": 1
+      "unsupported": 4
     },
     "indirect-call": {
       "percent": 0,
@@ -60,11 +60,11 @@
       "unsupported": 1
     },
     "integer": {
-      "percent": 79,
+      "percent": 46,
       "semantic_mismatches": 0,
-      "success": 19,
+      "success": 11,
       "total": 24,
-      "unsupported": 5
+      "unsupported": 13
     },
     "intrinsic": {
       "percent": 50,
@@ -74,25 +74,25 @@
       "unsupported": 2
     },
     "memory": {
-      "percent": 81,
+      "percent": 44,
       "semantic_mismatches": 0,
-      "success": 13,
+      "success": 7,
       "total": 16,
-      "unsupported": 3
+      "unsupported": 9
     },
     "phi": {
-      "percent": 100,
+      "percent": 75,
       "semantic_mismatches": 0,
-      "success": 4,
+      "success": 3,
       "total": 4,
-      "unsupported": 0
+      "unsupported": 1
     },
     "pointer": {
-      "percent": 71,
+      "percent": 29,
       "semantic_mismatches": 0,
-      "success": 5,
+      "success": 2,
       "total": 7,
-      "unsupported": 2
+      "unsupported": 5
     },
     "shift": {
       "percent": 0,
@@ -102,11 +102,11 @@
       "unsupported": 1
     },
     "struct": {
-      "percent": 88,
+      "percent": 38,
       "semantic_mismatches": 0,
-      "success": 7,
+      "success": 3,
       "total": 8,
-      "unsupported": 1
+      "unsupported": 5
     },
     "switch": {
       "percent": 100,
@@ -576,7 +576,7 @@
       "vm": "I32(3579139508)"
     },
     {
-      "class": "success",
+      "class": "scratch-backend-failure",
       "fresh_ir": false,
       "interpreter": "I32(95)",
       "name": "globals",
@@ -608,16 +608,16 @@
           "status": "pass"
         },
         {
-          "message": null,
+          "message": "unsupported instruction: sext i8 to i32 cannot be lowered to Scratch numbers",
           "stage": "scratch",
-          "status": "pass"
+          "status": "unsupported"
         }
       ],
       "violations": [],
       "vm": "I32(95)"
     },
     {
-      "class": "success",
+      "class": "scratch-backend-failure",
       "fresh_ir": false,
       "interpreter": "I32(59)",
       "name": "signedcmp",
@@ -649,16 +649,16 @@
           "status": "pass"
         },
         {
-          "message": null,
+          "message": "unsupported instruction: zext i1 to i32 cannot be lowered to Scratch numbers",
           "stage": "scratch",
-          "status": "pass"
+          "status": "unsupported"
         }
       ],
       "violations": [],
       "vm": "I32(59)"
     },
     {
-      "class": "success",
+      "class": "scratch-backend-failure",
       "fresh_ir": false,
       "interpreter": "I32(8)",
       "name": "i64arith",
@@ -690,9 +690,9 @@
           "status": "pass"
         },
         {
-          "message": null,
+          "message": "unsupported instruction: trunc i64 to i32 cannot be lowered to Scratch numbers",
           "stage": "scratch",
-          "status": "pass"
+          "status": "unsupported"
         }
       ],
       "violations": [],
@@ -731,7 +731,7 @@
           "status": "pass"
         },
         {
-          "message": "unsupported instruction: and cannot be lowered to Scratch numbers",
+          "message": "unsupported instruction: zext i8 to i32 cannot be lowered to Scratch numbers",
           "stage": "scratch",
           "status": "unsupported"
         }
@@ -740,7 +740,7 @@
       "vm": "I32(412)"
     },
     {
-      "class": "success",
+      "class": "scratch-backend-failure",
       "fresh_ir": false,
       "interpreter": "I32(331)",
       "name": "reinterp",
@@ -772,9 +772,9 @@
           "status": "pass"
         },
         {
-          "message": null,
+          "message": "unsupported instruction: ptrtoint ptr to i64 cannot be lowered to Scratch numbers",
           "stage": "scratch",
-          "status": "pass"
+          "status": "unsupported"
         }
       ],
       "violations": [],
@@ -936,9 +936,9 @@
           "status": "unsupported"
         },
         {
-          "message": null,
+          "message": "unsupported instruction: zext i16 to i32 cannot be lowered to Scratch numbers",
           "stage": "scratch",
-          "status": "pass"
+          "status": "unsupported"
         }
       ],
       "violations": [],
@@ -1091,7 +1091,7 @@
       "vm": "I32(156)"
     },
     {
-      "class": "success",
+      "class": "scratch-backend-failure",
       "fresh_ir": false,
       "interpreter": "I32(66)",
       "name": "struct-array",
@@ -1123,16 +1123,16 @@
           "status": "pass"
         },
         {
-          "message": null,
+          "message": "unsupported instruction: sext i32 to i64 cannot be lowered to Scratch numbers",
           "stage": "scratch",
-          "status": "pass"
+          "status": "unsupported"
         }
       ],
       "violations": [],
       "vm": "I32(66)"
     },
     {
-      "class": "success",
+      "class": "scratch-backend-failure",
       "fresh_ir": false,
       "interpreter": "I32(36)",
       "name": "ptrstruct",
@@ -1164,9 +1164,9 @@
           "status": "pass"
         },
         {
-          "message": null,
+          "message": "unsupported instruction: sext i32 to i64 cannot be lowered to Scratch numbers",
           "stage": "scratch",
-          "status": "pass"
+          "status": "unsupported"
         }
       ],
       "violations": [],
@@ -1230,7 +1230,7 @@
       "vm": null
     },
     {
-      "class": "success",
+      "class": "scratch-backend-failure",
       "fresh_ir": false,
       "interpreter": "I32(5)",
       "name": "byte-scan",
@@ -1262,16 +1262,16 @@
           "status": "pass"
         },
         {
-          "message": null,
+          "message": "unsupported instruction: sext i8 to i32 cannot be lowered to Scratch numbers",
           "stage": "scratch",
-          "status": "pass"
+          "status": "unsupported"
         }
       ],
       "violations": [],
       "vm": "I32(5)"
     },
     {
-      "class": "success",
+      "class": "scratch-backend-failure",
       "fresh_ir": false,
       "interpreter": "I32(7988)",
       "name": "char-mix",
@@ -1303,16 +1303,16 @@
           "status": "pass"
         },
         {
-          "message": null,
+          "message": "unsupported instruction: sext i8 to i32 cannot be lowered to Scratch numbers",
           "stage": "scratch",
-          "status": "pass"
+          "status": "unsupported"
         }
       ],
       "violations": [],
       "vm": "I32(7988)"
     },
     {
-      "class": "success",
+      "class": "scratch-backend-failure",
       "fresh_ir": false,
       "interpreter": "I32(45)",
       "name": "i64-struct",
@@ -1344,9 +1344,9 @@
           "status": "pass"
         },
         {
-          "message": null,
+          "message": "unsupported instruction: trunc i64 to i32 cannot be lowered to Scratch numbers",
           "stage": "scratch",
-          "status": "pass"
+          "status": "unsupported"
         }
       ],
       "violations": [],
@@ -1361,24 +1361,25 @@
     "interpreter": 85,
     "parser": 85,
     "sair": 85,
-    "scratch": 76,
+    "scratch": 45,
     "vm": 79
   },
   "total": 33,
   "unsupported_features": {
-    "array": 2,
+    "array": 4,
     "atomic": 1,
     "bitwise": 1,
     "float": 1,
-    "global": 2,
-    "i64": 1,
+    "global": 4,
+    "i64": 4,
     "indirect-call": 1,
-    "integer": 5,
+    "integer": 13,
     "intrinsic": 2,
-    "memory": 3,
-    "pointer": 2,
+    "memory": 9,
+    "phi": 1,
+    "pointer": 5,
     "shift": 1,
-    "struct": 1,
+    "struct": 5,
     "vector": 1
   }
 }
