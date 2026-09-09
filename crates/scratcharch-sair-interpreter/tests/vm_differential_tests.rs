@@ -11,6 +11,7 @@
 
 use scratcharch_core::value::Value;
 use scratcharch_ir::builder::IrBuilder;
+use scratcharch_ir::instruction::CastOp;
 use scratcharch_ir::lower::IsaLowerer;
 use scratcharch_ir::types::IrType;
 use scratcharch_ir::value::ValueId;
@@ -531,4 +532,145 @@ fn diff_mul_i64_boundary_divisors() {
 #[test]
 fn diff_unreachable_traps_both_engines() {
     assert_both_trap();
+}
+
+// ── Reinterpret and byte-width memory (differential) ──────────────
+//
+// Part 1/2 of the reinterpret + byte-memory slice: these drive the *lowering*
+// of pointer reinterpretation and width-accurate loads/stores (i1/i8/i16 by
+// byte ops) without the LLVM frontend in between. Pointer addresses are engine
+// internals, so every assertion is address-independent: either a stored value
+// round-trips through a pointer/integer form, or two integers derived from the
+// same pointer are compared within one engine run.
+
+/// An i16 store/load round-trips its full 16-bit value (0xBEEF) on both
+/// engines — the store splits into two LE bytes, the load recombines them.
+#[test]
+fn diff_mem_i16_roundtrip() {
+    assert_interp_vm_agree(16, |b| {
+        let p = b.alloca(IrType::I16);
+        let v = b.const_i16(0xBEEF);
+        b.store(IrType::I16, v, p);
+        b.load(IrType::I16, p)
+    });
+}
+
+/// An i8 store/load round-trips a full byte (0xEF) on both engines.
+#[test]
+fn diff_mem_i8_roundtrip() {
+    assert_interp_vm_agree(8, |b| {
+        let p = b.alloca(IrType::I8);
+        let v = b.const_i8(0xEF);
+        b.store(IrType::I8, v, p);
+        b.load(IrType::I8, p)
+    });
+}
+
+/// An i1 store writes one byte and an i1 load reads `byte != 0`: storing true
+/// then false round-trips through both flag values.
+#[test]
+fn diff_mem_i1_store_load_flags() {
+    assert_interp_vm_agree(32, |b| {
+        let p = b.alloca(IrType::I1);
+        let t_true = b.const_i1(true);
+        let t_false = b.const_i1(false);
+        b.store(IrType::I1, t_true, p);
+        let t = b.load(IrType::I1, p);
+        b.store(IrType::I1, t_false, p);
+        let f = b.load(IrType::I1, p);
+        let ok_t = b.eq(IrType::I1, t, t_true);
+        let ok_f = b.eq(IrType::I1, f, t_false);
+        let ok = b.and(IrType::I1, ok_t, ok_f);
+        b.cast(CastOp::Zext, IrType::I1, IrType::I32, ok)
+    });
+}
+
+/// `ptrtoint ptr -> i32` then `inttoptr i32 -> ptr` is a zero-cost cell copy:
+/// the integer form of the address still loads the stored value.
+#[test]
+fn diff_reinterpret_ptrtoint_inttoptr_i32_roundtrip() {
+    assert_interp_vm_agree(32, |b| {
+        let p = b.alloca(IrType::I32);
+        let v = b.const_i32(300);
+        b.store(IrType::I32, v, p);
+        let a = b.cast(CastOp::PtrToInt, IrType::Pointer, IrType::I32, p);
+        let q = b.cast(CastOp::IntToPtr, IrType::I32, IrType::Pointer, a);
+        b.load(IrType::I32, q)
+    });
+}
+
+/// `ptrtoint ptr -> i64` zero-extends into the `(low, high)` limb pair, and the
+/// low limb truncates back to the `i32` address form.
+#[test]
+fn diff_reinterpret_ptrtoint_i64_zero_extends() {
+    assert_interp_vm_agree(32, |b| {
+        let p = b.alloca(IrType::I16);
+        let a32 = b.cast(CastOp::PtrToInt, IrType::Pointer, IrType::I32, p);
+        let a64 = b.cast(CastOp::PtrToInt, IrType::Pointer, IrType::I64, p);
+        let lo = b.cast(CastOp::Trunc, IrType::I64, IrType::I32, a64);
+        let ok_lo = b.eq(IrType::I32, lo, a32);
+        let shift = b.const_i64(32);
+        let hi = b.lshr(IrType::I64, a64, shift);
+        let hi32 = b.cast(CastOp::Trunc, IrType::I64, IrType::I32, hi);
+        let zero = b.const_i32(0);
+        let ok_hi = b.eq(IrType::I32, hi32, zero);
+        let ok = b.and(IrType::I1, ok_lo, ok_hi);
+        b.cast(CastOp::Zext, IrType::I1, IrType::I32, ok)
+    });
+}
+
+/// `bitcast ptr -> ptr` is a genuine no-op: the cast pointer loads the value.
+#[test]
+fn diff_reinterpret_bitcast_ptr_noop() {
+    assert_interp_vm_agree(32, |b| {
+        let p = b.alloca(IrType::I32);
+        let v = b.const_i32(90);
+        b.store(IrType::I32, v, p);
+        let q = b.cast(CastOp::Bitcast, IrType::Pointer, IrType::Pointer, p);
+        b.load(IrType::I32, q)
+    });
+}
+
+/// `inttoptr i64 -> ptr` of an address that does not fit the 32-bit pointer
+/// traps in both engines — the VM lowers a `Trap` on a nonzero high limb, the
+/// interpreter refuses in `cast_value` — never a silent truncation.
+#[test]
+fn diff_reinterpret_inttoptr_i64_overflow_traps_both() {
+    let build_module = || {
+        let mut b = IrBuilder::new("main");
+        b.start_function("main", IrType::I32);
+        b.new_block("entry");
+        // 2^32 as an i64: high limb 1, so it overflows the 32-bit pointer.
+        let a = b.const_i64(0x1_0000_0000);
+        let q = b.cast(CastOp::IntToPtr, IrType::I64, IrType::Pointer, a);
+        let one = b.const_i8(1);
+        b.store(IrType::I8, one, q);
+        let zero = b.const_i32(0);
+        b.ret(Some(zero));
+        b.finish()
+    };
+
+    let program = {
+        let module = build_module();
+        IsaLowerer::new().lower(&module).expect("lower failed")
+    };
+
+    let mut interp = Interpreter::new(build_module(), 65536, 4096);
+    match interp.run() {
+        Err(e) => {
+            let msg = format!("{e:?}");
+            assert!(
+                msg.contains("inttoptr value"),
+                "interpreter must refuse an overflowing inttoptr, got: {msg}"
+            );
+        }
+        other => panic!("interpreter must reject an overflowing inttoptr, got: {other:?}"),
+    }
+
+    let mut vm = Vm::new(65536, 4096);
+    vm.load_program(&program).expect("load failed");
+    match vm.run() {
+        Err(scratcharch_vm::vm::VmError::Trap { .. }) => {}
+        other => panic!("VM must trap on an overflowing inttoptr, got: {other:?}"),
+    }
 }

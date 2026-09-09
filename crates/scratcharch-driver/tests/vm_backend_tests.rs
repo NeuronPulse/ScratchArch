@@ -136,24 +136,19 @@ fn test_vm_backend_globals() {
 }
 
 /// A static segment with sub-word or byte leaves (strings, i8/i16/i1 data) is
-/// interpreter-exact: the VM's memory ops are 32-bit-word granular, so the
-/// driver must reject the module with an explicit diagnostic rather than
-/// silently misread bytes. `tests/c_programs/globals.ll` (real clang) carries
-/// byte data, so the VM path errors while the interpreter runs it exactly.
+/// byte-exact on the VM too: single-limb `Load`/`Store` are width-accurate, so
+/// the driver seeds the byte image and runs it exactly, agreeing with the
+/// interpreter. `tests/c_programs/globals.ll` (real clang) carries byte data and
+/// returns 95 on both backends (native too).
 #[test]
-fn test_vm_backend_rejects_byte_granular_globals() {
+fn test_vm_backend_byte_granular_globals() {
     let path = project_root().join("tests").join("c_programs").join("globals.ll");
-    let result = run_llvm_file_vm(path.to_str().unwrap(), OptLevel::Basic);
-    match result {
-        Err(e) => {
-            assert!(
-                e.contains("sub-word or byte")
-                    && e.contains("interpreter-only"),
-                "expected the word-granularity diagnostic, got: {e}"
-            );
-        }
-        other => panic!("VM should reject byte-granular globals, got success: {other:?}"),
-    }
+    assert_i32(run_llvm_file_vm(path.to_str().unwrap(), OptLevel::Basic), 95, "globals (vm)");
+    assert_i32(
+        run_llvm_file_interp(path.to_str().unwrap(), OptLevel::Basic),
+        95,
+        "globals (interp)",
+    );
 }
 
 /// A static data segment that would collide with the stack floor is an explicit
@@ -1030,4 +1025,426 @@ fn test_vm_i64_division_by_zero_error_agreement() {
             other => panic!("[{op}] interpreter must reject division by zero, got success: {other:?}"),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// VM reinterpret and byte-memory completion (Part 1 + Part 2): the SAIR
+// interpreter is the semantic reference; every IR below runs on both the VM
+// backend and the interpreter and must agree.
+//
+// Reinterpret (bitcast/ptrtoint/inttoptr) is representation-preserving on SA48
+// (single 32-bit pointer cells), so each form lowers to a zero-cost cell copy —
+// except `inttoptr i64 -> ptr` of an address whose high limb is nonzero, which
+// *traps* on the VM just as the interpreter refuses to silently truncate an
+// address that does not fit the 32-bit pointer. Pointer *addresses* are engine
+// internals, so no test compares a raw address across engines: every test
+// round-trips the address back through `inttoptr` and reads memory content, or
+// compares two integers derived from the *same* pointer within one engine.
+//
+// Byte/sub-word memory exercises width-accurate `Load`/`Store` (i1/i8/i16 by
+// byte ops, i32/ptr by word ops): little-endian ordering, neighbor-byte
+// preservation across stores, and masking of a wider carrier down to the
+// declared store width. All have hand-written LLVM text and run on both
+// engines; the real-clang fixtures in `tests/c_programs/` add native-C
+// agreement via `llvm_corpus_surfaces::native_reference_differential`.
+// ---------------------------------------------------------------------------
+
+// ── Reinterpret ────────────────────────────────────────────────────
+
+/// `ptrtoint ptr -> i32` then `inttoptr i32 -> ptr` round-trips: the integer
+/// form of the address still loads the stored value. Word cell, single-limb.
+#[test]
+fn test_vm_reinterpret_ptrtoint_inttoptr_i32_roundtrip() {
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %slot = alloca i32
+  store i32 300, ptr %slot
+  %i = ptrtoint ptr %slot to i32
+  %q = inttoptr i32 %i to ptr
+  %v = load i32, ptr %q
+  ret i32 %v
+}
+",
+        300,
+        "ptrtoint/inttoptr i32 roundtrip",
+    );
+}
+
+/// `ptrtoint ptr -> i64` zero-extends into the `(low, high)` limb pair: the low
+/// limb equals the `i32` address form and the high limb is zero, and the `i64`
+/// address form round-trips back through `inttoptr` to the same location.
+#[test]
+fn test_vm_reinterpret_ptrtoint_i64_zero_extends_and_back() {
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %slot = alloca i16
+  store i16 513, ptr %slot
+  %a32 = ptrtoint ptr %slot to i32
+  %a64 = ptrtoint ptr %slot to i64
+  %lo = trunc i64 %a64 to i32
+  %c1 = icmp eq i32 %lo, %a32
+  %hi = lshr i64 %a64, 32
+  %t = trunc i64 %hi to i32
+  %c2 = icmp eq i32 %t, 0
+  %q = inttoptr i64 %a64 to ptr
+  %v = load i16, ptr %q
+  %e = zext i16 %v to i32
+  %c3 = icmp eq i32 %e, 513
+  %o = and i1 %c1, %c2
+  %o2 = and i1 %o, %c3
+  %z = zext i1 %o2 to i32
+  ret i32 %z
+}
+",
+        1,
+        "ptrtoint i64 zero-extends and round-trips",
+    );
+}
+
+/// `inttoptr i64 -> ptr` of an address that does not fit the 32-bit pointer
+/// traps in *both* engines — the VM lowers a `Trap` on a nonzero high limb, the
+/// interpreter refuses in `cast_value` — never a silent truncation of the
+/// address.
+#[test]
+fn test_vm_reinterpret_inttoptr_overflow_traps_both() {
+    let ir = "
+define i32 @main() {
+entry:
+  %slot = alloca i64
+  store i64 4294967296, ptr %slot
+  %a = load i64, ptr %slot
+  %q = inttoptr i64 %a to ptr
+  store i8 1, ptr %q
+  ret i32 0
+}
+";
+    match run_ir_vm(ir) {
+        Err(e) => assert!(
+            e.contains("program trap"),
+            "VM should trap on an overflowing inttoptr, got: {e}"
+        ),
+        other => panic!("VM must reject an overflowing inttoptr, got success: {other:?}"),
+    }
+    match run_ir_interp(ir) {
+        Err(e) => assert!(
+            e.contains("does not fit a 32-bit SA48 pointer"),
+            "interpreter should refuse an overflowing inttoptr, got: {e}"
+        ),
+        other => panic!("interpreter must refuse an overflowing inttoptr, got success: {other:?}"),
+    }
+}
+
+/// `bitcast ptr -> ptr` is a genuine no-op reinterpretation (equal byte sizes,
+/// same kind) and lowers to a cell copy; the cast pointer loads the same value.
+#[test]
+fn test_vm_bitcast_ptr_noop() {
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %slot = alloca i32
+  store i32 90, ptr %slot
+  %q = bitcast ptr %slot to ptr
+  %v = load i32, ptr %q
+  ret i32 %v
+}
+",
+        90,
+        "bitcast ptr to ptr no-op",
+    );
+}
+
+/// An `inttoptr` that does *not* overflow (fits a 32-bit pointer) loads the
+/// stored value — the low limb is the address and the high limb was zero.
+#[test]
+fn test_vm_reinterpret_inttoptr_i64_in_range_loads() {
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %slot = alloca i32
+  store i32 42, ptr %slot
+  %i = ptrtoint ptr %slot to i32
+  %wide = zext i32 %i to i64
+  %q = inttoptr i64 %wide to ptr
+  %v = load i32, ptr %q
+  ret i32 %v
+}
+",
+        42,
+        "inttoptr i64 in-range loads",
+    );
+}
+
+// ── Byte / sub-word memory ─────────────────────────────────────────
+
+/// An i16 store writes its two bytes little-endian: 0xBEEF reads back as byte
+/// 0 = 0xEF, byte 1 = 0xBE.
+#[test]
+fn test_vm_byte_i16_store_is_little_endian() {
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %buf = alloca [8 x i8]
+  %p0 = getelementptr [8 x i8], ptr %buf, i64 0, i64 0
+  %p1 = getelementptr [8 x i8], ptr %buf, i64 0, i64 1
+  store i16 48879, ptr %p0
+  %b0 = load i8, ptr %p0
+  %e0 = zext i8 %b0 to i32
+  %b1 = load i8, ptr %p1
+  %e1 = zext i8 %b1 to i32
+  %c0 = icmp eq i32 %e0, 239
+  %c1 = icmp eq i32 %e1, 190
+  %ok = and i1 %c0, %c1
+  %z = zext i1 %ok to i32
+  ret i32 %z
+}
+",
+        1,
+        "i16 store little-endian bytes",
+    );
+}
+
+/// Adjacent byte stores never clobber one another, and a word load reassembles
+/// them little-endian: bytes 1,2,3,4 form 0x04030201.
+#[test]
+fn test_vm_byte_adjacent_i8_stores_form_word_le() {
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %buf = alloca [8 x i8]
+  %p0 = getelementptr [8 x i8], ptr %buf, i64 0, i64 0
+  %p1 = getelementptr [8 x i8], ptr %buf, i64 0, i64 1
+  %p2 = getelementptr [8 x i8], ptr %buf, i64 0, i64 2
+  %p3 = getelementptr [8 x i8], ptr %buf, i64 0, i64 3
+  store i8 1, ptr %p0
+  store i8 2, ptr %p1
+  store i8 3, ptr %p2
+  store i8 4, ptr %p3
+  %w = load i32, ptr %p0
+  %c = icmp eq i32 %w, 67305985
+  %z = zext i1 %c to i32
+  ret i32 %z
+}
+",
+        1,
+        "byte stores reassemble little-endian",
+    );
+}
+
+/// A single-byte store inside a word overwrites exactly one byte; an i16 store
+/// overwrites exactly two. All neighbours survive.
+#[test]
+fn test_vm_byte_i8_and_i16_stores_preserve_neighbours() {
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %buf = alloca [8 x i8]
+  %p0 = getelementptr [8 x i8], ptr %buf, i64 0, i64 0
+  %p1 = getelementptr [8 x i8], ptr %buf, i64 0, i64 1
+  %p2 = getelementptr [8 x i8], ptr %buf, i64 0, i64 2
+  %p3 = getelementptr [8 x i8], ptr %buf, i64 0, i64 3
+  store i8 1, ptr %p0
+  store i8 2, ptr %p1
+  store i8 3, ptr %p2
+  store i8 4, ptr %p3
+  store i8 255, ptr %p1
+  %v0 = load i8, ptr %p0
+  %e0 = zext i8 %v0 to i32
+  %v1 = load i8, ptr %p1
+  %e1 = zext i8 %v1 to i32
+  %v2 = load i8, ptr %p2
+  %e2 = zext i8 %v2 to i32
+  %v3 = load i8, ptr %p3
+  %e3 = zext i8 %v3 to i32
+  %a0 = icmp eq i32 %e0, 1
+  %a1 = icmp eq i32 %e1, 255
+  %a2 = icmp eq i32 %e2, 3
+  %a3 = icmp eq i32 %e3, 4
+  %s1 = and i1 %a0, %a1
+  %s2 = and i1 %a2, %a3
+  %s3 = and i1 %s1, %s2
+  store i16 4660, ptr %p0
+  %n0 = load i8, ptr %p0
+  %f0 = zext i8 %n0 to i32
+  %n1 = load i8, ptr %p1
+  %f1 = zext i8 %n1 to i32
+  %n2 = load i8, ptr %p2
+  %f2 = zext i8 %n2 to i32
+  %n3 = load i8, ptr %p3
+  %f3 = zext i8 %n3 to i32
+  %b0 = icmp eq i32 %f0, 52
+  %b1 = icmp eq i32 %f1, 18
+  %b2 = icmp eq i32 %f2, 3
+  %b3 = icmp eq i32 %f3, 4
+  %t1 = and i1 %b0, %b1
+  %t2 = and i1 %b2, %b3
+  %t3 = and i1 %t1, %t2
+  %r = and i1 %s3, %t3
+  %z = zext i1 %r to i32
+  ret i32 %z
+}
+",
+        1,
+        "byte- and i16-store neighbor preservation",
+    );
+}
+
+/// An i1 store writes one byte (0x01 / 0x00) and an i1 load reads `byte != 0`;
+/// the neighbour is untouched and the false store clears the byte to 0.
+#[test]
+fn test_vm_byte_i1_load_store() {
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %buf = alloca [4 x i8]
+  %p0 = getelementptr [4 x i8], ptr %buf, i64 0, i64 0
+  %p1 = getelementptr [4 x i8], ptr %buf, i64 0, i64 1
+  store i8 77, ptr %p1
+  store i1 true, ptr %p0
+  %t = load i1, ptr %p0
+  %tz = zext i1 %t to i32
+  %n1 = load i8, ptr %p1
+  %f1 = zext i8 %n1 to i32
+  store i1 false, ptr %p0
+  %f = load i1, ptr %p0
+  %fz = zext i1 %f to i32
+  %n0 = load i8, ptr %p0
+  %f0 = zext i8 %n0 to i32
+  %c1 = icmp eq i32 %tz, 1
+  %c2 = icmp eq i32 %f1, 77
+  %c3 = icmp eq i32 %fz, 0
+  %c4 = icmp eq i32 %f0, 0
+  %o1 = and i1 %c1, %c2
+  %o2 = and i1 %c3, %c4
+  %o = and i1 %o1, %o2
+  %z = zext i1 %o to i32
+  ret i32 %z
+}
+",
+        1,
+        "i1 load/store byte semantics",
+    );
+}
+
+/// A sub-word store masks its (possibly wider) carrier to the declared store
+/// width: storing `0xFFFF1234` as i16 writes 0x34, 0x12, never the high garbage.
+#[test]
+fn test_vm_byte_subword_store_masks_wide_carrier() {
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %buf = alloca [8 x i8]
+  %p0 = getelementptr [8 x i8], ptr %buf, i64 0, i64 0
+  %p1 = getelementptr [8 x i8], ptr %buf, i64 0, i64 1
+  %p2 = getelementptr [8 x i8], ptr %buf, i64 0, i64 2
+  store i8 9, ptr %p2
+  %car = or i32 4660, -65536
+  store i16 %car, ptr %p0
+  %b0 = load i8, ptr %p0
+  %e0 = zext i8 %b0 to i32
+  %b1 = load i8, ptr %p1
+  %e1 = zext i8 %b1 to i32
+  %b2 = load i8, ptr %p2
+  %e2 = zext i8 %b2 to i32
+  %c0 = icmp eq i32 %e0, 52
+  %c1 = icmp eq i32 %e1, 18
+  %c2 = icmp eq i32 %e2, 9
+  %o1 = and i1 %c0, %c1
+  %o = and i1 %o1, %c2
+  %z = zext i1 %o to i32
+  ret i32 %z
+}
+",
+        1,
+        "i16 store masks a wider carrier",
+    );
+}
+
+/// Byte ops work at any byte granularity, including unaligned offsets: writing
+/// an i16 at byte 1 leaves byte 0 and byte 3 intact.
+#[test]
+fn test_vm_byte_unaligned_i16_store() {
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %buf = alloca [8 x i8]
+  %p0 = getelementptr [8 x i8], ptr %buf, i64 0, i64 0
+  %p1 = getelementptr [8 x i8], ptr %buf, i64 0, i64 1
+  %p3 = getelementptr [8 x i8], ptr %buf, i64 0, i64 3
+  store i8 1, ptr %p0
+  store i16 4660, ptr %p1
+  store i8 5, ptr %p3
+  %v0 = load i8, ptr %p0
+  %e0 = zext i8 %v0 to i32
+  %b1 = load i8, ptr %p1
+  %e1 = zext i8 %b1 to i32
+  %w = load i16, ptr %p1
+  %ew = zext i16 %w to i32
+  %v3 = load i8, ptr %p3
+  %e3 = zext i8 %v3 to i32
+  %c0 = icmp eq i32 %e0, 1
+  %c1 = icmp eq i32 %e1, 52
+  %c2 = icmp eq i32 %ew, 4660
+  %c3 = icmp eq i32 %e3, 5
+  %o1 = and i1 %c0, %c1
+  %o2 = and i1 %c2, %c3
+  %o = and i1 %o1, %o2
+  %z = zext i1 %o to i32
+  ret i32 %z
+}
+",
+        1,
+        "unaligned i16 store keeps neighbours",
+    );
+}
+
+/// A byte-exact static global: an `[4 x i8]` element-initialized leaf reads
+/// back its exact byte at any offset (little-endian image seeded by the driver
+/// on both engines).
+#[test]
+fn test_vm_byte_global_i8_leaf() {
+    assert_agree(
+        "
+@bytes = global [4 x i8] [i8 239, i8 190, i8 173, i8 222]
+define i32 @main() {
+entry:
+  %p1 = getelementptr [4 x i8], ptr @bytes, i64 0, i64 1
+  %v = load i8, ptr %p1
+  %e = zext i8 %v to i32
+  ret i32 %e
+}
+",
+        190,
+        "byte global offset 1 == 0xBE",
+    );
+}
+
+/// Two adjacent bytes in a static global read back as one little-endian i16.
+#[test]
+fn test_vm_byte_global_i16_leaf() {
+    assert_agree(
+        "
+@pair = global [2 x i8] c\"\\34\\12\"
+define i32 @main() {
+entry:
+  %p = getelementptr [2 x i8], ptr @pair, i64 0, i64 0
+  %v = load i16, ptr %p
+  %e = zext i16 %v to i32
+  ret i32 %e
+}
+",
+        4660,
+        "two global bytes form little-endian i16",
+    );
 }
