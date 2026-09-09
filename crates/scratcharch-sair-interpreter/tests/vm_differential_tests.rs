@@ -324,6 +324,208 @@ fn diff_ashr_i64_positive_stays_zero_filled() {
     });
 }
 
+// ── Multiply ──────────────────────────────────────────────────────
+//
+// SAIR mul is wrapping at every width. A 64-bit mul has no ISA primitive (the
+// ISA only multiplies 32-bit words), so it lowers to a software helper built
+// from word multiplies over 16-bit digits. These cases drive the carry out of
+// the low limb, the high-limb product of the low limbs, and the cross terms.
+
+#[test]
+fn diff_mul_i64_carry_across_limb_boundary() {
+    for (l, r) in [
+        // (2^32 + 1)^2 == 2^64 + 2^33 + 1, which wraps to 2^33 + 1: the classic
+        // case where result_hi comes solely from the low-limb × low-limb product.
+        (0x0000_0001_0000_0001u64, 0x0000_0001_0000_0001u64),
+        // 2^32 × 2^32 == 2^64 wraps to 0: low-limb products are all zero.
+        (0x0000_0001_0000_0000u64, 0x0000_0001_0000_0000u64),
+        // (2^31+1)·3 = 3·2^31 + 3: the +1 low limb must carry into the high limb.
+        (0x0000_0000_8000_0001u64, 3u64),
+        // Top bit set: high-limb × low-limb cross term dominates result_hi.
+        (0x8000_0000_0000_0001u64, 0x8000_0000_0000_0003u64),
+        // All-ones × 2 wraps to all-ones-minus-one.
+        (0xFFFF_FFFF_FFFF_FFFFu64, 2u64),
+        // All-ones squared.
+        (0xFFFF_FFFF_FFFF_FFFFu64, 0xFFFF_FFFF_FFFF_FFFFu64),
+        // Identity and zero.
+        (0u64, 0u64),
+        (1u64, 1u64),
+        (0xDEAD_BEEF_CAFE_F00Du64, 1u64),
+        (0xDEAD_BEEF_CAFE_F00Du64, 0u64),
+    ] {
+        assert_interp_vm_agree(64, move |b| {
+            let x = b.const_i64(l);
+            let y = b.const_i64(r);
+            b.mul(IrType::I64, x, y)
+        });
+    }
+}
+
+#[test]
+fn diff_mul_i64_small_and_sub_word_still_wrap() {
+    // i64 cases that stay inside one word still round-trip through the helper.
+    for (l, r) in [(5u64, 7u64), (0xFFFF_FFFFu64, 0x1_0000_0001u64)] {
+        assert_interp_vm_agree(64, move |b| {
+            let x = b.const_i64(l);
+            let y = b.const_i64(r);
+            b.mul(IrType::I64, x, y)
+        });
+    }
+    // Sub-64 mul is a native word multiply; it must keep wrapping (i32, i16).
+    assert_interp_vm_agree(32, |b| {
+        let x = b.const_i32(0x8000_0000);
+        let y = b.const_i32(2);
+        b.mul(IrType::I32, x, y)
+    });
+    assert_interp_vm_agree(16, |b| {
+        let x = b.const_i8(0xFF);
+        let y = b.const_i8(0x02);
+        b.mul(IrType::I8, x, y)
+    });
+}
+
+// ── Unsigned divide / remainder ───────────────────────────────────
+//
+// SAIR div/rem are unsigned. On the VM an i64 div/rem lowers to one shared
+// software helper that computes both quotient and remainder by 64-step
+// restoring division; div keeps the quotient pair and drops the remainder, rem
+// keeps the remainder pair and drops the quotient. Divisors here are never
+// zero — division by zero is a separate error-class test in the driver suite.
+
+#[test]
+fn diff_udiv_i64_matches_long_division() {
+    for (a, d) in [
+        (7u64, 2u64),
+        (0u64, 1u64),
+        (1u64, 1u64),
+        (0xFFFF_FFFF_FFFF_FFFFu64, 1u64),
+        (0xFFFF_FFFF_FFFF_FFFFu64, 0xFFFF_FFFF_FFFF_FFFFu64),
+        // Divisor larger than dividend: quotient 0.
+        (123u64, 0x8000_0000_0000_0000u64),
+        // A 33-bit dividend crosses the limb boundary mid-long-division.
+        (0x1_0000_0000u64, 0x1_0000_0001u64),
+        (0xDEAD_BEEF_CAFE_F00Du64, 0x1000_0000u64),
+        (0xFFFF_FFFF_FFFF_FFFFu64, 3u64),
+        (0x8000_0000_0000_0001u64, 0x0000_0001_0000_0000u64),
+        (0x1234_5678_9ABC_DEF0u64, 0xABCD_EF01u64),
+        (0xFFFFFFFF_FFFFFFFFu64, 0x0000_0001_0000_0001u64),
+    ] {
+        assert_interp_vm_agree(64, move |b| {
+            let n = b.const_i64(a);
+            let d = b.const_i64(d);
+            b.div(IrType::I64, n, d)
+        });
+    }
+}
+
+#[test]
+fn diff_urem_i64_matches_long_division() {
+    for (a, d) in [
+        (7u64, 2u64),
+        (0u64, 1u64),
+        (0xFFFF_FFFF_FFFF_FFFFu64, 2u64),
+        // Remainder must survive across the full 64-bit width.
+        (0xFFFF_FFFF_FFFF_FFFFu64, 0x1_0000_0000u64),
+        (0xDEAD_BEEF_CAFE_F00Du64, 0x1000_0000u64),
+        (0x8000_0000_0000_0001u64, 0x0000_0001_0000_0000u64),
+        (0x1234_5678_9ABC_DEF0u64, 0xABCD_EF01u64),
+        (123u64, 0x8000_0000_0000_0000u64),
+    ] {
+        assert_interp_vm_agree(64, move |b| {
+            let n = b.const_i64(a);
+            let d = b.const_i64(d);
+            b.rem(IrType::I64, n, d)
+        });
+    }
+}
+
+#[test]
+fn diff_divrem_sub_word_unsigned_still_exact() {
+    // i32 udiv/urem are native word ops; both engines keep the unsigned answer.
+    assert_interp_vm_agree(32, |b| {
+        let n = b.const_i32(0x8000_0000);
+        let d = b.const_i32(0x1_0000);
+        b.div(IrType::I32, n, d)
+    });
+    assert_interp_vm_agree(32, |b| {
+        let n = b.const_i32(0x8000_0001);
+        let d = b.const_i32(0x1000);
+        b.rem(IrType::I32, n, d)
+    });
+    assert_interp_vm_agree(8, |b| {
+        let n = b.const_i8(0xFF);
+        let d = b.const_i8(7);
+        b.rem(IrType::I8, n, d)
+    });
+}
+
+/// A fixed-seed LCG so the sweep is reproducible without an external RNG.
+fn lcg(state: &mut u64) -> u64 {
+    *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    *state
+}
+
+/// Randomized i64 mul / udiv / urem agreement sweep. The interpreter computes
+/// the reference from Rust `u64` arithmetic; the VM runs the software helpers.
+/// Wide pseudo-random operands (plus small and boundary divisors) exercise the
+/// full 64-iteration long division and every cross-limb carry in the multiply.
+#[test]
+fn diff_mul_divrem_i64_random_sweep() {
+    let mut state = 0x5EED_2026_0909_0001u64;
+    for _ in 0..512 {
+        let a = lcg(&mut state);
+        let b = lcg(&mut state);
+        // Interleave pseudo-random with structurally interesting divisors.
+        let d = match b & 7 {
+            0 => 1,
+            1 => 2,
+            2 => b | 1, // odd full-width
+            3 => (b >> 1) | 1,
+            4 => 0xFFFF_FFFF,
+            5 => 0x1_0000_0001,
+            _ => b,
+        };
+
+        assert_interp_vm_agree(64, move |bb| {
+            let x = bb.const_i64(a);
+            let y = bb.const_i64(d);
+            bb.mul(IrType::I64, x, y)
+        });
+        assert_interp_vm_agree(64, move |bb| {
+            let n = bb.const_i64(a);
+            let dd = bb.const_i64(d);
+            bb.div(IrType::I64, n, dd)
+        });
+        assert_interp_vm_agree(64, move |bb| {
+            let n = bb.const_i64(a);
+            let dd = bb.const_i64(d);
+            bb.rem(IrType::I64, n, dd)
+        });
+    }
+}
+
+#[test]
+fn diff_mul_i64_boundary_divisors() {
+    // Multipliers that force every 16-bit digit product to carry: full words and
+    // patterns near 0xFFFFFFFF / 0x10000 boundaries.
+    for m in [
+        0xFFFF_FFFFu64,
+        0x1_0000_0000u64,
+        0xFFFF_FFFF_FFFF_FFFFu64,
+        0x0000_FFFF_0000_FFFFu64,
+        0x0000_0000_FFFF_0000u64,
+        0x8000_0000_0000_0000u64,
+    ] {
+        for a in [0xFFFF_FFFFu64, 0x1_0000_0001u64, 0xDEAD_BEEF_CAFE_F00Du64, 0x7u64] {
+            assert_interp_vm_agree(64, move |b| {
+                let x = b.const_i64(a);
+                let y = b.const_i64(m);
+                b.mul(IrType::I64, x, y)
+            });
+        }
+    }
+}
+
 // ── Trap model ────────────────────────────────────────────────────
 
 #[test]

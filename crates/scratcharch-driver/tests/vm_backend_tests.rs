@@ -660,3 +660,363 @@ entry:
     }
 }
 
+// ---------------------------------------------------------------------------
+// i64 multiply / divide / remainder (Part 2): 64-bit mul/div/rem lower through
+// software helpers built from the 32-bit word ISA (`__sair_mul64` for mul,
+// `__sair_udivrem64` for unsigned div + rem in one pass). Signed sdiv/srem are
+// expanded by the LLVM translator into magnitude-based unsigned div/rem before
+// lowering, so they ride the same helpers. Every IR runs on both the SAIR
+// interpreter (the semantic reference) and the VM backend and must agree.
+// ---------------------------------------------------------------------------
+
+/// Run inline LLVM IR on the SAIR interpreter at Basic opt (helper used by the
+/// division-by-zero error-class agreement test, where no exit value exists).
+fn run_ir_interp(ir: &str) -> Result<Option<ExecutionValue>, String> {
+    let config = CompileConfig {
+        opt_level: OptLevel::Basic,
+        backend: ExecutionBackend::Interpreter,
+        ..CompileConfig::default()
+    };
+    CompileDriver::new(config)
+        .compile_and_run(ir)
+        .map_err(|e| e.to_string())
+}
+
+#[test]
+fn test_vm_i64_mul_full_width() {
+    // (2^32 + 1)^2 wraps to 2^33 + 1: result_hi comes from the low-limb pair's
+    // 64-bit product carried across the limb boundary.
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %m = mul i64 4294967297, 4294967297
+  %c = icmp eq i64 %m, 8589934593
+  %z = zext i1 %c to i32
+  ret i32 %z
+}
+",
+        1,
+        "mul (2^32+1)^2",
+    );
+    // 2^32 * (2^32 + 1) wraps to 2^32: result_hi is nonzero solely from the
+    // high-limb cross terms (the low-limb product is 0).
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %m = mul i64 4294967296, 4294967297
+  %c = icmp eq i64 %m, 4294967296
+  %z = zext i1 %c to i32
+  ret i32 %z
+}
+",
+        1,
+        "mul 2^32*(2^32+1) high-limb cross",
+    );
+    // All-ones * 2 wraps to all-ones-minus-one; all-ones squared is 1.
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %a = mul i64 -1, 2
+  %c1 = icmp eq i64 %a, -2
+  %s = mul i64 -1, -1
+  %c2 = icmp eq i64 %s, 1
+  %r = and i1 %c1, %c2
+  %z = zext i1 %r to i32
+  ret i32 %z
+}
+",
+        1,
+        "mul -1*2 and -1*-1",
+    );
+    // A small mul round-trips through the wide helper and truncates to 35.
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %m = mul i64 5, 7
+  %r = trunc i64 %m to i32
+  ret i32 %r
+}
+",
+        35,
+        "mul 5*7 low limb",
+    );
+}
+
+#[test]
+fn test_vm_i64_udiv() {
+    // 2^32 / 3 = 1431655765 r 1: a 33-bit dividend crossing the limb boundary.
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %q = udiv i64 4294967296, 3
+  %c = icmp eq i64 %q, 1431655765
+  %z = zext i1 %c to i32
+  ret i32 %z
+}
+",
+        1,
+        "udiv 2^32 / 3",
+    );
+    // (2^63 - 1) / 2^32 = 2^31 - 1: full-width dividend and divisor.
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %q = udiv i64 9223372036854775807, 4294967296
+  %c = icmp eq i64 %q, 2147483647
+  %z = zext i1 %c to i32
+  ret i32 %z
+}
+",
+        1,
+        "udiv (2^63-1) / 2^32",
+    );
+    // Divisor larger than dividend: quotient 0 (123 / 2^63).
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %q = udiv i64 123, -9223372036854775808
+  %c = icmp eq i64 %q, 0
+  %z = zext i1 %c to i32
+  ret i32 %z
+}
+",
+        1,
+        "udiv divisor > dividend",
+    );
+}
+
+#[test]
+fn test_vm_i64_urem() {
+    // (2^63 - 1) mod 2^32 = 2^32 - 1; all-ones mod 2^32 = 2^32 - 1 too.
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %a = urem i64 9223372036854775807, 4294967296
+  %c1 = icmp eq i64 %a, 4294967295
+  %b = urem i64 -1, 4294967296
+  %c2 = icmp eq i64 %b, 4294967295
+  %r = and i1 %c1, %c2
+  %z = zext i1 %r to i32
+  ret i32 %z
+}
+",
+        1,
+        "urem mod 2^32",
+    );
+    // Divisor larger than dividend keeps the full dividend as the remainder.
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %r = urem i64 123, -9223372036854775808
+  %c = icmp eq i64 %r, 123
+  %z = zext i1 %c to i32
+  ret i32 %z
+}
+",
+        1,
+        "urem divisor > dividend",
+    );
+    // (2^32 + 4) mod 2^32 = 4, returned as the truncated low limb.
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %r = urem i64 4294967300, 4294967296
+  %t = trunc i64 %r to i32
+  ret i32 %t
+}
+",
+        4,
+        "urem low limb",
+    );
+}
+
+#[test]
+fn test_vm_i64_sdiv_signed() {
+    // All four sign combinations truncate toward zero.
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %q = sdiv i64 10, 3
+  %t = trunc i64 %q to i32
+  ret i32 %t
+}
+",
+        3,
+        "sdiv 10 / 3",
+    );
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %q = sdiv i64 -10, 3
+  %c = icmp eq i64 %q, -3
+  %z = zext i1 %c to i32
+  ret i32 %z
+}
+",
+        1,
+        "sdiv -10 / 3",
+    );
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %q = sdiv i64 10, -3
+  %c = icmp eq i64 %q, -3
+  %z = zext i1 %c to i32
+  ret i32 %z
+}
+",
+        1,
+        "sdiv 10 / -3",
+    );
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %q = sdiv i64 -7, 2
+  %c = icmp eq i64 %q, -3
+  %z = zext i1 %c to i32
+  ret i32 %z
+}
+",
+        1,
+        "sdiv -7 / 2",
+    );
+    // The magnitude edge case that does not overflow: -(2^63-1) / -1.
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %q = sdiv i64 -9223372036854775807, -1
+  %c = icmp eq i64 %q, 9223372036854775807
+  %z = zext i1 %c to i32
+  ret i32 %z
+}
+",
+        1,
+        "sdiv -(2^63-1) / -1",
+    );
+}
+
+/// LLVM calls `sdiv INT64_MIN, -1` undefined behavior (it overflows). This
+/// toolchain's arithmetic is wrapping everywhere (see SAIR invariants), so the
+/// expansion's magnitude `udiv` of |INT64_MIN| = 2^63 by 1 wraps back to
+/// INT64_MIN — the x86-consistent answer. Both engines must agree on it.
+#[test]
+fn test_vm_i64_sdiv_min_by_neg_one_wraps() {
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %q = sdiv i64 -9223372036854775808, -1
+  %c = icmp eq i64 %q, -9223372036854775808
+  %z = zext i1 %c to i32
+  ret i32 %z
+}
+",
+        1,
+        "sdiv INT64_MIN / -1 wraps to INT64_MIN",
+    );
+}
+
+#[test]
+fn test_vm_i64_srem_signed() {
+    // srem takes the sign of the dividend.
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %r = srem i64 -10, 3
+  %c = icmp eq i64 %r, -1
+  %z = zext i1 %c to i32
+  ret i32 %z
+}
+",
+        1,
+        "srem -10 % 3",
+    );
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %r = srem i64 10, -3
+  %c = icmp eq i64 %r, 1
+  %z = zext i1 %c to i32
+  ret i32 %z
+}
+",
+        1,
+        "srem 10 % -3",
+    );
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %r = srem i64 -7, 2
+  %c = icmp eq i64 %r, -1
+  %z = zext i1 %c to i32
+  ret i32 %z
+}
+",
+        1,
+        "srem -7 % 2",
+    );
+    // -10 % 3 == -1, whose low limb is all-ones (as a u32 exit value).
+    assert_agree(
+        "
+define i32 @main() {
+entry:
+  %r = srem i64 -10, 3
+  %t = trunc i64 %r to i32
+  ret i32 %t
+}
+",
+        4294967295,
+        "srem low limb of -1",
+    );
+}
+
+/// Division by zero is an error in both engines, never a silent result: the VM's
+/// `__sair_udivrem64` helper reaches a manufactured `I32Div`-by-zero (VmError
+/// "division by zero"), and the interpreter reports
+/// [`InterpError::DivisionByZero`]. Signed forms hit the same error inside the
+/// magnitude `udiv` before any sign is reapplied.
+#[test]
+fn test_vm_i64_division_by_zero_error_agreement() {
+    for op in ["udiv", "urem", "sdiv", "srem"] {
+        let ir = format!(
+            "define i32 @main() {{\n\
+             entry:\n\
+             \x20 %q = {op} i64 10, 0\n\
+             \x20 %t = trunc i64 %q to i32\n\
+             \x20 ret i32 %t\n\
+             }}\n"
+        );
+        match run_ir_vm(&ir) {
+            Err(e) => assert!(
+                e.contains("division by zero"),
+                "[{op}] VM should report division by zero, got: {e}"
+            ),
+            other => panic!("[{op}] VM must reject division by zero, got success: {other:?}"),
+        }
+        match run_ir_interp(&ir) {
+            Err(e) => assert!(
+                e.contains("DivisionByZero"),
+                "[{op}] interpreter should report DivisionByZero, got: {e}"
+            ),
+            other => panic!("[{op}] interpreter must reject division by zero, got success: {other:?}"),
+        }
+    }
+}
