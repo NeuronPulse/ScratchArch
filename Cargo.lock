@@ -487,6 +487,7 @@ dependencies = [
  "scratcharch-core",
  "scratcharch-ir",
  "scratcharch-runtime",
+ "scratcharch-vm",
 ]
 
 [[package]]

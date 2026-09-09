@@ -1041,8 +1041,10 @@ impl IsaLowerer {
         f.push(IsaInstr::LocalSet(ctx.temp_slot));
 
         // Low limb and high fill. For shl/lshr the value is zero-extended
-        // (hi = 0). For ashr the width-bit sign is replicated into the high
-        // limb before the helper is called.
+        // (hi = 0). For ashr the width-bit sign must be replicated across the
+        // *whole* (lo, hi) pair — bits w..31 of the low limb as well as the high
+        // limb — so the helper shifts the true sign-extended 64-bit pattern, not
+        // a value whose upper low-limb bits are zero.
         match kind {
             ShiftKind::Shl | ShiftKind::Lshr => {
                 f.push(IsaInstr::LocalGet(ctx.temp_slot));
@@ -1050,8 +1052,19 @@ impl IsaLowerer {
             }
             ShiftKind::Ashr => {
                 if w < 32 {
-                    // hi = 0 - (M >> (w-1)): all-ones when the width bit is set.
+                    // S = 0 - (M >> (w-1)): all-ones when the width bit is set.
+                    // low_ext = M | (S & fill), where fill has bits w..31 set.
+                    let upper_fill = (u32::MAX >> w) << w;
+                    f.push(IsaInstr::ConstI32(0));
                     f.push(IsaInstr::LocalGet(ctx.temp_slot));
+                    f.push(IsaInstr::ConstI32(w - 1));
+                    f.push(IsaInstr::Shr);
+                    f.push(IsaInstr::I32Sub);
+                    f.push(IsaInstr::ConstI32(upper_fill));
+                    f.push(IsaInstr::And);
+                    f.push(IsaInstr::LocalGet(ctx.temp_slot));
+                    f.push(IsaInstr::Or);
+                    // hi = S, recomputed (M is still parked in the temp slot).
                     f.push(IsaInstr::ConstI32(0));
                     f.push(IsaInstr::LocalGet(ctx.temp_slot));
                     f.push(IsaInstr::ConstI32(w - 1));
