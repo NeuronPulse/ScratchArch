@@ -1,0 +1,20 @@
+[package]
+name = "scratcharch-compat"
+version = "0.1.0"
+edition = "2021"
+description = "External LLVM compatibility benchmark layer for ScratchArch"
+
+[dependencies]
+scratcharch-core = { path = "../scratcharch-core" }
+scratcharch-ir = { path = "../scratcharch-ir" }
+scratcharch-llvm = { path = "../scratcharch-llvm" }
+scratcharch-opt = { path = "../scratcharch-opt" }
+scratcharch-sair-interpreter = { path = "../scratcharch-sair-interpreter" }
+scratcharch-target = { path = "../scratcharch-target" }
+scratcharch-vm = { path = "../scratcharch-vm" }
+scratcharch-scratchgraph = { path = "../scratcharch-scratchgraph" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[dev-dependencies]
+tempfile = "3"

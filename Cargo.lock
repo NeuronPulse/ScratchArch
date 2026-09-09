@@ -392,6 +392,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "scratcharch-analyzer",
+ "scratcharch-compat",
  "scratcharch-driver",
  "scratcharch-explorer",
  "scratcharch-ir",
@@ -400,6 +401,23 @@ dependencies = [
  "scratcharch-scratchgraph",
  "scratcharch-transform",
  "scratcharch-validation",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "scratcharch-compat"
+version = "0.1.0"
+dependencies = [
+ "scratcharch-core",
+ "scratcharch-ir",
+ "scratcharch-llvm",
+ "scratcharch-opt",
+ "scratcharch-sair-interpreter",
+ "scratcharch-scratchgraph",
+ "scratcharch-target",
+ "scratcharch-vm",
  "serde",
  "serde_json",
  "tempfile",
