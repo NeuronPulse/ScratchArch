@@ -542,3 +542,103 @@ fn test_recursive_factorial_locals() {
     let vm = run_program(&mut prog);
     assert_eq!(vm.stack.peek().unwrap().as_i32(), Some(120));
 }
+
+// ── Load8 / Store8 / Trap primitives (ISA Appendix A / EXECUTION_MODEL §5.6) ──
+
+#[test]
+fn test_store8_writes_only_low_byte() {
+    // Store a value whose upper bits are set (0x1FF): only the low byte 0xFF
+    // may reach memory.
+    let mut prog = build_single_func_program(vec![
+        Instruction::ConstI32(4), // size
+        Instruction::Alloc,       // [addr]
+        Instruction::Dup,         // [addr, addr]
+        Instruction::ConstI32(0x1FF),
+        Instruction::Store8,      // write 0xFF at addr, leaves [addr]
+        Instruction::Load8,       // [0xFF]
+        Instruction::Return,
+    ]);
+    let vm = run_program(&mut prog);
+    assert_eq!(vm.stack.peek().unwrap().as_i32(), Some(0xFF));
+}
+
+#[test]
+fn test_load8_zero_extends() {
+    // A stored byte 0xAB reads back as 0x000000AB (zero-extended), never as a
+    // sign-extended negative.
+    let mut prog = build_single_func_program(vec![
+        Instruction::ConstI32(1), // size
+        Instruction::Alloc,       // [addr]
+        Instruction::Dup,
+        Instruction::ConstI32(0xAB),
+        Instruction::Store8,      // [addr]
+        Instruction::Load8,       // [0xAB]
+        Instruction::Return,
+    ]);
+    let vm = run_program(&mut prog);
+    assert_eq!(vm.stack.peek().unwrap().as_i32(), Some(0xAB));
+}
+
+#[test]
+fn test_store8_does_not_disturb_neighbouring_bytes() {
+    // Store byte 0xAB at addr, 0xCD at addr+1, 0xFF at addr+2. Reading addr
+    // must still yield 0xAB and reading addr+3 (never written) must yield 0.
+    let mut prog = build_single_func_program(vec![
+        Instruction::ConstI32(8), // size
+        Instruction::Alloc,       // [addr]
+        // addr <- 0xAB
+        Instruction::Dup,         // [addr, addr]
+        Instruction::ConstI32(0xAB),
+        Instruction::Store8,      // [addr]
+        // addr+1 <- 0xCD
+        Instruction::Dup,
+        Instruction::ConstI32(1),
+        Instruction::I32Add,      // [addr, addr+1]
+        Instruction::ConstI32(0xCD),
+        Instruction::Store8,      // [addr]
+        // addr+2 <- 0xFF
+        Instruction::Dup,
+        Instruction::ConstI32(2),
+        Instruction::I32Add,
+        Instruction::ConstI32(0xFF),
+        Instruction::Store8,      // [addr]
+        // load addr (must be 0xAB, not clobbered by addr+1/addr+2 stores)
+        Instruction::Load8,       // [0xAB]
+        Instruction::Return,
+    ]);
+    let vm = run_program(&mut prog);
+    assert_eq!(vm.stack.peek().unwrap().as_i32(), Some(0xAB));
+}
+
+#[test]
+fn test_trap_terminates_in_distinguished_state() {
+    // Trap is terminal: run() reports VmError::Trap (a program-declared stop,
+    // distinct from a normal return and from the machine-error classes).
+    let prog = build_single_func_program(vec![
+        Instruction::ConstI32(7),
+        Instruction::Trap,
+    ]);
+    let mut vm = Vm::new(65536, 4096);
+    vm.load_program(&prog).expect("failed to load program");
+    let result = vm.run();
+    match result {
+        Err(scratcharch_vm::vm::VmError::Trap { function, pc }) => {
+            assert_eq!(function, 0, "trap should report the function index");
+            assert_eq!(pc, 1, "trap pc should be the trap instruction");
+        }
+        other => panic!("expected VmError::Trap, got {other:?}"),
+    }
+    assert!(!vm.running, "trap must halt the machine");
+}
+
+#[test]
+fn test_trap_is_distinct_from_normal_return() {
+    // A program that traps must not report a return value (no silent return).
+    let prog = build_single_func_program(vec![
+        Instruction::ConstI32(99),
+        Instruction::Trap,
+    ]);
+    let mut vm = Vm::new(65536, 4096);
+    vm.load_program(&prog).expect("failed to load program");
+    assert!(vm.run().is_err(), "trap must not complete the program normally");
+}

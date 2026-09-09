@@ -120,6 +120,19 @@ impl Vm {
                 self.memory.write(addr, &bytes)
                     .map_err(|e| VmError::MemoryError(e.to_string()))?;
             }
+            Code::Load8 => {
+                let addr = self.pop_address()?;
+                let byte = self.memory.read_byte(addr)
+                    .map_err(|e| VmError::MemoryError(e.to_string()))?;
+                self.stack.push(Value::I32(byte as u32));
+            }
+            Code::Store8 => {
+                // Stack: (addr, byte). Byte is the low 8 bits of the top cell.
+                let byte = (self.pop_u32()? & 0xFF) as u8;
+                let addr = self.pop_address()?;
+                self.memory.write_byte(addr, byte)
+                    .map_err(|e| VmError::MemoryError(e.to_string()))?;
+            }
             Code::Alloc => {
                 let size = self.pop_i32()?;
                 let new_sp = self.memory.alloc_stack(size, self.sp)
@@ -207,6 +220,16 @@ impl Vm {
                     }
                     Err(CallStackError::MaxDepthReached) => unreachable!(),
                 }
+            }
+            Code::Trap => {
+                // Terminal, program-declared stop: halt in the distinguished
+                // trap state with the trap's location. `pc` was already
+                // advanced past the trap, so the trap itself is at `pc - 1`.
+                self.running = false;
+                return Err(VmError::Trap {
+                    function: self.current_func,
+                    pc: self.pc - 1,
+                });
             }
         }
 

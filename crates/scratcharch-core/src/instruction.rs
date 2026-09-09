@@ -25,11 +25,14 @@ pub enum Instruction {
     Gt,
     Load,
     Store,
+    Load8,
+    Store8,
     Alloc,
     Jump(Label),
     Branch(Label, Label),
     Call(FunctionName),
     Return,
+    Trap,
     Pick(u32),
     LocalGet(u32),
     LocalSet(u32),
@@ -58,11 +61,14 @@ impl Instruction {
             Instruction::Gt => "gt",
             Instruction::Load => "load",
             Instruction::Store => "store",
+            Instruction::Load8 => "load8",
+            Instruction::Store8 => "store8",
             Instruction::Alloc => "alloc",
             Instruction::Jump(_) => "jump",
             Instruction::Branch(_, _) => "branch",
             Instruction::Call(_) => "call",
             Instruction::Return => "return",
+            Instruction::Trap => "trap",
             Instruction::Pick(_) => "pick",
             Instruction::LocalGet(_) => "local.get",
             Instruction::LocalSet(_) => "local.set",
@@ -93,14 +99,36 @@ impl fmt::Display for Instruction {
             Instruction::Gt => write!(f, "gt"),
             Instruction::Load => write!(f, "load"),
             Instruction::Store => write!(f, "store"),
+            Instruction::Load8 => write!(f, "load8"),
+            Instruction::Store8 => write!(f, "store8"),
             Instruction::Alloc => write!(f, "alloc"),
             Instruction::Jump(l) => write!(f, "jump {l}"),
             Instruction::Branch(t, f_) => write!(f, "branch {t} {f_}"),
             Instruction::Call(n) => write!(f, "call {n}"),
             Instruction::Return => write!(f, "return"),
+            Instruction::Trap => write!(f, "trap"),
             Instruction::Pick(n) => write!(f, "pick {n}"),
             Instruction::LocalGet(n) => write!(f, "local.get {n}"),
             Instruction::LocalSet(n) => write!(f, "local.set {n}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_primitives_have_names() {
+        assert_eq!(Instruction::Load8.name(), "load8");
+        assert_eq!(Instruction::Store8.name(), "store8");
+        assert_eq!(Instruction::Trap.name(), "trap");
+    }
+
+    #[test]
+    fn new_primitives_display() {
+        assert_eq!(Instruction::Load8.to_string(), "load8");
+        assert_eq!(Instruction::Store8.to_string(), "store8");
+        assert_eq!(Instruction::Trap.to_string(), "trap");
     }
 }

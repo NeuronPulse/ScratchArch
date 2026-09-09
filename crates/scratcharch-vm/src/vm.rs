@@ -26,11 +26,14 @@ pub enum Code {
     Gt,
     Load,
     Store,
+    Load8,
+    Store8,
     Alloc,
     Jump(usize),
     Branch(usize, usize),
     Call(usize),
     Return,
+    Trap,
     Pick(u32),
     LocalGet(u32),
     LocalSet(u32),
@@ -68,6 +71,11 @@ pub enum VmError {
     UndefinedLabel(String),
     InvalidAddress,
     InvalidLocal(u32),
+    /// A program-declared stop (`Trap` / `unreachable`): execution halted at the
+    /// given function index and program counter. Distinct from every
+    /// machine-error class above and from a normal return — see
+    /// `EXECUTION_MODEL.md` §5.6.
+    Trap { function: usize, pc: usize },
 }
 
 impl core::fmt::Display for VmError {
@@ -84,6 +92,9 @@ impl core::fmt::Display for VmError {
             VmError::UndefinedLabel(label) => write!(f, "undefined label: {label}"),
             VmError::InvalidAddress => write!(f, "invalid address"),
             VmError::InvalidLocal(slot) => write!(f, "invalid local slot: {slot}"),
+            VmError::Trap { function, pc } => {
+                write!(f, "program trap at function #{function}, pc {pc}")
+            }
         }
     }
 }
@@ -152,6 +163,8 @@ impl Vm {
                     Instruction::Gt => Code::Gt,
                     Instruction::Load => Code::Load,
                     Instruction::Store => Code::Store,
+                    Instruction::Load8 => Code::Load8,
+                    Instruction::Store8 => Code::Store8,
                     Instruction::Alloc => Code::Alloc,
                     Instruction::Jump(l) => {
                         let target = func.get_label_index(l)
@@ -171,6 +184,7 @@ impl Vm {
                         Code::Call(target)
                     }
                     Instruction::Return => Code::Return,
+                    Instruction::Trap => Code::Trap,
                     Instruction::Pick(n) => Code::Pick(*n),
                     Instruction::LocalGet(n) => Code::LocalGet(*n),
                     Instruction::LocalSet(n) => Code::LocalSet(*n),
