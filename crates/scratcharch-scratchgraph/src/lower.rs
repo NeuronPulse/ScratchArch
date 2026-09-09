@@ -8,8 +8,9 @@
 use std::collections::{HashMap, HashSet};
 
 use scratcharch_ir::function::IrFunction;
-use scratcharch_ir::instruction::{GepIndex, Instruction as SairInstr, Terminator};
-use scratcharch_ir::r#module::IrModule;
+use scratcharch_ir::instruction::{CastOp, GepIndex, Instruction as SairInstr, Terminator};
+use scratcharch_ir::r#module::{IrModule, STATIC_DATA_BASE};
+use scratcharch_ir::types::IrType;
 use scratcharch_ir::value::{Constant, ValueId};
 
 use crate::ir::{
@@ -45,21 +46,23 @@ impl ScratchGraphLowerer {
             Variable::new("__scratcharch_fp", "__scratcharch_fp").with_scope(VariableScope::Temporary),
         );
 
-        // If any SAIR function uses memory instructions, model memory as a
-        // single stage-backed heap list.
-        let needs_heap = module.functions.iter().any(|f| {
-            f.blocks.iter().any(|b| {
-                b.instructions.iter().any(|i| {
-                    matches!(
-                        i,
-                        SairInstr::Alloca { .. }
-                            | SairInstr::Load { .. }
-                            | SairInstr::Store { .. }
-                            | SairInstr::Gep { .. }
-                    )
+        // If any SAIR function uses memory instructions — or the module carries
+        // a static-data segment to seed — model memory as a single stage-backed
+        // byte heap list.
+        let needs_heap = !module.static_data.image.is_empty()
+            || module.functions.iter().any(|f| {
+                f.blocks.iter().any(|b| {
+                    b.instructions.iter().any(|i| {
+                        matches!(
+                            i,
+                            SairInstr::Alloca { .. }
+                                | SairInstr::Load { .. }
+                                | SairInstr::Store { .. }
+                                | SairInstr::Gep { .. }
+                        )
+                    })
                 })
-            })
-        });
+            });
         if needs_heap {
             stage.add_list(List::new("__scratcharch_heap", "__scratcharch_heap"));
         }
@@ -82,35 +85,57 @@ impl ScratchGraphLowerer {
             } else {
                 vec![Expr::number(0.0); arg_count]
             };
-            stage.add_script(Script::new(
-                EventHat::GreenFlag,
-                vec![
-                    Stmt::DeleteAllOfList {
-                        list: "__scratcharch_stack".to_string(),
-                    },
-                    Stmt::SetVariable {
-                        var: "__scratcharch_fp".to_string(),
+            // Seed the static-data segment before the first call, mirroring the
+            // interpreter's `memory[STATIC_DATA_BASE .. + len] = image`:
+            // pad addresses [0, STATIC_DATA_BASE) with zero bytes, then write
+            // each image byte at its 1-indexed heap item.
+            let mut entry_stmts = vec![
+                Stmt::DeleteAllOfList {
+                    list: "__scratcharch_stack".to_string(),
+                },
+                Stmt::SetVariable {
+                    var: "__scratcharch_fp".to_string(),
+                    value: Expr::number(0.0),
+                },
+            ];
+            if !module.static_data.image.is_empty() {
+                let seeded_bytes = STATIC_DATA_BASE as usize + module.static_data.image.len();
+                entry_stmts.push(Stmt::Repeat {
+                    times: Expr::number(seeded_bytes as f64),
+                    body: vec![Stmt::AddToList {
+                        list: "__scratcharch_heap".to_string(),
                         value: Expr::number(0.0),
-                    },
-                    Stmt::EnterFrame {
-                        slots: entry_frame_size,
-                    },
-                    Stmt::Call {
-                        proc: entry_proc_name,
-                        args: call_args,
-                    },
-                    Stmt::SetVariable {
-                        var: "__scratcharch_fp".to_string(),
-                        value: Expr::FrameGet { offset: 0 },
-                    },
-                    Stmt::PopFrame {
-                        slots: entry_frame_size,
-                    },
-                    Stmt::Stop {
-                        option: StopOption::ThisScript,
-                    },
-                ],
-            ));
+                    }],
+                });
+                for (i, byte) in module.static_data.image.iter().enumerate() {
+                    entry_stmts.push(Stmt::SetListItem {
+                        list: "__scratcharch_heap".to_string(),
+                        index: Expr::number((STATIC_DATA_BASE as usize + 1 + i) as f64),
+                        value: Expr::number(*byte as f64),
+                    });
+                }
+            }
+            entry_stmts.extend([
+                Stmt::EnterFrame {
+                    slots: entry_frame_size,
+                },
+                Stmt::Call {
+                    proc: entry_proc_name,
+                    args: call_args,
+                },
+                Stmt::SetVariable {
+                    var: "__scratcharch_fp".to_string(),
+                    value: Expr::FrameGet { offset: 0 },
+                },
+                Stmt::PopFrame {
+                    slots: entry_frame_size,
+                },
+                Stmt::Stop {
+                    option: StopOption::ThisScript,
+                },
+            ]);
+
+            stage.add_script(Script::new(EventHat::GreenFlag, entry_stmts));
         }
 
         project.stage = stage;
@@ -575,25 +600,73 @@ fn lower_instruction(
                 size,
             }])
         }
-        SairInstr::Load { ty: _, addr } => {
-            let value = Expr::HeapLoad {
-                addr: Box::new(lower_value(func, *addr)?),
+        SairInstr::Load { ty, addr } => {
+            // Byte-exact load: recompose `size_in_bytes(ty)` little-endian heap
+            // bytes, then normalize the value to the backend's mathematical
+            // signed convention (docs/specification/SCRATCH_MEMORY.md).
+            let addr_expr = lower_value(func, *addr)?;
+            let value = match ty {
+                IrType::I1 => Expr::operator(
+                    "operator_not",
+                    vec![Expr::operator(
+                        "operator_equals",
+                        vec![heap_byte(&addr_expr, 0), Expr::number(0.0)],
+                    )],
+                ),
+                IrType::I8 => signed_reinterpret(heap_byte(&addr_expr, 0), 8),
+                IrType::I16 => signed_reinterpret(recombine_bytes(&addr_expr, 2), 16),
+                IrType::I32 => signed_reinterpret(recombine_bytes(&addr_expr, 4), 32),
+                // i64 is exact only for stored values in [0, 2^53): the raw
+                // non-negative pattern is then exactly representable (SAFE_SUBSET).
+                IrType::I64 => recombine_bytes(&addr_expr, 8),
+                IrType::Pointer => recombine_bytes(&addr_expr, 4),
+                IrType::F64 | IrType::Void => {
+                    return Err(LowerError::UnsupportedType(format!(
+                        "load of type {ty} is not representable in Scratch bytes"
+                    )))
+                }
             };
             Ok(vec![Stmt::FrameSet {
                 offset: frame_offset(func, result_id),
                 value,
             }])
         }
-        SairInstr::Store { value, addr, .. } => {
+        SairInstr::Store { ty, value, addr } => {
+            // Byte-exact store: reduce the value mod its width, split it into
+            // little-endian bytes, and write exactly `size_in_bytes(ty)` heap
+            // items — neighbouring bytes are preserved.
             let src = lower_value(func, *value)?;
             let addr_expr = lower_value(func, *addr)?;
-            // Scratch lists are 1-indexed; heap pointers are 0-based offsets.
-            let index = Expr::operator("operator_add", vec![addr_expr, Expr::number(1.0)]);
-            Ok(vec![Stmt::SetListItem {
-                list: "__scratcharch_heap".to_string(),
-                index,
-                value: src,
-            }])
+            let binary = |name: &str, a: Expr, b: Expr| Expr::operator(name, vec![a, b]);
+            let num = Expr::number;
+            let bytes = match ty {
+                IrType::I1 => split_bytes(binary("operator_mod", src, num(2.0)), 1),
+                IrType::I8 => split_bytes(binary("operator_mod", src, num(256.0)), 1),
+                IrType::I16 => split_bytes(binary("operator_mod", src, num(65536.0)), 2),
+                IrType::I32 => split_bytes(binary("operator_mod", src, num(4294967296.0)), 4),
+                // i64/ptr: values are (by contract) non-negative f64 in the
+                // exact range, so no mod reduction is needed or representable.
+                IrType::I64 => split_bytes(src, 8),
+                IrType::Pointer => split_bytes(src, 4),
+                IrType::F64 | IrType::Void => {
+                    return Err(LowerError::UnsupportedType(format!(
+                        "store of type {ty} is not representable in Scratch bytes"
+                    )))
+                }
+            };
+            let mut stmts = Vec::with_capacity(bytes.len());
+            for (k, byte) in bytes.into_iter().enumerate() {
+                let index = Expr::operator(
+                    "operator_add",
+                    vec![addr_expr.clone(), Expr::number(1.0 + k as f64)],
+                );
+                stmts.push(Stmt::SetListItem {
+                    list: "__scratcharch_heap".to_string(),
+                    index,
+                    value: byte,
+                });
+            }
+            Ok(stmts)
         }
         SairInstr::Call {
             callee,
@@ -707,17 +780,138 @@ fn lower_instruction(
                 op_name(instr),
             )))
         }
-        SairInstr::Cast { op, from_ty, to_ty, .. } => {
-            // Width-changing casts need exact bit semantics; the Scratch numeric
-            // backend is f64-only and cannot express i64/width extension, so the
-            // lowering reports rather than approximating.
-            Err(LowerError::UnsupportedInstruction(format!(
-                "{} {} to {} cannot be lowered to Scratch numbers",
-                op.name(),
-                from_ty,
-                to_ty,
-            )))
+        SairInstr::Cast {
+            op,
+            from_ty,
+            to_ty,
+            value,
+        } => {
+            // Width-changing casts lower to closed-form Scratch arithmetic
+            // (docs/design/SCRATCH_NUMERIC_MODEL.md §3.2). Scratch's floor-mod
+            // (`operator_mod`) and boolean coercion make every cast exact: mod
+            // reduces the source to its low width, the signed-reinterpret
+            // predicates shift into the mathematical (two's-complement) range,
+            // and pointer/int casts are identity because pointers *are* heap
+            // offsets. Constructs with no exact Scratch form are reported, never
+            // approximated.
+            let value_expr = lower_value(func, *value)?;
+            let expr = lower_cast(op, from_ty, to_ty, value_expr)?;
+            Ok(vec![Stmt::FrameSet {
+                offset: frame_offset(func, result_id),
+                value: expr,
+            }])
         }
+    }
+}
+
+/// Lower a SAIR cast to an exact Scratch expression.
+///
+/// Scratch numbers are f64; every integer up to 2^53 is exact, `operator_mod`
+/// is floor-mod (non-negative result for a positive divisor), and booleans
+/// coerce to 0/1 in arithmetic. The formulas below use those three facts:
+///
+/// - **Widening** is exact once the source is reduced to its low width and, for
+///   `zext` from a negative i32, shifted up by 2^32 (unsigned reinterpretation).
+///   `sext i32 → i64` is identity because Scratch already holds the
+///   mathematical signed value.
+/// - **`trunc i64 → i32`** reduces mod 2^32 then reinterprets the high bit as
+///   signed — the two's-complement truncation.
+/// - **`zext i1`** forces numeric coercion (`x + 0`) so a boolean predicate
+///   becomes exactly 1 or 0.
+/// - **`ptrtoint`/`inttoptr`/`bitcast`** between integers and pointers are
+///   identity: an address is an f64 heap offset.
+fn lower_cast(op: &CastOp, from_ty: &IrType, to_ty: &IrType, x: Expr) -> Result<Expr, LowerError> {
+    // Reject float reinterpretations: identity would silently round, and the
+    // numeric model only covers integer/pointer cells.
+    if from_ty == &IrType::F64 || to_ty == &IrType::F64 {
+        return Err(LowerError::UnsupportedType(format!(
+            "{} between {} and {} is not representable in Scratch numbers",
+            op.name(),
+            from_ty,
+            to_ty,
+        )));
+    }
+    let binary = |name: &str, a: Expr, b: Expr| Expr::operator(name, vec![a, b]);
+    let num = Expr::number;
+
+    match op {
+        CastOp::PtrToInt | CastOp::IntToPtr | CastOp::Bitcast => Ok(x),
+        CastOp::Zext => match from_ty.integer_width() {
+            Some(1) => Ok(binary("operator_add", x, num(0.0))),
+            Some(8) => Ok(binary("operator_mod", x, num(256.0))),
+            Some(16) => Ok(binary("operator_mod", x, num(65536.0))),
+            Some(32) => Ok(binary(
+                "operator_add",
+                x.clone(),
+                binary(
+                    "operator_multiply",
+                    num(4294967296.0),
+                    binary("operator_lt", x, num(0.0)),
+                ),
+            )),            _ => Err(LowerError::UnsupportedInstruction(format!(
+                "zext {} to {} cannot be lowered to Scratch numbers",
+                from_ty, to_ty,
+            ))),
+        },
+        CastOp::Sext => match from_ty.integer_width() {
+            Some(1) => Ok(binary(
+                "operator_subtract",
+                num(0.0),
+                binary("operator_gt", x, num(0.0)),
+            )),
+            Some(8) => {
+                let m = binary("operator_mod", x, num(256.0));
+                Ok(binary(
+                    "operator_subtract",
+                    m.clone(),
+                    binary(
+                        "operator_multiply",
+                        num(256.0),
+                        binary("operator_gt", m, num(127.0)),
+                    ),
+                ))
+            }
+            Some(16) => {
+                let m = binary("operator_mod", x, num(65536.0));
+                Ok(binary(
+                    "operator_subtract",
+                    m.clone(),
+                    binary(
+                        "operator_multiply",
+                        num(65536.0),
+                        binary("operator_gt", m, num(32767.0)),
+                    ),
+                ))
+            }
+            // i32 is already the mathematical signed value; sign extension to
+            // i64 is a no-op on the Scratch f64 representation.
+            Some(32) => Ok(x),
+            _ => Err(LowerError::UnsupportedInstruction(format!(
+                "sext {} to {} cannot be lowered to Scratch numbers",
+                from_ty, to_ty,
+            ))),
+        },
+        CastOp::Trunc => match to_ty.integer_width() {
+            Some(1) => Ok(binary("operator_mod", x, num(2.0))),
+            Some(8) => Ok(binary("operator_mod", x, num(256.0))),
+            Some(16) => Ok(binary("operator_mod", x, num(65536.0))),
+            Some(32) => {
+                let m = binary("operator_mod", x, num(4294967296.0));
+                Ok(binary(
+                    "operator_subtract",
+                    m.clone(),
+                    binary(
+                        "operator_multiply",
+                        num(4294967296.0),
+                        binary("operator_gt", m, num(2147483647.0)),
+                    ),
+                ))
+            }
+            _ => Err(LowerError::UnsupportedInstruction(format!(
+                "trunc {} to {} cannot be lowered to Scratch numbers",
+                from_ty, to_ty,
+            ))),
+        },
     }
 }
 
@@ -787,3 +981,79 @@ fn lower_const(c: &Constant) -> Expr {
         Constant::I64(v) => Expr::number(*v as f64),
     }
 }
+
+// ── Byte-exact memory helpers ───────────────────────────────────────────────
+//
+// The ScratchGraph heap is byte-addressable (docs/specification/SCRATCH_MEMORY
+// .md): one list item per byte, little-endian. Loads/stores decompose a value
+// into exactly `size_in_bytes(ty)` bytes; widths come from SAIR types, never
+// re-derived here. All operations are exact f64 arithmetic:
+//
+//   split:   (m − b0) is a multiple of 256, so `/ 256` is exact — no Scratch
+//            `floor` operator is required.
+//   combine: every term is below 2^53 for the supported widths.
+//   signed:  `m − 2^N·(m > 2^(N−1)−1)` reinterprets the raw pattern to the
+//            mathematical signed value (Scratch booleans coerce to 0/1).
+
+fn heap_byte(addr: &Expr, k: usize) -> Expr {
+    // Byte at 0-based address `addr + k` is 1-indexed list item `addr + k + 1`.
+    Expr::ListItem {
+        list: "__scratcharch_heap".to_string(),
+        index: Box::new(Expr::operator(
+            "operator_add",
+            vec![addr.clone(), Expr::number(1.0 + k as f64)],
+        )),
+    }
+}
+
+/// Recompose `count` little-endian bytes at `addr` into one value expression
+/// `b0 + 256·b1 + 256²·b2 + …`.
+fn recombine_bytes(addr: &Expr, count: usize) -> Expr {
+    let binary = |name: &str, a: Expr, b: Expr| Expr::operator(name, vec![a, b]);
+    let mut sum = Expr::number(0.0);
+    for k in 0..count {
+        let term = binary(
+            "operator_multiply",
+            heap_byte(addr, k),
+            Expr::number(256.0f64.powi(k as i32)),
+        );
+        sum = binary("operator_add", sum, term);
+    }
+    sum
+}
+
+/// Split an already-mod-reduced, non-negative value into `count` little-endian
+/// byte expressions (LSB first).
+fn split_bytes(value: Expr, count: usize) -> Vec<Expr> {
+    let binary = |name: &str, a: Expr, b: Expr| Expr::operator(name, vec![a, b]);
+    let mut bytes = Vec::with_capacity(count);
+    let mut rem = value;
+    for k in 0..count {
+        let byte = binary("operator_mod", rem.clone(), Expr::number(256.0));
+        if k + 1 < count {
+            // `rem − byte` is an exact multiple of 256, so the division is exact.
+            let shifted = binary("operator_subtract", rem, byte.clone());
+            rem = binary("operator_divide", shifted, Expr::number(256.0));
+        }
+        bytes.push(byte);
+    }
+    bytes
+}
+
+/// Reinterpret raw unsigned bits `m` (in [0, 2^width)) as the mathematical
+/// signed value: `m − 2^width` when the top bit is set, else `m`.
+fn signed_reinterpret(m: Expr, width: u32) -> Expr {
+    let binary = |name: &str, a: Expr, b: Expr| Expr::operator(name, vec![a, b]);
+    let modulus = (1u64 << width) as f64;
+    let half = (1u64 << (width - 1)) as f64;
+    binary(
+        "operator_subtract",
+        m.clone(),
+        binary(
+            "operator_multiply",
+            Expr::number(modulus),
+            binary("operator_gt", m, Expr::number(half - 1.0)),
+        ),
+    )
+}
+
