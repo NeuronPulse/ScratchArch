@@ -104,3 +104,14 @@ fresh_corpus_test!(fresh_bitwise, "bitwise", 293345);
 fresh_corpus_test!(fresh_bytes, "bytes", 412);
 fresh_corpus_test!(fresh_reinterp, "reinterp", 331);
 fresh_corpus_test!(fresh_runtime_mem, "runtime_mem", 255);
+
+// v0.5 aggregate data model: struct/array layout, static-data initializers,
+// nested-aggregate GEP and byte views of aggregate memory. Fresh clang output
+// for each of these is re-translated and re-run on every `cargo test`, so the
+// committed `.ll` cannot drift from what clang emits for the `.c`.
+fresh_corpus_test!(fresh_aggstruct, "aggstruct", 56);
+fresh_corpus_test!(fresh_aggarray, "aggarray", 138);
+fresh_corpus_test!(fresh_aggglobal, "aggglobal", 162);
+fresh_corpus_test!(fresh_aggmatrix, "aggmatrix", 314);
+fresh_corpus_test!(fresh_aggnested, "aggnested", 63);
+fresh_corpus_test!(fresh_aggbytes, "aggbytes", 514);

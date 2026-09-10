@@ -164,6 +164,66 @@ fn fixtures() -> Vec<Fixture> {
             vm: 331,
             scratch: Constructs,
         },
+        // -- v0.5: aggregate data model ------------------------------------
+        //
+        // Aggregates are laid out once by `DataLayout` and reach the backends
+        // as byte offsets plus scalar leaves, so every fixture below is
+        // VM-executable and lowers on Scratch through the same byte-exact heap
+        // (`AGGREGATE_DATA_MODEL.md`).
+        Fixture {
+            name: "aggstruct",
+            // Whole-struct assignment (`q = p`, `m = n`) is a `llvm.memcpy`
+            // over the layout; `struct Big` pins the padded field offsets
+            // (i8@0, i64@8, i16@16, size 24).
+            expected: 56,
+            vm: 56,
+            scratch: Constructs,
+        },
+        Fixture {
+            name: "aggarray",
+            // Array of structs (element stride = full struct size) and a
+            // struct containing an array (`r.name[1]` = array -> struct ->
+            // array -> scalar).
+            expected: 138,
+            vm: 138,
+            scratch: Constructs,
+        },
+        Fixture {
+            name: "aggglobal",
+            // Global struct initializers: interior padding, a trailing
+            // byte-string array global, and a struct field holding the
+            // address of another global.
+            expected: 162,
+            vm: 162,
+            scratch: Constructs,
+        },
+        Fixture {
+            name: "aggmatrix",
+            // Global nested arrays and arrays of strings: the outer stride is
+            // the inner array's full size, and `[4 x i8] c"…"` elements are
+            // exact-size byte arrays.
+            expected: 314,
+            vm: 314,
+            scratch: Constructs,
+        },
+        Fixture {
+            name: "aggnested",
+            // A struct-of-array-of-structs global: the image is laid out
+            // recursively from `DataLayout`, and the read-back walks a
+            // array -> struct -> struct -> scalar GEP chain over static data.
+            expected: 63,
+            vm: 63,
+            scratch: Constructs,
+        },
+        Fixture {
+            name: "aggbytes",
+            // Byte view of aggregate memory through `unsigned char *`:
+            // observes the same bytes the typed accesses do, across the
+            // static-data image and a global array.
+            expected: 514,
+            vm: 514,
+            scratch: Constructs,
+        },
     ]
 }
 
