@@ -634,30 +634,24 @@ impl Interpreter {
             InterpError::TypeMismatch(format!("{name} requires at least one argument"))
         })?;
         let bits = value_bits(value)?;
-        let mask = if width == 64 { u64::MAX } else { (1u64 << width) - 1 };
-        let x = bits & mask;
 
-        let result = match family {
-            "bswap" => bswap(x, u64::from(width / 8)),
-            "ctpop" => x.count_ones() as u64,
-            "ctlz" => {
-                if x == 0 {
-                    width as u64
-                } else {
-                    // `x` is masked to `width` bits, so its u64 leading zeros
-                    // include the (64 - width) padding bits above the width.
-                    (x.leading_zeros().saturating_sub(64 - width)) as u64
-                }
-            }
-            "cttz" => {
-                if x == 0 {
-                    width as u64
-                } else {
-                    x.trailing_zeros() as u64
-                }
-            }
-            _ => return Ok(None),
+        let kind = match family {
+            "bswap" => Some(scratcharch_runtime::BitIntrinsicKind::ByteReverse),
+            "ctpop" => Some(scratcharch_runtime::BitIntrinsicKind::PopCount),
+            "ctlz" => Some(scratcharch_runtime::BitIntrinsicKind::CountLeadingZeros),
+            "cttz" => Some(scratcharch_runtime::BitIntrinsicKind::CountTrailingZeros),
+            _ => None,
         };
+        let Some(kind) = kind else {
+            return Ok(None);
+        };
+        // Shared pure math (also used by the ISA VM) so the value semantics
+        // cannot drift between engines.
+        let result = scratcharch_runtime::bit_intrinsic_value(kind, width, bits).ok_or_else(|| {
+            InterpError::UnsupportedInstruction(format!(
+                "unsupported llvm intrinsic width {width} in {name}"
+            ))
+        })?;
         // Sub-64 results are carried as masked I32 (matching SAIR's carrier);
         // 64-bit results use I64. The caller reads these back and masks by the
         // instruction's own type, so widths stay exact.
@@ -923,17 +917,6 @@ fn as_mem_byte(val: &RuntimeValue) -> Result<u8, InterpError> {
             "memory intrinsic value cannot be f64".into(),
         )),
     }
-}
-
-/// Byte-reverse the low `nbytes` bytes of `x` (LLVM `llvm.bswap.i<N>`); upper
-/// bits are left untouched and masked by the caller.
-fn bswap(x: u64, nbytes: u64) -> u64 {
-    let mut out = 0u64;
-    for i in 0..nbytes {
-        let byte = (x >> (i * 8)) & 0xff;
-        out |= byte << ((nbytes - 1 - i) * 8);
-    }
-    out
 }
 
 #[derive(Debug, Clone, Copy)]

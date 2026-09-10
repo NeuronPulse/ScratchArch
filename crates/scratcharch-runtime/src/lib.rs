@@ -13,11 +13,13 @@ pub mod memory;
 pub mod string;
 pub mod intrinsics;
 pub mod panic;
+pub mod bitops;
 
+pub use bitops::{bit_intrinsic_value, BitIntrinsicKind};
+pub use intrinsics::{dispatch_intrinsic, IntrinsicFn, IntrinsicRegistry, IntrinsicSignature};
 pub use memory::{memcmp, memcpy, memset, memmove};
 pub use panic::{abort, panic, trap};
 pub use string::{strcmp, strcpy, strlen, strncpy};
-pub use intrinsics::{dispatch_intrinsic, IntrinsicFn, IntrinsicRegistry};
 
 #[cfg(test)]
 mod tests;

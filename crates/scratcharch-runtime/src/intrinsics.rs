@@ -17,6 +17,32 @@ use crate::{
 /// values; the intrinsic is responsible for interpreting them correctly.
 pub type IntrinsicFn = fn(&mut dyn ByteMemory, &[u32]) -> Result<IntrinsicResult, RuntimeError>;
 
+/// The operand-stack signature of an intrinsic, shared by every backend that
+/// drives a call through the runtime registry.
+///
+/// A ScratchArch backend that resolves runtime calls against the registry at
+/// *load* time needs to know, before it runs anything, how many operand-stack
+/// cells a call consumes and produces. `arg_words` is the number of `u32`
+/// arguments the intrinsic takes (each arrives as one word/cell on the ISA
+/// operand stack); `result_words` is the number of cells the result occupies on
+/// that stack (0 for a void intrinsic, 1 for the value-returning builtins).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IntrinsicSignature {
+    pub arg_words: u8,
+    pub result_words: u8,
+}
+
+impl IntrinsicSignature {
+    const fn word_args(n: u8) -> Self {
+        IntrinsicSignature { arg_words: n, result_words: 1 }
+    }
+
+    /// A void, argument-free intrinsic (`__scratcharch_abort`/`panic`/`trap`).
+    const fn void() -> Self {
+        IntrinsicSignature { arg_words: 0, result_words: 0 }
+    }
+}
+
 /// Registry of available runtime intrinsics.
 ///
 /// The default registry includes the standard ScratchArch runtime routines.
@@ -25,6 +51,10 @@ pub type IntrinsicFn = fn(&mut dyn ByteMemory, &[u32]) -> Result<IntrinsicResult
 #[derive(Clone)]
 pub struct IntrinsicRegistry {
     intrinsics: HashMap<String, IntrinsicFn>,
+    /// Optional per-name operand-stack signature. Builtins carry one; an
+    /// externally `register`ed intrinsic without a signature cannot be arity-
+    /// resolved by a load-time backend (the interpreter still dispatches it).
+    signatures: HashMap<String, IntrinsicSignature>,
 }
 
 impl IntrinsicRegistry {
@@ -32,6 +62,7 @@ impl IntrinsicRegistry {
     pub fn empty() -> Self {
         Self {
             intrinsics: HashMap::new(),
+            signatures: HashMap::new(),
         }
     }
 
@@ -39,28 +70,47 @@ impl IntrinsicRegistry {
     /// intrinsics.
     pub fn with_builtins() -> Self {
         let mut reg = Self::empty();
-        reg.register("__scratcharch_memcpy", memcpy_intrinsic);
-        reg.register("__scratcharch_memmove", memmove_intrinsic);
-        reg.register("__scratcharch_memset", memset_intrinsic);
-        reg.register("__scratcharch_memcmp", memcmp_intrinsic);
-        reg.register("__scratcharch_strlen", strlen_intrinsic);
-        reg.register("__scratcharch_strcmp", strcmp_intrinsic);
-        reg.register("__scratcharch_strcpy", strcpy_intrinsic);
-        reg.register("__scratcharch_strncpy", strncpy_intrinsic);
-        reg.register("__scratcharch_abort", abort_intrinsic);
-        reg.register("__scratcharch_panic", panic_intrinsic);
-        reg.register("__scratcharch_trap", trap_intrinsic);
+        reg.register_with_signature("__scratcharch_memcpy", memcpy_intrinsic, IntrinsicSignature::word_args(3));
+        reg.register_with_signature("__scratcharch_memmove", memmove_intrinsic, IntrinsicSignature::word_args(3));
+        reg.register_with_signature("__scratcharch_memset", memset_intrinsic, IntrinsicSignature::word_args(3));
+        reg.register_with_signature("__scratcharch_memcmp", memcmp_intrinsic, IntrinsicSignature::word_args(3));
+        reg.register_with_signature("__scratcharch_strlen", strlen_intrinsic, IntrinsicSignature::word_args(1));
+        reg.register_with_signature("__scratcharch_strcmp", strcmp_intrinsic, IntrinsicSignature::word_args(2));
+        reg.register_with_signature("__scratcharch_strcpy", strcpy_intrinsic, IntrinsicSignature::word_args(2));
+        reg.register_with_signature("__scratcharch_strncpy", strncpy_intrinsic, IntrinsicSignature::word_args(3));
+        reg.register_with_signature("__scratcharch_abort", abort_intrinsic, IntrinsicSignature::void());
+        reg.register_with_signature("__scratcharch_panic", panic_intrinsic, IntrinsicSignature::void());
+        reg.register_with_signature("__scratcharch_trap", trap_intrinsic, IntrinsicSignature::void());
         reg
     }
 
     /// Register a new intrinsic under `name`.
     pub fn register(&mut self, name: impl Into<String>, f: IntrinsicFn) {
-        self.intrinsics.insert(name.into(), f);
+        let name = name.into();
+        self.intrinsics.insert(name.clone(), f);
+        self.signatures.remove(&name);
+    }
+
+    /// Register a new intrinsic under `name` with its operand-stack signature.
+    pub fn register_with_signature(
+        &mut self,
+        name: impl Into<String>,
+        f: IntrinsicFn,
+        signature: IntrinsicSignature,
+    ) {
+        let name = name.into();
+        self.intrinsics.insert(name.clone(), f);
+        self.signatures.insert(name, signature);
     }
 
     /// Look up an intrinsic by name.
     pub fn get(&self, name: &str) -> Option<IntrinsicFn> {
         self.intrinsics.get(name).copied()
+    }
+
+    /// Look up the operand-stack signature of a registered intrinsic.
+    pub fn signature(&self, name: &str) -> Option<IntrinsicSignature> {
+        self.signatures.get(name).copied()
     }
 
     /// Return true if `name` is a known intrinsic.
