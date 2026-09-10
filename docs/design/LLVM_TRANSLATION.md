@@ -70,9 +70,19 @@ arbitrary C code.
 | `void` | `IrType::Void` | No return value |
 | `[N x T]` | element type | For value ops; *allocations* are byte arrays |
 | `%T` / `{…}` | element type | Struct layout only (via `scratcharch_target::layout`) |
+| aggregate *values* | — | No SAIR representation (no aggregate-by-value ABI): rejected, never flattened |
 
-Floating-point (`half`/`float`/`double`/`f128`), vectors, `i128` and other
-unsupported types produce a clear **UnsupportedType** error at parse time.
+Aggregate **geometry** comes from `scratcharch_target::layout` and nowhere else
+(`AGGREGATE_DATA_MODEL.md`): `AggregateType` (`Scalar`/`Array`/`Struct`) plus
+`TypeLayout` (`size`/`align`/`field_offsets`) answer scalar size and alignment,
+array stride, struct alignment and field offsets, aggregate size and padding. The
+translator's `type_size_align`, global seeding and GEP offsets are all thin
+adapters over `DataLayout` — none of them re-implements a layout rule, so a
+field offset cannot drift between the three.
+
+Floating-point (`half`/`float`/`double`/`f128`), vectors, `i128`, aggregate
+*values* and zero-sized types (`[0 x T]`, `{}`) produce a clear
+**UnsupportedType** error at parse/translate time.
 
 ### Values
 
@@ -105,11 +115,10 @@ unsupported types produce a clear **UnsupportedType** error at parse time.
 | `unreachable` | `Unreachable` | No-return marker |
 | `zext`/`sext`/`trunc`/`bitcast` | matching `CastOp` | Integer/pointer conversions |
 | `ptrtoint`/`inttoptr` | `PtrToInt`/`IntToPtr` | Pointer ↔ address integer |
-| `getelementptr` | single byte-offset `Gep` over `i8` | Indices folded via `scratcharch_target::layout` |
-
+| `getelementptr` | single byte-offset `Gep` over `i8` | Indices folded via `scratcharch_target::layout`: index 0 = the whole object's size, array index × element size, struct field index → the layout's field offset (constant only — a dynamic field index is rejected). The chain descends one level per index, so a nested access is a plain sum of layout constants |
 | `phi` | SAIR `Phi` | Loop-carried and merge phi, one-to-one; predecessor labels remapped to SAIR block names; verified on the interpreter and the VM (edge copies) |
-| `llvm.memcpy`/`llvm.memmove`/`llvm.memset` | inline expansion, or calls resolved by the runtime | Constant-length, non-volatile calls are expanded by the translator into width-exact `i8` load/store sequences (both engines). Runtime-length, volatile, and oversized calls survive as calls and are resolved by the runtime registry on *both* engines — the interpreter's memory-intrinsic family, the VM's load-time resolver |
-| global variables | static data segment + address constants | Data globals lower to a module `StaticData` image; `@name` references become absolute-address `I32` constants (§ module symbols) |
+| `llvm.memcpy`/`llvm.memmove`/`llvm.memset` | inline expansion, or calls resolved by the runtime | Constant-length, non-volatile calls are expanded by the translator into width-exact `i8` load/store sequences (both engines). Runtime-length, volatile, and oversized calls survive as calls and are resolved by the runtime registry on *both* engines — the interpreter's memory-intrinsic family, the VM's load-time resolver. This is also how whole-struct assignment (`q = p`) reaches the backends at `-O0` |
+| global variables | static data segment + address constants | Data globals lower to a module `StaticData` image; `@name` references become absolute-address `I32` constants (§ module symbols). Aggregate initializers (`%S { … }`, `[N x %S] […]`, `[[3 x i32] […]]`, `c"…"`) nest recursively and are serialized little-endian at `DataLayout` offsets, with inter-field and trailing padding exactly zero; `zeroinitializer` reserves the storage and leaves it zero; a shape mismatch is an explicit diagnostic |
 
 Floating-point ops, `float`/`double` types, vectors, and indirect calls are
 **not** translated; they produce a clear **UnsupportedInstruction** error rather
@@ -147,7 +156,17 @@ the last non-declaration) is used as the module entry point.
 - Control flow: `br`, `br i1 …`, `ret`, `select`, `switch`, `unreachable`
 - `phi`: loop-carried and merge `phi` nodes, predecessor-remapped to SAIR block
   names
-- `getelementptr` with constant or dynamic (typed) indices → byte offsets
+- `getelementptr` with constant or dynamic (typed) indices → byte offsets,
+  including nested aggregates: every offset is a `DataLayout` quantity, and the
+  index chain descends one level per index
+- Aggregates: `[N x T]` and `{ … }` as `alloca` sizes, GEP layouts and global
+  storage; scalar leaves are reached through GEP and read/written as ordinary
+  scalars, so an aggregate never needs a value representation
+  (`AGGREGATE_DATA_MODEL.md`)
+- Aggregate global initializers: constant integer leaves, nested arrays and
+  structs, `c"…"` byte arrays, pointer relocations and `zeroinitializer`,
+  serialized into the byte-exact `StaticData` image at `DataLayout` offsets with
+  padding exactly zero
 - Global variables: data globals lower to a module static-data segment; `@name`
   operands become absolute-address constants; seeding is byte-exact, so
   word-granular *and* byte-granular segments are VM-exact
@@ -164,6 +183,12 @@ the last non-declaration) is used as the module entry point.
 
 - Floating-point values/ops (`float`/`double`/`fadd`/`fsub`/…), vectors,
   `i128` and other unsupported types
+- Aggregate *values* — a struct/array load, phi or parameter passing an
+  aggregate by value. There is no aggregate-by-value ABI, so the diagnostic
+  points at the layout-preserving path instead of inventing a representation
+- Zero-sized types (`[0 x T]`, `{}`) — no layout exists; `DataLayout` reports
+  `LayoutError::ZeroSized` rather than a made-up size that would shift every
+  later offset
 - Indirect calls through function pointers (no function-pointer ABI)
 
 ### VM-backend limitations
@@ -287,6 +312,10 @@ plus a fresh-clang re-compile of each `.c` on every run:
 | `intrinsics` | `llvm.bswap/ctpop/ctlz/cttz`, 16/32/64-bit, `i1 true` immarg |
 | `signed` | negative `sdiv`/`srem` (trunc-toward-zero, dividend sign) |
 | `globals` | module-level global data: scalar/array/string/pointer relocations |
+| `global-agg` | aggregate global initializers: array/struct constants laid out through `DataLayout` |
+| `aggstruct`, `aggarray` | whole-struct `memcpy` assignment over a padded layout; array-of-struct and struct-of-array |
+| `aggglobal`, `aggmatrix`, `aggnested` | nested aggregate *global* initializers with interior padding, a pointer field, and arrays of strings |
+| `aggbytes` | byte view of aggregate memory through `unsigned char *` (the same bytes seen three ways) |
 
 The corpus is executed on three surfaces (`scratcharch-pipeline/tests/
 llvm_corpus_surfaces.rs`): the SAIR interpreter, the ISA VM (exact where
@@ -306,9 +335,44 @@ an `lcg` random sweep), plus the `unreachable` trap on both engines;
 `scratcharch-llvm/tests/` adds hand-written
 loop/`phi` fixtures and the memory-intrinsic matrix.
 
+Aggregate-specific coverage lives at two layers.
+`crates/scratcharch-llvm/tests/aggregate_tests.rs` pins the exact static-data
+*byte image* an aggregate initializer produces — struct fields at
+`DataLayout` offsets with zero inter-field and trailing padding, array elements
+striding by the element's full size, nested arrays laying out recursively, a
+pointer field reserving its 8-byte source stride while storing a 4-byte SAIR
+address, `zeroinitializer` reserving storage, and determinism across
+translations. The layout *rules* themselves (padding, nested struct,
+array-of-struct, struct-of-array, stride, alignment, zero-sizing) are unit-tested
+in `crates/scratcharch-target/src/layout.rs`.
+`crates/scratcharch-llvm/tests/reject_tests.rs` pins the new boundary
+diagnostics: an aggregate *value* type at an operation (`array value type
+[2 x i32] has no SAIR value representation`) and a zero-sized aggregate
+(`[0 x i32]` → `LayoutError::ZeroSized`), alongside the `undef`/`poison` global
+and undeclared-relocation rejections.
+
 ## 8. Future work
 
+Aggregate *memory* is complete (v0.5); the boundaries below are deliberate, each
+a separate milestone rather than a half-done aggregate feature. Normative detail
+in [`AGGREGATE_DATA_MODEL.md`](./AGGREGATE_DATA_MODEL.md) §7.
+
+- **Aggregate-by-value ABI**: passing or returning a struct/array by value, with
+  the spilling and coercion rules that go with it. This is why `IrType` has no
+  aggregate variant — inventing one here would fix the ABI by accident. An
+  aggregate value at an operation is rejected with a named diagnostic today.
+- **Zero-sized / flexible-array types**: `struct S { int n; int a[]; }` and
+  explicit `[0 x T]` are rejected (`LayoutError::ZeroSized`) rather than given a
+  made-up size that would shift every later offset. Supporting them means
+  deciding what a trailing unbounded array *is* at the memory-model level.
 - **Floating point**: `fadd`, `fsub`, `fmul`, `fdiv` (SAIR has `f64`, but the
   LLVM frontend rejects float types for now).
-- **Indirect calls**: a function-pointer ABI (currently rejected at parse time).
-- **Volatile / alignment / metadata**: currently skipped at parse time.
+- **Indirect calls**: a function-pointer ABI (currently rejected at parse time);
+  see [`FUNCTION_POINTERS.md`](./FUNCTION_POINTERS.md).
+- **Vector types** (`<4 x i32>`) and **atomic operations** (`atomicrmw`):
+  parser-level gaps, unrelated to memory layout.
+- **Exception handling**: no landing pads or unwind tables.
+- **Packed / explicitly-aligned structs** (`<{ … }>`, `align N`): the `align N`
+  attributes clang emits are never semantically observable in this subset and
+  are ignored; a genuinely packed struct needs its own layout rule.
+- **Volatile / metadata**: currently skipped at parse time.
