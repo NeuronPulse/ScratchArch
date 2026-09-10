@@ -224,6 +224,82 @@ fn fixtures() -> Vec<Fixture> {
             vm: 514,
             scratch: Constructs,
         },
+        // -- v0.6: aggregate ABI -------------------------------------------
+        //
+        // Aggregates crossing the function boundary. An aggregate is still not
+        // a SAIR value: it lives in a compiler-managed temporary slot and moves
+        // as a byte-exact copy of its `DataLayout` extent. A `byval` parameter
+        // is copied into a private callee slot in the prologue, and a returned
+        // aggregate is written through a hidden result pointer (`AGGREGATE_ABI.md`).
+        // No aggregate-specific ISA instruction is involved, so every fixture
+        // below is VM-executable and lowers on Scratch through the same
+        // byte-exact heap.
+        Fixture {
+            name: "abi-struct-param",
+            // A small record parameter is decomposed by clang into scalars
+            // (`pair_sum(i64 %0)`); a >16-byte one arrives `byval`.
+            expected: 57,
+            vm: 57,
+            scratch: Constructs,
+        },
+        Fixture {
+            name: "abi-struct-return",
+            // A 12-byte record returns in registers (`{ i64, i32 }`) through the
+            // translator's appended result pointer; `make_big` returns through
+            // clang's own `sret` pointer. Two `make_big` calls in one expression
+            // pin distinct result storage per call site.
+            expected: 66,
+            vm: 66,
+            scratch: Constructs,
+        },
+        Fixture {
+            name: "abi-nested-param",
+            // 20-byte nested record passed `byval`; the callee mutates its
+            // parameter and the caller's field is added back in, so a missing
+            // prologue copy changes the result.
+            expected: 125,
+            vm: 125,
+            scratch: Constructs,
+        },
+        Fixture {
+            name: "abi-nested-return",
+            // 12-byte nested record returned in registers; two calls in one
+            // expression must stay independent.
+            expected: 126,
+            vm: 126,
+            scratch: Constructs,
+        },
+        Fixture {
+            name: "abi-i64-field",
+            // A multi-cell (`i64`) member crosses the boundary as two 32-bit
+            // limbs, with 4 bytes of trailing padding at offset 12 that is never
+            // read as a value.
+            expected: 7,
+            vm: 7,
+            scratch: Constructs,
+        },
+        Fixture {
+            name: "abi-ptr-field",
+            // A pointer member: the address is copied, the pointee never is.
+            expected: 36,
+            vm: 36,
+            scratch: Constructs,
+        },
+        Fixture {
+            name: "abi-multi-agg",
+            // Two `byval` aggregates in one call are two independent copies.
+            expected: 119,
+            vm: 119,
+            scratch: Constructs,
+        },
+        Fixture {
+            name: "abi-mixed-args",
+            // Scalars and aggregates interleaved in one signature keep their
+            // positional order in both directions.
+            expected: 87,
+            vm: 87,
+            scratch: Constructs,
+        },
     ]
 }
 

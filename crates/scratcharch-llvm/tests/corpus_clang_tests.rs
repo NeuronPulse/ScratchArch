@@ -115,3 +115,19 @@ fresh_corpus_test!(fresh_aggglobal, "aggglobal", 162);
 fresh_corpus_test!(fresh_aggmatrix, "aggmatrix", 314);
 fresh_corpus_test!(fresh_aggnested, "aggnested", 63);
 fresh_corpus_test!(fresh_aggbytes, "aggbytes", 514);
+
+// v0.6 aggregate ABI: aggregates crossing the function boundary as parameters and
+// return values. Between them these cover both SysV classes clang emits at -O0 —
+// a small record coerced to a scalar or to `{ i64, i32 }`, and a >16-byte record
+// passed `byval(…)` / returned through an `sret` pointer — plus nested records,
+// `i64` and pointer members, several aggregates in one call, and scalar/aggregate
+// interleaving. Fresh clang output is re-translated and re-run on every
+// `cargo test`, so the committed `.ll` cannot drift from the `.c`.
+fresh_corpus_test!(fresh_abi_struct_param, "abi-struct-param", 57);
+fresh_corpus_test!(fresh_abi_struct_return, "abi-struct-return", 66);
+fresh_corpus_test!(fresh_abi_nested_param, "abi-nested-param", 125);
+fresh_corpus_test!(fresh_abi_nested_return, "abi-nested-return", 126);
+fresh_corpus_test!(fresh_abi_i64_field, "abi-i64-field", 7);
+fresh_corpus_test!(fresh_abi_ptr_field, "abi-ptr-field", 36);
+fresh_corpus_test!(fresh_abi_multi_agg, "abi-multi-agg", 119);
+fresh_corpus_test!(fresh_abi_mixed_args, "abi-mixed-args", 87);

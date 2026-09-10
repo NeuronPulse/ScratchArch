@@ -1448,3 +1448,96 @@ entry:
         "two global bytes form little-endian i16",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Aggregate ABI (v0.6): aggregates crossing the function boundary as parameters
+// and return values. An aggregate is never a SAIR value — it lives in a
+// compiler-managed temporary slot and moves as a byte-exact copy of its
+// `DataLayout` extent. `byval` parameters are copied into a private callee slot
+// in the prologue, and a returned aggregate is written through a hidden result
+// pointer (clang's own `sret` pointer where it emits one, a translator-appended
+// one for the small records clang returns in registers).
+//
+// All eight are real clang -O0 fixtures, and each runs on *both* execution
+// surfaces — the SAIR interpreter (the semantic reference) and the ISA VM —
+// against the value the native binary returns. Between them they cover both
+// SysV classes (a record coerced to a scalar or to `{ i64, i32 }`, and a
+// >16-byte record passed `byval` / returned via `sret`), nested records, `i64`
+// and pointer members, several aggregates in one call, and scalar/aggregate
+// interleaving. The VM uses no aggregate-specific instruction: every one of
+// these is realized from the existing multi-cell, byte-memory primitives.
+// ---------------------------------------------------------------------------
+
+fn abi_c_program(name: &str) -> PathBuf {
+    project_root().join("tests").join("c_programs").join(format!("{name}.ll"))
+}
+
+/// Assert the interpreter and the VM both reach `expected` on a real-clang
+/// aggregate-ABI fixture.
+fn assert_abi_agrees(name: &str, expected: u32) {
+    let path = abi_c_program(name);
+    let path = path.to_str().unwrap();
+    assert_i32(run_llvm_file_interp(path, OptLevel::Basic), expected, &format!("{name} (interp)"));
+    assert_i32(run_llvm_file_vm(path, OptLevel::Basic), expected, &format!("{name} (vm)"));
+}
+
+/// A small record parameter is decomposed by clang into scalar parameters
+/// (`pair_sum(i64 %0)`), while a >16-byte one arrives as a `byval` pointer. Both
+/// forms must reach the native 57.
+#[test]
+fn test_vm_aggregate_struct_parameter() {
+    assert_abi_agrees("abi-struct-param", 57);
+}
+
+/// A 12-byte record is returned in registers (`{ i64, i32 }`), so the translator
+/// appends its own hidden result pointer; `make_big` returns through clang's
+/// `sret` pointer. Two `make_big` calls in one expression prove each call site
+/// gets its own result storage. Native 66.
+#[test]
+fn test_vm_aggregate_struct_return() {
+    assert_abi_agrees("abi-struct-return", 66);
+}
+
+/// A nested record (`struct Wide { struct Pair p; struct Pair q; int k; }`, 20
+/// bytes) passed `byval`: the callee mutates its parameter, and the fixture adds
+/// the caller's field back in, so a missing prologue copy would change the
+/// result. Native 125.
+#[test]
+fn test_vm_aggregate_nested_parameter() {
+    assert_abi_agrees("abi-nested-param", 125);
+}
+
+/// A nested 12-byte record returned in registers; two calls in one expression
+/// must stay independent. Native 126.
+#[test]
+fn test_vm_aggregate_nested_return() {
+    assert_abi_agrees("abi-nested-return", 126);
+}
+
+/// A record with a multi-cell (`i64`) member: two 32-bit limbs cross the call
+/// boundary, with 4 bytes of trailing padding at offset 12 that must never be
+/// read as a value. Native 7.
+#[test]
+fn test_vm_aggregate_i64_field() {
+    assert_abi_agrees("abi-i64-field", 7);
+}
+
+/// A record holding a pointer: the address is copied, the pointee never is.
+/// Native 36.
+#[test]
+fn test_vm_aggregate_pointer_field() {
+    assert_abi_agrees("abi-ptr-field", 36);
+}
+
+/// Two `byval` aggregates in one call are two independent copies. Native 119.
+#[test]
+fn test_vm_aggregate_multiple_aggregate_arguments() {
+    assert_abi_agrees("abi-multi-agg", 119);
+}
+
+/// Scalars and aggregates interleaved in one signature keep their positional
+/// order in both directions. Native 87.
+#[test]
+fn test_vm_aggregate_mixed_arguments() {
+    assert_abi_agrees("abi-mixed-args", 87);
+}
