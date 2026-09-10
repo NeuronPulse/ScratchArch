@@ -1,5 +1,5 @@
 {
-  "version": "0.3",
+  "version": "0.4",
   "fixtures": [
     {
       "name": "hello",
@@ -303,10 +303,10 @@
         "intrinsic"
       ],
       "expected_result": 5,
-      "expected_stage": "vm",
-      "expected_status": "unsupported",
+      "expected_stage": "scratch",
+      "expected_status": "success",
       "vm": {
-        "rejected": "undefined function: __scratcharch_strlen"
+        "exact": 5
       },
       "scratch": {
         "constructs": true
@@ -357,10 +357,30 @@
         "integer"
       ],
       "expected_result": 2018928754,
-      "expected_stage": "vm",
-      "expected_status": "unsupported",
+      "expected_stage": "scratch",
+      "expected_status": "success",
       "vm": {
-        "rejected": "undefined function: llvm.bswap.i16"
+        "exact": 2018928754
+      },
+      "scratch": {
+        "constructs": true
+      }
+    },
+    {
+      "name": "runtime_mem",
+      "source": "tests/c_programs/runtime_mem.c",
+      "llvm_ir": "tests/c_programs/runtime_mem.ll",
+      "feature_tags": [
+        "memory",
+        "intrinsic",
+        "pointer",
+        "integer"
+      ],
+      "expected_result": 255,
+      "expected_stage": "scratch",
+      "expected_status": "success",
+      "vm": {
+        "exact": 255
       },
       "scratch": {
         "constructs": true

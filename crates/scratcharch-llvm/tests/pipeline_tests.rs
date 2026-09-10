@@ -139,6 +139,21 @@ fn test_pipeline_intrinsics() {
     }
 }
 
+/// Real clang output for runtime-length memory operations and the SART string
+/// builtins (`__scratcharch_memcpy/memmove/memset/memcmp/strcmp/strcpy/
+/// strncpy/strlen`). The lengths are run-time values, so the calls survive
+/// translation and are resolved by the runtime registry. 255 = 1+2+4+8+16+32+
+/// 64+128.
+#[test]
+fn test_pipeline_runtime_mem() {
+    let path = c_programs_dir().join("runtime_mem.ll");
+    let result = run_llvm_file(path.to_str().unwrap()).expect("pipeline failed");
+    match result {
+        Some(RuntimeValue::I32(v)) => assert_eq!(v, 255),
+        other => panic!("runtime_mem.ll: expected I32(255), got {:?}", other),
+    }
+}
+
 /// Real clang output for signed division/remainder over negative operands
 /// (`sdiv` trunc-toward-zero, `srem` sign-of-dividend). 78 = -200 - 20 - 2 + 300.
 #[test]

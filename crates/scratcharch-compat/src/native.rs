@@ -6,9 +6,9 @@
 //! an 8-bit channel on POSIX, so native agreement is compared masked; the SAIR
 //! interpreter and ISA VM expose the full `main` return value through an
 //! explicit result channel, so *their* agreement is compared full-width. Where
-//! a fixture needs one of the interpreter-provided runtime helpers
-//! (`__scratcharch_memcpy` / `__scratcharch_strlen`) to link natively, a shim
-//! provides them on top of libc.
+//! a fixture needs one of the interpreter-provided runtime helpers (the SART
+//! `__scratcharch_*` builtins) to link natively, a shim provides them on top of
+//! libc.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -50,14 +50,36 @@ pub fn is_clang() -> bool {
 }
 
 /// Stub definitions of the interpreter-provided runtime helpers, so a native
-/// build of the `string`/`memory` fixtures links and runs the same semantics.
+/// build of the `string`/`memory`/`runtime_mem` fixtures links and runs the
+/// same semantics. Every SART builtin forwards to its libc namesake — the
+/// `scratcharch-runtime` implementations are themselves libc-compatible
+/// (`memcmp`/`strcmp` sign, `strncpy` zero-padding), so the native exit channel
+/// stays comparable.
 const INTRINSIC_SHIM: &str = r#"
 #include <string.h>
 #include <stddef.h>
 void *__scratcharch_memcpy(void *dest, const void *src, unsigned int n) {
     return memcpy(dest, src, n);
 }
+void *__scratcharch_memmove(void *dest, const void *src, unsigned int n) {
+    return memmove(dest, src, n);
+}
+void *__scratcharch_memset(void *dest, int c, unsigned int n) {
+    return memset(dest, c, n);
+}
+int __scratcharch_memcmp(const void *a, const void *b, unsigned int n) {
+    return memcmp(a, b, n);
+}
 int __scratcharch_strlen(const char *s) { return (int)strlen(s); }
+int __scratcharch_strcmp(const char *a, const char *b) {
+    return strcmp(a, b);
+}
+char *__scratcharch_strcpy(char *dest, const char *src) {
+    return strcpy(dest, src);
+}
+char *__scratcharch_strncpy(char *dest, const char *src, unsigned int n) {
+    return strncpy(dest, src, n);
+}
 "#;
 
 fn write_shim(dir: &Path) -> Result<PathBuf, String> {

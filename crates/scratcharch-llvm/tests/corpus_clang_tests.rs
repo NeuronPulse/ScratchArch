@@ -103,3 +103,4 @@ fresh_corpus_test!(fresh_globals, "globals", 95);
 fresh_corpus_test!(fresh_bitwise, "bitwise", 293345);
 fresh_corpus_test!(fresh_bytes, "bytes", 412);
 fresh_corpus_test!(fresh_reinterp, "reinterp", 331);
+fresh_corpus_test!(fresh_runtime_mem, "runtime_mem", 255);

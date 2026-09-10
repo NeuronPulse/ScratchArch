@@ -81,6 +81,9 @@ pub struct Report {
     pub date: String,
     pub clang: Option<String>,
     pub total: usize,
+    /// Number of fixtures in the *semantic core* (the Overall numerator):
+    /// interpreter passed and no value disagreement.
+    pub overall_pass: usize,
     pub overall_percent: u32,
     pub success_count: usize,
     pub class_counts: BTreeMap<&'static str, usize>,
@@ -264,6 +267,7 @@ pub fn build_report(
         date: date.to_string(),
         clang,
         total,
+        overall_pass: semantic_core,
         overall_percent,
         success_count,
         class_counts,
@@ -278,13 +282,15 @@ pub fn build_report(
     }
 }
 
-fn stage_label_row(percent: u32, unicode: bool) -> String {
+fn stage_label_row(percent: u32, pass: usize, total: usize, unicode: bool) -> String {
     let bar = if unicode {
         format_progress_bar(percent, BAR_WIDTH)
     } else {
         format_progress_bar_ascii(percent, BAR_WIDTH)
     };
-    format!("{percent:>3}%  {bar}")
+    // The numerator is explicit so a percentage is never read as a bare score:
+    // `85% (28/33)` means 28 of 33 fixtures pass through the stage.
+    format!("{percent:>3}% ({pass:>2}/{total})  {bar}")
 }
 
 /// Render the dashboard text report.
@@ -310,8 +316,10 @@ pub fn render_text(report: &Report, verbose: bool, unicode: bool) -> String {
     if stage_has(&report.stage_metrics, Stage::Scratch) {
         out.push_str("\nOverall\n");
         out.push_str(&format!(
-            "{}%  {}\n",
+            "{}% ({:>2}/{})  {}\n",
             report.overall_percent,
+            report.overall_pass,
+            report.total,
             bar(report.overall_percent, unicode)
         ));
     }
@@ -331,7 +339,7 @@ pub fn render_text(report: &Report, verbose: bool, unicode: bool) -> String {
             out.push_str(&format!("{}\n", m.stage.label()));
             out.push_str(&format!(
                 "{}\n",
-                stage_label_row(m.percent, unicode)
+                stage_label_row(m.percent, m.pass, report.total, unicode)
             ));
         }
     }
@@ -479,6 +487,7 @@ pub fn render_json(report: &Report) -> String {
         "date": report.date,
         "clang": report.clang,
         "total": report.total,
+        "overall_pass": report.overall_pass,
         "overall": report.overall_percent,
         "stages": stages,
         "features": features,

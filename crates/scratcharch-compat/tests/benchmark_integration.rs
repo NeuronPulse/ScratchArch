@@ -34,8 +34,8 @@ fn no_native() -> RunConfig {
     }
 }
 
-/// v0.3 full-corpus snapshot values (must match LLVM_COMPATIBILITY_BASELINE.md).
-fn assert_v03_stage_snapshot(report: &scratcharch_compat::report::Report) {
+/// v0.4 full-corpus snapshot values (must match LLVM_COMPATIBILITY_BASELINE.md).
+fn assert_v04_stage_snapshot(report: &scratcharch_compat::report::Report) {
     let percent_of = |s: Stage| {
         report
             .stage_metrics
@@ -44,19 +44,19 @@ fn assert_v03_stage_snapshot(report: &scratcharch_compat::report::Report) {
             .expect("stage row present")
             .percent
     };
-    assert_eq!(report.total, 33);
+    assert_eq!(report.total, 34);
     assert_eq!(report.overall_percent, 85);
     assert_eq!(percent_of(Stage::Parser), 85);
     assert_eq!(percent_of(Stage::Sair), 85);
     assert_eq!(percent_of(Stage::Interpreter), 85);
-    assert_eq!(percent_of(Stage::Vm), 79);
+    assert_eq!(percent_of(Stage::Vm), 85);
     assert_eq!(percent_of(Stage::Scratch), 76);
 }
 
 #[test]
-fn v03_full_corpus_gate_is_green_and_snapshot_holds() {
+fn v04_full_corpus_gate_is_green_and_snapshot_holds() {
     let outcomes = run_all(&corpus(), &no_native());
-    assert_eq!(outcomes.len(), 33, "v0.3 corpus has 33 fixtures");
+    assert_eq!(outcomes.len(), 34, "v0.4 corpus has 34 fixtures");
 
     // Regression oracle: no fixture drifts from its recorded expectation.
     for o in &outcomes {
@@ -70,23 +70,24 @@ fn v03_full_corpus_gate_is_green_and_snapshot_holds() {
 
     let report = build_report(
         &outcomes,
-        "0.3",
-        "2026-09-09",
+        "0.4",
+        "2026-09-10",
         None,
         &scratcharch_compat::status::REPORT_STAGES,
     );
     assert!(report.gate_green);
     assert!(report.failures.is_empty());
     assert!(report.semantic_mismatches.is_empty());
-    assert_v03_stage_snapshot(&report);
+    assert_v04_stage_snapshot(&report);
 
-    // Classification matches the v0.3 shape: every non-success fixture is a
-    // *known* capability gap (frontend, runtime intrinsic, or Scratch model),
-    // never a hidden correctness failure.
-    assert_eq!(report.class_counts.get("success"), Some(&23));
+    // Classification matches the v0.4 shape: every non-success fixture is a
+    // *known* capability gap (frontend or Scratch model), never a hidden
+    // correctness failure. The VM now runs every fixture the interpreter does,
+    // so no fixture is a vm-failure any more.
+    assert_eq!(report.class_counts.get("success"), Some(&26));
     assert_eq!(report.class_counts.get("parse-failure"), Some(&5));
-    assert_eq!(report.class_counts.get("vm-failure"), Some(&2));
     assert_eq!(report.class_counts.get("scratch-backend-failure"), Some(&3));
+    assert!(!report.class_counts.contains_key("vm-failure"));
     assert!(!report.class_counts.contains_key("semantic-mismatch"));
 
     // Internal consistency: Overall == the semantic core recomputed from the
@@ -110,11 +111,11 @@ fn v03_full_corpus_gate_is_green_and_snapshot_holds() {
     let json = render_json(&report);
     assert!(!json.contains('█') && !json.contains('#'), "JSON must not carry bars");
     let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON report");
-    assert_eq!(value["total"].as_u64(), Some(33));
+    assert_eq!(value["total"].as_u64(), Some(34));
     assert_eq!(value["overall"].as_u64(), Some(85));
     assert_eq!(value["gate_green"].as_bool(), Some(true));
     assert_eq!(value["stages"]["scratch"].as_u64(), Some(76));
-    assert_eq!(value["stages"]["vm"].as_u64(), Some(79));
+    assert_eq!(value["stages"]["vm"].as_u64(), Some(85));
 }
 
 #[test]

@@ -154,9 +154,11 @@ fn render_quiet(report: &Report) -> String {
     use scratcharch_compat::progress::format_progress_bar_ascii;
     let mut out = String::new();
     out.push_str(&format!(
-        "LLVM Compatibility v{} — Overall {:>3}%  {}\n",
+        "LLVM Compatibility v{} — Overall {:>3}% ({:>2}/{})  {}\n",
         report.corpus_version,
         report.overall_percent,
+        report.overall_pass,
+        report.total,
         format_progress_bar_ascii(report.overall_percent, 20)
     ));
     for (class, count) in &report.class_counts {
