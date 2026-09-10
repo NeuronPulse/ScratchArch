@@ -3,6 +3,7 @@ use scratcharch_core::program::Program;
 use crate::stack::OperandStack;
 use crate::memory::LinearMemory;
 use crate::callstack::CallStack;
+use crate::runtime::{resolve_runtime, VmRuntimeFn};
 
 #[derive(Debug, Clone)]
 pub enum Code {
@@ -32,6 +33,11 @@ pub enum Code {
     Jump(usize),
     Branch(usize, usize),
     Call(usize),
+    /// Call a runtime/intrinsic function resolved at load time (no `define`d
+    /// body in the program). The `u32` is the index of the call's
+    /// [`VmRuntimeFn`] in the VM's runtime table. The ISA is unchanged: only
+    /// this private decode variant grows.
+    CallRuntime(u32),
     Return,
     Trap,
     Pick(u32),
@@ -58,6 +64,9 @@ pub struct Vm {
     pub memory: LinearMemory,
     pub sp: u32,
     pub running: bool,
+    /// Runtime/intrinsic functions resolved at load time; a `Code::CallRuntime`
+    /// carries the index of its entry here.
+    pub runtime_fns: Vec<VmRuntimeFn>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -76,6 +85,17 @@ pub enum VmError {
     /// machine-error class above and from a normal return — see
     /// `EXECUTION_MODEL.md` §5.6.
     Trap { function: usize, pc: usize },
+    /// The SART `__scratcharch_abort` runtime intrinsic was called.
+    Abort,
+    /// The SART `__scratcharch_panic` runtime intrinsic was called, carrying its
+    /// optional message.
+    Panic(String),
+    /// The SART `__scratcharch_trap` runtime intrinsic was called. Distinct
+    /// from the ISA [`VmError::Trap`] (`unreachable`).
+    RuntimeTrap,
+    /// Any other runtime/intrinsic failure (out-of-bounds access, unterminated
+    /// string, malformed intrinsic call).
+    RuntimeError(String),
 }
 
 impl core::fmt::Display for VmError {
@@ -95,6 +115,10 @@ impl core::fmt::Display for VmError {
             VmError::Trap { function, pc } => {
                 write!(f, "program trap at function #{function}, pc {pc}")
             }
+            VmError::Abort => write!(f, "runtime abort"),
+            VmError::Panic(msg) => write!(f, "runtime panic: {msg}"),
+            VmError::RuntimeTrap => write!(f, "runtime trap"),
+            VmError::RuntimeError(msg) => write!(f, "runtime error: {msg}"),
         }
     }
 }
@@ -111,6 +135,7 @@ impl Vm {
             memory: LinearMemory::new(memory_size, stack_base),
             sp: memory_size,
             running: false,
+            runtime_fns: Vec::new(),
         }
     }
 
@@ -179,9 +204,27 @@ impl Vm {
                         Code::Branch(tt, ff)
                     }
                     Instruction::Call(name) => {
-                        let target = program.get_function_index(name)
-                            .ok_or_else(|| VmError::UndefinedFunction(name.clone()))?;
-                        Code::Call(target)
+                        match program.get_function_index(name) {
+                            Some(target) => Code::Call(target),
+                            // No `define`d body: resolve the name against the
+                            // shared runtime/intrinsic registry once, at load
+                            // time. Unresolvable names are rejected here — never
+                            // silently approximated at run time.
+                            None => {
+                                let Some(rtf) = resolve_runtime(name) else {
+                                    return Err(VmError::UndefinedFunction(name.clone()));
+                                };
+                                let id = match self.runtime_fns.iter().position(|r| r.name == *name) {
+                                    Some(i) => i as u32,
+                                    None => {
+                                        let i = self.runtime_fns.len() as u32;
+                                        self.runtime_fns.push(rtf);
+                                        i
+                                    }
+                                };
+                                Code::CallRuntime(id)
+                            }
+                        }
                     }
                     Instruction::Return => Code::Return,
                     Instruction::Trap => Code::Trap,

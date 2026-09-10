@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 scratcharch-core = { path = "../scratcharch-core" }
+scratcharch-runtime = { path = "../scratcharch-runtime" }
