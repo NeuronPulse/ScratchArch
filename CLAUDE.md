@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 cargo build                          # build all crates
-cargo test --workspace               # run all workspace tests (652 total)
+cargo test --workspace               # run all workspace tests (682 total)
 cargo test -p scratcharch-transform  # test a single crate
 cargo test -p scratcharch-llvm -- test_name --nocapture  # run one test
 cargo clippy --workspace --all-targets  # lint (zero warnings required)
@@ -107,14 +107,20 @@ diagnostic.
 `scratcharch-target::layout` (`DataLayout`, `AggregateType`, `TypeLayout`) is the
 single authority for scalar size/alignment, array stride, struct alignment,
 field offsets, aggregate size and padding — no consumer recomputes them.
-Aggregates are never `IrType` values (there is no aggregate-by-value ABI): a
-struct/array access becomes bytes at `DataLayout` offsets plus ordinary scalar
-loads/stores, and an aggregate global initializer is serialized recursively into
-`StaticData.image` little-endian with padding zero. An aggregate *value* type at
-an operation and a zero-sized type (`[0 x T]`, `{}`) are rejected with named
-diagnostics — never silently flattened. The VM and the ScratchGraph byte-exact
-heap both needed no aggregate construct. See
-`docs/design/AGGREGATE_DATA_MODEL.md`.
+`IrType` has no aggregate variant: a struct/array access becomes bytes at
+`DataLayout` offsets plus ordinary scalar loads/stores, and an aggregate global
+initializer is serialized recursively into `StaticData.image` little-endian with
+padding zero. An aggregate *value* is a compiler-managed temporary slot and
+crosses a **call boundary as a pointer**, not as a cell run: clang's memory-class
+`sret`/`byval` pointer passes through as an ordinary parameter (a `byval`
+parameter is copied into a private callee slot in the prologue), and a record
+clang returns in registers gets a hidden result pointer appended after the
+explicit parameters. An aggregate in a genuinely *scalar* position, a
+zero-sized type (`[0 x T]`, `{}`), a non-power-of-two width (`i24`/`i40`/`i48`)
+and an aggregate-returning *declaration* are rejected with named diagnostics —
+never silently flattened. The VM and the ScratchGraph byte-exact heap both
+needed no aggregate construct. See `docs/design/AGGREGATE_DATA_MODEL.md`
+(layout) and `docs/design/AGGREGATE_ABI.md` (parameter/return passing).
 
 The authoritative per-construct status lives in
 `docs/specification/LLVM_COMPATIBILITY.md` (interpreter/VM matrix, known gaps,
@@ -147,7 +153,7 @@ software-helper semantics and `docs/design/LLVM_TRANSLATION.md` the mapping.
 - `crates/scratcharch-llvm/tests/pipeline_tests.rs` — full LLVM→SAIR→interpreter
   path over committed real-clang `-O0` `.ll` output in `tests/c_programs/`
   (including the aggregate fixtures `aggstruct`/`aggarray`/`aggglobal`/
-  `aggmatrix`/`aggnested`/`aggbytes`).
+  `aggmatrix`/`aggnested`/`aggbytes` and the aggregate-ABI fixtures `abi-*`).
 - `crates/scratcharch-llvm/tests/corpus_clang_tests.rs` — recompiles each
   `tests/c_programs/*.c` with clang on every run so the committed `.ll` corpus
   cannot drift (skips silently when clang is absent).
@@ -156,21 +162,26 @@ software-helper semantics and `docs/design/LLVM_TRANSLATION.md` the mapping.
   zero interior/trailing padding, array element stride, the reserved pointer
   source stride, `zeroinitializer`, and determinism across translations. The
   layout *rules* are unit-tested in `crates/scratcharch-target/src/layout.rs`.
+- `crates/scratcharch-llvm/tests/aggregate_abi_tests.rs` — the aggregate ABI:
+  byte-exact copy extents, the fresh-slot-per-call-site rule, the `byval`
+  prologue copy, the appended hidden result pointer, `extractvalue`/`insertvalue`
+  offsets agreeing with the GEP path, and translation determinism.
 - `crates/scratcharch-llvm/tests/reject_tests.rs` — the boundary diagnostics:
-  an aggregate *value* type at an operation, a zero-sized aggregate, an
-  `undef`/`poison` global, an undeclared pointer relocation.
+  an aggregate in a scalar position, a zero-sized aggregate, a non-power-of-two
+  width (`i24`), an aggregate-returning declaration, an `undef`/`poison` global,
+  an undeclared pointer relocation.
 - `crates/scratcharch-pipeline/tests/llvm_corpus_surfaces.rs` — the per-fixture
   five-surface record (parser / SAIR / interpreter / VM / Scratch) plus the
   native-reference differential.
 - `crates/scratcharch-driver/tests/vm_backend_tests.rs` — VM/interpreter
   agreement over real-clang fixtures, including the multi-cell `i64` corpus
-  (two-limb arithmetic and the software-helper mul/div/rem) and
-  profile-driven limb counts.
+  (two-limb arithmetic and the software-helper mul/div/rem), the eight
+  aggregate-ABI fixtures on both engines, and profile-driven limb counts.
 - `crates/scratcharch-sair-interpreter/tests/vm_differential_tests.rs` —
   bit-for-bit interpreter-vs-VM agreement for the bitwise/shift family, full-width
   `i64` mul/udiv/urem, and the `unreachable` trap on both engines.
-- `crates/scratcharch-compat/tests/benchmark_integration.rs` — the v0.5 corpus
-  gate and stage snapshot (40 fixtures, Overall 90%, Scratch 83%).
+- `crates/scratcharch-compat/tests/benchmark_integration.rs` — the v0.6 corpus
+  gate and stage snapshot (49 fixtures, Overall 90%, Scratch 84%).
 - `crates/scratcharch-sb3/tests/sb3_tests.rs` — SB3 write/read roundtrips and
   asset handling.
 - `crates/scratcharch-scratchgraph/tests/parser_tests.rs` — JSON→Project parsing

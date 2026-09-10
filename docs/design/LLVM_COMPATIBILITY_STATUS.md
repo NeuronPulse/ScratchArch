@@ -1,12 +1,14 @@
 # LLVM Compatibility — Status Report
 
-> Generated for the **v0.5 corpus-benchmark gate** (2026-09-10) — the aggregate
-> data model making aggregate memory first-class, over the recorded v0.4
+> Generated for the **v0.6 corpus-benchmark gate** (2026-09-10) — the aggregate
+> ABI, extending the v0.5 aggregate data model to parameter and return passing,
+> over the recorded v0.4
 > baseline [`LLVM_COMPATIBILITY_BASELINE.md`](./LLVM_COMPATIBILITY_BASELINE.md).
 > Companion to [`docs/specification/LLVM_COMPATIBILITY.md`](../specification/LLVM_COMPATIBILITY.md)
 > (the normative matrix), [`LLVM_TRANSLATION.md`](./LLVM_TRANSLATION.md) (the
-> mapping design) and [`AGGREGATE_DATA_MODEL.md`](./AGGREGATE_DATA_MODEL.md) (the
-> aggregate layout contract). This document records *where the toolchain
+> mapping design), [`AGGREGATE_DATA_MODEL.md`](./AGGREGATE_DATA_MODEL.md) (the
+> aggregate layout contract) and [`AGGREGATE_ABI.md`](./AGGREGATE_ABI.md) (the
+> aggregate parameter/return ABI). This document records *where the toolchain
 > currently stands*: what is exact, what is deliberately rejected, and the reason
 > for each rejection. It is a snapshot, refreshed at milestone gates. Machine
 > record: `tests/corpus/llvm/results/latest.json`.
@@ -35,32 +37,32 @@ A matrix row is **`Supported`** only when surfaces 1, 2, *and* 3 are all exact.
 Anything the VM cannot execute faithfully is rejected with a diagnostic that
 names the missing ISA/runtime capability — never approximated.
 
-## v0.5 scores (40 fixtures)
+## v0.6 scores (49 fixtures)
 
 Bars are 20 cells; the denominator is explicit so no percentage reads as a bare
 score. `Overall` is the *semantic core* (correct on the reference interpreter,
 whether or not a target backend could build it); each stage row is fixtures that
 pass *through* that stage.
 
-**Denominator change: 34 → 40 fixtures.** Six real-clang aggregate fixtures were
-added and `global-agg` (the aggregate-constant global initializer gap) became
-supported. Absolute passes grew 29 → 36 at the same time, so the percentage moves
-less than the count.
+**Denominator change: 40 → 49 fixtures.** Eight real-clang aggregate-ABI
+fixtures (`abi-*`) were added, plus the `abi-odd-width` boundary fixture that
+pins the `i24` rejection. Absolute passes grew 36 → 44, so the percentage holds
+at 90% while the count grows.
 
 ```
 Overall
-  90% (36/40)  ██████████████████░░
+  90% (44/49)  ██████████████████░░
 
 Frontend
-Parser      90% (36/40)  ██████████████████░░
-SAIR        90% (36/40)  ██████████████████░░
+Parser      90% (44/49)  ██████████████████░░
+SAIR        90% (44/49)  ██████████████████░░
 
 Execution
-Interpreter 90% (36/40)  ██████████████████░░
-VM          90% (36/40)  ██████████████████░░
+Interpreter 90% (44/49)  ██████████████████░░
+VM          90% (44/49)  ██████████████████░░
 
 Targets
-Scratch     83% (33/40)  █████████████████░░░
+Scratch     84% (41/49)  █████████████████░░░
 ```
 
 Gate: **green** (0 expectation violations). 0 semantic mismatches, 0 failures.
@@ -68,16 +70,22 @@ Gate: **green** (0 expectation violations). 0 semantic mismatches, 0 failures.
 Result classes:
 
 ```
-success                   33    full end-to-end through Scratch
+success                   41    full end-to-end through Scratch (was 33)
 scratch-backend-failure    3    correct on interpreter+VM; Scratch model cannot
                                 express the construct (bitwise/shift, i64 helper
                                 shifts, `and`)
-parse-failure              4    frontend gaps (float, vector, indirect-call,
-                                atomic)
+parse-failure              5    frontend gaps (float, vector, indirect-call,
+                                atomic, and the abi-odd-width i24 boundary)
 ```
 
 There is **no `vm-failure` class**: the ISA VM executes every fixture the
 interpreter does.
+
+Feature rows (v0.6): `aggregate-abi` 89%, `struct-param` 86%, `struct-return`
+100%, `nested-aggregate` 100%, `struct` 96%, `memory` 97%, `pointer` 91%,
+`integer` 92%, `global` 88%, `array` 89%, `i64` 80%; `bitwise`, `shift`, `float`,
+`vector`, `indirect-call` and `atomic` remain 0% (each a single tagged fixture,
+unsupported or Scratch-inexpressible).
 
 ## Top gaps (ordered by how often real `-O0` C hits them)
 
@@ -106,14 +114,28 @@ multithreaded libraries; out of scope for the word ISA.
 `unsupported type: Ident("<")`. Explicit SIMD vector types are niche for this
 toolchain's targets.
 
-### 5. Aggregate-by-value ABI, zero-sized/flexible-array types (future work)
+### 5. Aggregate ABI boundaries — odd integer widths, zero-sized types
 
-Not measured by the corpus yet, but the next aggregate-adjacent boundaries now
-that aggregate *memory* is first-class: passing/returning a struct by value (the
-reason `IrType` still has no aggregate variant) and zero-sized types
-(`struct S { int n; int a[]; }`, `[0 x T]`), which `DataLayout` rejects with
-`LayoutError::ZeroSized` rather than giving a made-up size. See
-[`AGGREGATE_DATA_MODEL.md`](./AGGREGATE_DATA_MODEL.md) §7.
+Aggregate parameter/return passing is now **implemented** (v0.6): an aggregate
+value is a compiler-managed temporary slot crossing a call as a pointer, with
+clang's `sret`/`byval` passed through and a register-returned record given a
+synthesized hidden result pointer
+([`AGGREGATE_ABI.md`](./AGGREGATE_ABI.md)). What stays out is narrow and named:
+
+- **Non-power-of-two integer widths** (`i24`/`i40`/`i48`) — reached when clang
+  coerces a record of that extent (three `char`s → `i24`). SAIR represents
+  `i1/i8/i16/i32/i64` only, so the width is refused by name rather than rounded,
+  which would silently shift every later argument. Pinned by the `abi-odd-width`
+  fixture and `reject_tests.rs`.
+- **Aggregate-returning declarations** — the hidden result pointer is a
+  convention an external function cannot be assumed to honour, so a call to a
+  declaration that returns an aggregate is refused by name.
+- **Zero-sized / flexible-array types** (`struct S { int n; int a[]; }`,
+  `[0 x T]`, `{}`) — `DataLayout` rejects them with `LayoutError::ZeroSized`
+  rather than give them a made-up size
+  ([`AGGREGATE_DATA_MODEL.md`](./AGGREGATE_DATA_MODEL.md) §7).
+- **Aggregate varargs, packed aggregate ABI, vector ABI, atomic ABI, EH** —
+  unimplemented, and unimplemented deliberately.
 
 ### 6. Scratch number model (Scratch target) — 3 fixtures
 
@@ -286,12 +308,62 @@ mistaken for the current one:
   (`LayoutError::ZeroSized`), and `reject_tests.rs` pins both plus the
   `undef`/`poison` global and undeclared-relocation diagnostics.
 
+## New since baseline (v0.5 → v0.6)
+
+- **Aggregate values become temporary slots.** An aggregate SSA value is backed
+  by a compiler-managed `alloca` slot whose extent is `DataLayout::size`; every
+  move (`load`, `store`, `insertvalue`, nested `extractvalue`, the `byval`
+  prologue) is a byte-exact copy, and `extractvalue` of a scalar leaf is an
+  ordinary scalar load at the field offset read from the same `DataLayout`
+  function the GEP path uses. `IrType` still gains no aggregate variant
+  ([`AGGREGATE_ABI.md`](./AGGREGATE_ABI.md)).
+- **Aggregates cross a call as a pointer.** clang's memory-class `sret(%T)` /
+  `byval(%T)` pointer is an ordinary explicit parameter passed through unchanged
+  (a `byval` parameter gets a private callee-prologue copy, and the parameter
+  name is re-bound to it, so a callee write cannot clobber the caller's object —
+  native 100 vs a naive pass-through's 198). A record clang returns **in
+  registers** is realized by a synthesized hidden result pointer appended after
+  the explicit parameters, with the function returning `void`; each call site
+  allocates its own fresh slot, so two calls never alias.
+- **Latent parser bug fixed.** `ret %T %v` with a *named* aggregate return type
+  consumed `%T` as the SSA value and left `%v` behind, so any function whose body
+  returned a named aggregate failed to parse. A one-token lookahead now
+  disambiguates the type from the value. Pinned by
+  `aggregate_abi_tests.rs::a_named_aggregate_return_type_is_read_as_a_type`.
+- **Corpus 40 → 49**: `abi-struct-param` (57), `abi-struct-return` (66),
+  `abi-nested-param` (125), `abi-nested-return` (126), `abi-i64-field` (7),
+  `abi-ptr-field` (36), `abi-multi-agg` (119), `abi-mixed-args` (87) — both SysV
+  classes, nested records, an `i64` member, a pointer member, several aggregates
+  in one call, and scalar/aggregate interleaving — plus the `abi-odd-width`
+  boundary fixture. Each `abi-*` fixture is native-exact, interpreter-exact and
+  VM-exact, and constructs on Scratch.
+- **Overall holds 90%** (semantic core 36/40 → 44/49); Parser/SAIR/Interpreter/VM
+  all 90%; **Scratch 83% → 84%** (33 → 41 constructed projects). Feature rows
+  `struct-return` and `nested-aggregate` reach 100%, `aggregate-abi` is 89% and
+  `struct-param` 86% (the one unsupported `aggregate-abi` fixture being the
+  intentionally-rejected `abi-odd-width`).
+- **No regression**: every pre-v0.6 fixture keeps its recorded expectation and
+  its value; `scratch-backend-failure` stays 3 and `parse-failure` 4 → 5 (the new
+  odd-width boundary).
+- **No new VM, ISA, or Scratch construct.** Aggregate ABI lowers entirely to the
+  byte-exact copy and scalar-leaf primitives v0.5 established — there is no
+  aggregate instruction and no aggregate `IrType` — and the Scratch backend
+  realizes a slot as heap storage with no new mechanism.
+- **Explicit rejections tightened**: an aggregate in a genuinely *scalar*
+  position, non-power-of-two integer widths, aggregate-returning declarations, and
+  aggregate type mismatches at a leaf access are each pinned in `reject_tests.rs`
+  with a diagnostic that names the construct.
+
 ## How this is verified
 
 - **Committed real-clang corpus** — the classic `tests/c_programs/*.{c,ll}` plus
-  the real-world aggregate programs under `tests/corpus/llvm/fixtures/`, 40
-  fixtures in total as of the v0.5 gate, each with a fresh-clang recompile
+  the real-world aggregate programs under `tests/corpus/llvm/fixtures/`, 49
+  fixtures in total as of the v0.6 gate, each with a fresh-clang recompile
   harness so the committed `.ll` cannot drift.
+- **Aggregate ABI suite** `crates/scratcharch-llvm/tests/aggregate_abi_tests.rs`:
+  byte-exact copy extents, the fresh-slot-per-call-site rule, the `byval`
+  prologue copy, the appended hidden result pointer, `extractvalue`/`insertvalue`
+  layout offsets agreeing with the GEP path, and translation determinism.
 - **Aggregate byte-image suite** `crates/scratcharch-llvm/tests/aggregate_tests.rs`:
   the exact static-data image an aggregate initializer produces — layout offsets,
   zero padding, array element stride, the reserved pointer source stride,
@@ -315,9 +387,10 @@ mistaken for the current one:
   runtime-length `memcpy` is resolved on both engines now that the VM has its
   load-time runtime resolver.
 - **Frontend-focused suites**: `translator_tests.rs`, `phi_icmp_tests.rs`,
-  `aggregate_tests.rs`, `reject_tests.rs`, plus the interpreter/VM differential
-  suite (`vm_differential_tests.rs`, 40 tests) and the driver's
-  `vm_backend_tests.rs` for two-limb `i64` and byte memory.
+  `aggregate_tests.rs`, `aggregate_abi_tests.rs`, `reject_tests.rs`, plus the
+  interpreter/VM differential suite (`vm_differential_tests.rs`, 40 tests) and
+  the driver's `vm_backend_tests.rs` for two-limb `i64`, byte memory, and the
+  eight aggregate-ABI fixtures run on both engines.
 
 Gate commands: `cargo test --workspace`, `cargo clippy --workspace
 --all-targets` (zero warnings), `./scripts/run_c_tests.sh`.

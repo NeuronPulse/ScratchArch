@@ -266,7 +266,10 @@ half-done aggregate feature:
 - **Aggregate-by-value ABI.** Passing or returning a struct by value, and the
   spilling/coercion rules that go with it. This is the reason `IrType` has no
   aggregate variant: the value representation is a prerequisite, and inventing
-  one here would fix the ABI by accident.
+  one here would fix the ABI by accident. *(Implemented in v0.6 —
+  [`AGGREGATE_ABI.md`](./AGGREGATE_ABI.md). Aggregates cross the boundary as
+  pointer cells over the byte-exact memory this document defines, so `IrType`
+  still has no aggregate variant.)*
 - **Flexible array members / zero-sized types.** `struct S { int n; int a[]; }`
   and explicit `[0 x T]` are rejected with `LayoutError::ZeroSized` rather than
   given a made-up size. Supporting them means deciding what a trailing

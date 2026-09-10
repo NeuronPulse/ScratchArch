@@ -671,6 +671,96 @@ aggregate-by-value ABI (why `IrType` still has no aggregate variant) and
 zero-sized / flexible-array types. Each is recorded with its pinned diagnostic —
 nothing is silently approximated.
 
+### LLVM Compatibility v0.6 — Aggregate ABI and Value Passing (`scratcharch-llvm` / `scratcharch-driver` / `scratcharch-pipeline` / `scratcharch-compat`)
+
+Milestone goal: extend aggregate support from memory representation to **function
+parameter and return-value passing**, preserving the existing ABI design — no
+aggregate value representation, no change to the frozen ISA, no
+Scratch-specific calling convention. Design contract:
+`docs/design/AGGREGATE_ABI.md`. Recorded numbers:
+`docs/design/LLVM_COMPATIBILITY_BASELINE.md` (**v0.6 gate** — the
+benchmark-baseline axis), so the dual versioning reads **spec v0.7 / baseline
+v0.6**.
+
+- [x] **ABI feasibility audit** (Part 1): the ABI is clang's, not ours — clang
+      shapes a record into a coerced scalar, a literal aggregate returned in
+      registers, `byval(%T)`/`sret(%T)` pointers, or a decomposed scalar list,
+      and only the aggregate-typed form needs translation. New
+      `docs/design/AGGREGATE_ABI.md` fixes parameter decomposition, return
+      decomposition, cell ordering, nesting, alignment, padding and empty/zero
+      behavior.
+- [x] **Aggregate value representation** (Part 2): an aggregate SSA value is a
+      **compiler-managed temporary slot** (`alloca i8, DataLayout::size`); every
+      move is a byte-exact copy, every leaf access is a scalar load/store at a
+      `DataLayout` offset. `IrType` gains **no** aggregate variant, and no
+      aggregate is flattened into an arbitrary cell list — the slot carries its
+      layout identity, checked on every use.
+- [x] **Aggregate parameters** (Part 3): `byval(%T)` is an ordinary `ptr`
+      parameter copied into a private callee slot in the prologue (the parameter
+      name is re-bound to the copy, so a callee write cannot clobber the caller);
+      clang's `sret(%T)` pointer passes through untouched.
+- [x] **Aggregate returns** (Part 3): a record clang returns **in registers** gets
+      a synthesized hidden result pointer **appended after the explicit
+      parameters**, with the function returning `void` and each call site
+      allocating its own fresh slot. An aggregate-returning *declaration* is
+      rejected by name — an external function cannot be assumed to honour the
+      convention.
+- [x] **VM realization** (Part 4): **no aggregate instruction.** The ABI lowers
+      entirely to the byte-exact copy and scalar-leaf primitives v0.5
+      established; padding is never interpreted because nothing loads a padding
+      byte.
+- [x] **Interpreter realization** (Part 5): the same logical ABI over the same
+      byte-level lowering — one convention, not two, so an interpreter-only
+      aggregate case cannot exist.
+- [x] **ScratchGraph realization** (Part 6): a slot is heap storage, a copy is a
+      list-item copy, and the `sret`/`byval`/result pointer is an ordinary pointer
+      value the frame ABI already carries — no second aggregate ABI. All eight
+      ABI fixtures construct; no new `ScratchBackendUnsupported` case arose.
+- [x] **Real clang corpus** (Part 7): eight fixtures under `tests/c_programs/` —
+      `abi-struct-param` (57), `abi-struct-return` (66), `abi-nested-param` (125),
+      `abi-nested-return` (126), `abi-i64-field` (7), `abi-ptr-field` (36),
+      `abi-multi-agg` (119), `abi-mixed-args` (87) — covering both SysV classes,
+      nesting, an `i64` member, a pointer member, several aggregates in one call,
+      and scalar/aggregate interleaving; each with a committed `.c` +
+      clang-`-O0` `.ll` and the fresh-clang recompile harness.
+- [x] **Differential validation** (Part 8): native ↕ SAIR interpreter ↕ ISA VM
+      agree bit-for-bit on all eight; the five-surface record pins each verdict.
+      **0 semantic mismatches**, 0 failures, gate green.
+- [x] **Compatibility benchmark** (Part 9): `scratcharch test-compat` reads
+      **Overall 90% (44/49)**, Parser/SAIR/Interpreter/VM 90%, **Scratch 84%**
+      (41/49), with feature rows `aggregate-abi` 89%, `struct-param` 86%,
+      `struct-return` 100%, `nested-aggregate` 100%; the denominator change
+      **40 → 49** is reported explicitly and the v0.5 baseline is archived at
+      `tests/corpus/llvm/results/v0.5.json`.
+- [x] **Scope boundaries** (Part 10): non-power-of-two integer widths
+      (`i24`/`i40`/`i48`, reached through aggregate coercion) and
+      aggregate-returning declarations are rejected by name; aggregate varargs,
+      exceptional/non-default calling conventions, packed aggregate ABI, vector
+      ABI, atomic ABI and EH stay unimplemented — documented in
+      `AGGREGATE_ABI.md` §10.
+- [x] **Latent parser fix**: `ret %T %v` with a *named* aggregate return type
+      consumed `%T` as the SSA value and failed to parse; a one-token lookahead
+      disambiguates the type from the value, pinned by
+      `aggregate_abi_tests.rs`.
+- [x] **Documentation** (Part 11): new `docs/design/AGGREGATE_ABI.md`;
+      `docs/specification/ABI.md` §5.4/§11/§12 updated (aggregates cross as a
+      pointer, not a cell run), `docs/specification/LLVM_COMPATIBILITY.md`
+      advanced to **v0.7**; `LLVM_COMPATIBILITY_STATUS.md` and this roadmap
+      refreshed.
+- [x] **v0.6 benchmark numbers (baseline axis)**: Overall 90% (44/49 semantic
+      core); Parser/SAIR/Interpreter 90%; VM 90%; Scratch 84% (41/49); classes
+      success 41 / scratch-backend-failure 3 / parse-failure 5; gate green,
+      0 mismatches.
+
+**Deferred / known gaps at v0.6**: floating-point types and vector types remain
+parser gaps (`float`, `vector`); indirect calls have no function-pointer ABI
+(`indirect-call`); `atomicrmw` is out of scope for the word ISA (`atomic`); 3
+fixtures are exact on interpreter+VM but unlowerable to Scratch (the
+bitwise/shift family). Aggregate-ABI boundaries: non-power-of-two integer widths
+and aggregate-returning declarations; zero-sized / flexible-array types stay
+rejected by `DataLayout`. Each is recorded with its pinned diagnostic — nothing
+is silently approximated.
+
 ### Testing
 
 - [x] All tests pass with 0 warnings and 0 clippy errors
@@ -679,6 +769,11 @@ nothing is silently approximated.
       `./scripts/run_c_tests.sh` all green.
       `scratcharch test-compat` v0.5 gate green (40 fixtures, Overall 90%,
       VM 90%, Scratch 83%).
+- [x] v0.6 gate (2026-09-10): `cargo test --workspace` (682 tests),
+      `cargo clippy --workspace --all-targets` (0 warnings), and
+      `./scripts/run_c_tests.sh` all green.
+      `scratcharch test-compat` v0.6 gate green (49 fixtures, Overall 90%,
+      VM 90%, Scratch 84%).
 - [x] v0.4 gate (2026-09-10): `cargo test --workspace`,
       `cargo clippy --workspace --all-targets` (0 warnings), and
       `./scripts/run_c_tests.sh` all green.
@@ -687,9 +782,9 @@ nothing is silently approximated.
 
 ## In Progress
 
-Nothing — the **LLVM Compatibility v0.5 aggregate data model** is implemented,
-verified and green; awaiting the commit proposal (no commit made for this
-milestone yet).
+Nothing — the **LLVM Compatibility v0.6 aggregate ABI and value passing** is
+implemented, verified and green; awaiting the commit proposal (no commit made for
+this milestone yet).
 
 ## Future (v0.3+)
 
@@ -724,11 +819,15 @@ milestone yet).
 - [x] **Aggregate-constant global tables** — landed in v0.5: nested
       struct/array/`c"…"`/pointer/`zeroinitializer` global initializers lay out
       into the static-data image through `DataLayout` (`global-agg` is now a
-      full success, 51). Aggregate *memory* is complete; the aggregate-by-value
-      ABI and zero-sized/flexible-array types remain open (see the v0.5 section)
-- [ ] **Aggregate-by-value ABI** — passing/returning a struct or array by value,
-      with its spilling/coercion rules; the reason `IrType` still has no
-      aggregate variant. Rejected with a named diagnostic today
+      full success, 51). Aggregate *memory* is complete; zero-sized/flexible-array
+      types remain open (see the v0.5 section)
+- [x] **Aggregate-by-value ABI** — landed in v0.6: passing/returning a struct or
+      array by value is realized with a compiler-managed temporary slot and a
+      pointer crossing the boundary (`byval`/`sret`, plus a synthesized hidden
+      result pointer for a register-returned aggregate). `IrType` still has no
+      aggregate variant — the value *is* the slot's address
+      (`AGGREGATE_ABI.md`). Non-power-of-two widths and aggregate-returning
+      declarations are the residual boundaries, each rejected by name
 - [ ] **Zero-sized / flexible-array types** (`[0 x T]`, `{}`,
       `struct S { int n; int a[]; }`) — rejected by `DataLayout` with
       `LayoutError::ZeroSized` rather than given a made-up size

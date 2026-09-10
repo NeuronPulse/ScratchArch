@@ -1,10 +1,11 @@
 # LLVM Compatibility
 
-> Specification version: **v0.6**
+> Specification version: **v0.7**
 > Status: normative (defines what `scratcharch-llvm` accepts and how it behaves)
 > Companion documents: [`LLVM_TRANSLATION.md`](../design/LLVM_TRANSLATION.md)
 > (design/mapping), [`AGGREGATE_DATA_MODEL.md`](../design/AGGREGATE_DATA_MODEL.md)
-> (aggregate layout contract), [`LLVM_COMPATIBILITY_STATUS.md`](../design/LLVM_COMPATIBILITY_STATUS.md)
+> (aggregate layout contract), [`AGGREGATE_ABI.md`](../design/AGGREGATE_ABI.md)
+> (aggregate parameter/return ABI), [`LLVM_COMPATIBILITY_STATUS.md`](../design/LLVM_COMPATIBILITY_STATUS.md)
 > (generated status report), [`LLVM_COMPATIBILITY_BENCHMARK.md`](../design/LLVM_COMPATIBILITY_BENCHMARK.md)
 > (the long-term compatibility benchmark), [`LLVM_COMPATIBILITY_BASELINE.md`](../design/LLVM_COMPATIBILITY_BASELINE.md)
 > (the recorded benchmark snapshot), [`SAIR_FORMAT.md`](./SAIR_FORMAT.md),
@@ -122,7 +123,8 @@ C source --clang -S -emit-llvm--> .ll text
 | `{ … }` / anonymous struct | element type | Supported | As layout for `alloca`/`getelementptr` and as a global's storage; field offsets come from `DataLayout` |
 | `[N x T]` / `{ … }` **global initializers** | static-data image | Supported | Constant integer leaves, nested arrays/structs, `c"…"` byte arrays, pointer relocations, `zeroinitializer`; serialized little-endian at `DataLayout` offsets with padding exactly zero. A shape mismatch is an explicit diagnostic (`AGGREGATE_DATA_MODEL.md` §3) |
 | `[0 x T]` / `{}` (zero-sized) | — | Unsupported | `LayoutError::ZeroSized` — a zero-sized type has no layout, and inventing one would shift every later offset. Flexible array members are future work |
-| aggregate *values* | — | Unsupported | Loads/phis/params returning a struct/array *by value* are not modeled — no aggregate-by-value ABI; the diagnostic points at GEP over the layout |
+| aggregate *values* | temporary slot | Supported | Since v0.7 a struct/array *value* is backed by a compiler-managed `alloca` slot and moves as a byte-exact `DataLayout`-extent copy; it crosses a call as a pointer (`byval`/`sret`/synthesized result pointer, §5.5). `IrType` still gains no aggregate variant — the value is the slot's address (`AGGREGATE_ABI.md`) |
+| non-power-of-two integers (`i24`, `i40`, `i48`) | — | Unsupported | `SAIR represents i1, i8, i16, i32 and i64 only` — reached via aggregate coercion (a 3-byte struct → `i24`); explicit diagnostic, never rounded (`AGGREGATE_ABI.md` §10) |
 | `half`/`float`/`double`/`f128` | — | Unsupported | Explicit diagnostic at parse (SAIR has `F64` but the frontend does not expose floats) |
 | `i128`, `x86_mmx`, vectors | — | Unsupported | Explicit diagnostic at parse |
 
@@ -148,10 +150,13 @@ aggregate *global initializers* (`aggglobal`, `aggmatrix`, `aggnested`),
 array-of-struct and struct-of-array images (`aggarray`, `aggnested`), and byte
 views of aggregate memory (`aggbytes`). Every fixture runs byte-exact on both
 engines, which validates the layout model against the clang/x86-64 ABI the
-fixtures were compiled with. Aggregate **by value** (a struct returned from /
-passed to a function as a first-class value) remains unsupported —
-`alloca` + GEP + load/store is the supported model, and only `i64`-wide scalar
-values cross the call ABI as two cells.
+fixtures were compiled with. Aggregate **by value** was added in v0.7 — a
+struct/array value is a temporary slot crossing a call as a pointer, so
+`alloca` + GEP + load/store remains the underlying model and `IrType` still
+carries no aggregate variant ([`AGGREGATE_ABI.md`](../design/AGGREGATE_ABI.md)).
+Only non-power-of-two widths (`i24`/`i40`/`i48`, reached through aggregate
+coercion) and aggregate-returning declarations stay out, each with a named
+diagnostic.
 
 ## 5. Instruction matrix
 
@@ -213,13 +218,16 @@ width (`i1`–`i64`), on the interpreter and on the VM's two-limb path alike.
 | `load` / `store` | `Load` / `Store` | **S** | Typed; `i64` = two limbs at `addr`/`addr+4` on the VM. Sub-word types (`i1`/`i8`/`i16`) write exactly `ty.size_in_bytes()` bytes via `Load8`/`Store8`, little-endian, neighbours preserved (§6.1) |
 | `getelementptr` | single byte-offset `Gep` over `i8` | **S** | Constant indices fold to a byte offset (works everywhere); a *dynamic* index on a byte array carries its low limb into the 32-bit address space; a dynamic index on a multi-byte-element array multiplies the index by the element size with the same software `mul` the VM uses for full-width `i64` multiply (§5.1). Into an aggregate, every offset is a `DataLayout` quantity — array stride = element size, struct field offset = the layout's offset, index 0 = the whole pointed-to object's size — and the index chain descends one level per index, so `t.rows[1].b.y` is a plain sum of layout constants. Interpreter and VM are exact for all of these |
 | `volatile` / `atomic` | — | **U** | Rejected (alignment and other attributes are tolerated) |
-| global data (`@g = global T init`) | static data segment; uses of `@g` are its absolute address (I32) | **P** | Flat segment laid out below the stack floor (`STATIC_DATA_BASE`); the region below `stack_limit` is never stack-allocated, so it is safe static data. Seeding is **byte-exact on both backends**, so word- *and* sub-word/byte leaves run on the interpreter and the VM alike (§6.1); a segment that does not fit below the stack floor is rejected on either engine. Supported initializers: scalar integers (`i1/i8/i16/i32/i64`), `zeroinitializer`, `null`, pointer relocations (`ptr @other`), `c"…"` byte strings, and flat arrays of scalars. Rejected with explicit diagnostics: struct/void globals, `undef`/`poison`, nested-aggregate (array-of-array) initializers, aggregate-constant (struct / array-of-struct) element initializers (a parser gap — §8.5), and relocations to undeclared globals. **Address-of-function is rejected** (no function-pointer ABI — see the indirect-`call` row in §5.5) |
+| global data (`@g = global T init`) | static data segment; uses of `@g` are its absolute address (I32) | **P** | Flat segment laid out below the stack floor (`STATIC_DATA_BASE`); the region below `stack_limit` is never stack-allocated, so it is safe static data. Seeding is **byte-exact on both backends**, so word- *and* sub-word/byte leaves run on the interpreter and the VM alike (§6.1); a segment that does not fit below the stack floor is rejected on either engine. Supported initializers: scalar integers (`i1/i8/i16/i32/i64`), `zeroinitializer`, `null`, pointer relocations (`ptr @other`), `c"…"` byte strings, flat arrays of scalars, and — since v0.6 — **nested aggregate initializers** (`@s = %S { … }`, `[N x %S] […]`, `[[3 x i32] […]]`) laid out recursively into the little-endian image at `DataLayout` offsets. Rejected with explicit diagnostics: `void` globals, `undef`/`poison`, an initializer/type shape mismatch, and relocations to undeclared globals. **Address-of-function is rejected** (no function-pointer ABI — see the indirect-`call` row in §5.5) |
 
 ### 5.5 Calls, intrinsics, and control flow
 
 | LLVM | SAIR | Status | Notes |
 |------|------|--------|-------|
-| `call @f` (direct, recursion) | `Call` | **S** | Independent frames. VM path pinned for the ≤32-bit ABI; `i64`-wide arguments/returns travel the same cell-slot ABI |
+| `call @f` (direct, recursion) | `Call` | **S** | Independent frames. VM path pinned for the ≤32-bit ABI; `i64`-wide arguments/returns travel the same cell-slot ABI. An aggregate argument is **one pointer cell** — clang's `sret`/`byval` pointer passes through, and a register-returned aggregate gets a synthesized hidden result pointer appended after the explicit parameters ([`AGGREGATE_ABI.md`](../design/AGGREGATE_ABI.md)) |
+| `load` / `store` / `extractvalue` / `insertvalue` / `ret` of an aggregate | byte copy into a temporary slot | **S** | An aggregate value is a compiler-managed `alloca` slot; every move is `DataLayout::size` bytes and every leaf access is an ordinary scalar load/store at a layout offset. No aggregate instruction, no aggregate `IrType` (`AGGREGATE_ABI.md`) |
+| aggregate return via `byval`/`sret` (memory class) | explicit `ptr` parameter | **S** | clang's own pointer is an ordinary parameter, passed through and written through by the callee; a `byval` parameter is copied into a private callee slot in the prologue |
+| aggregate-returning **declaration** | — | **U** | The hidden result pointer is a convention an external function cannot be assumed to honour — explicit diagnostic naming the declaration |
 | `call @__scratcharch_*` | `Call` | **S** | Three-operand `__scratcharch_memcpy(dst, src, const len)` is expanded by the translator to byte copies (§6.1). Every other runtime intrinsic (`__scratcharch_memcpy/memmove/memset/memcmp/strcmp/strcpy/strncpy/strlen/abort/panic/trap`) is a bodyless named call that resolves through the shared `scratcharch-runtime` **`IntrinsicRegistry`** on *both* engines: the interpreter dispatches its registry entry, the VM resolves the name at load time into a `Code::CallRuntime` entry and runs the same registry body over a flat memory view (§6.1, RUNTIME.md). The registry entry carries the operand-stack **arity** (`arg_words`/`result_words`) so each engine knows the call's cell shape before it runs |
 | `call @llvm.memcpy/memmove/memset.*` | `Call` → expansion / resolution | **S** | Canonical constant-length, non-volatile forms (`llvm.memcpy.p0.p0.iN`, `llvm.memmove.p0.p0.iN`, `llvm.memset.p0.iN`) are expanded by the translator into width-exact `i8` load/store sequences, so they run on the interpreter *and* the VM. Runtime-length, volatile, and oversized (>4096-byte) calls that survive translation as calls are now also VM-supported: the VM resolves them to a flat memory op with the interpreter's contiguous-range, null-destination, and as-if-through-a-temporary rules (§6.1). Non-canonical variants (`llvm.memcpy.inline.*`, `llvm.memcpy.element.unordered.*`) get an explicit diagnostic on both engines — never a silent copy |
 | `call @llvm.bswap/ctpop/ctlz/cttz` | `Call` | **S** | Both engines evaluate the same shared leaf, `scratcharch_runtime::bit_intrinsic_value`, over the declared width (`i8…i64`) — masking to width, `ctlz`/`cttz` of `0` yielding the width, `bswap` reversing the low `width/8` bytes (§6.1, LLVM_TRANSLATION.md) |
@@ -396,19 +404,26 @@ constructs the model cannot build exactly is **Scratch backend unsupported** —
 even where the interpreter and the VM execute it — and is rejected with a named
 diagnostic, never approximated.
 
-**Aggregates need no Scratch construct** (v0.6). Because an aggregate reaches the
-backend as `DataLayout` byte offsets plus scalar leaves, the existing byte-exact
-heap already realizes one: a static-data image seeded one list item per byte, and
-width-exact little-endian scalar loads/stores at layout offsets. The same bytes
-are therefore observable through a typed field access, a nested GEP chain, and an
-`unsigned char *` byte view (`aggbytes`) — which is exactly what the old
-one-cell-per-address model could not do (`AGGREGATE_DATA_MODEL.md` §6).
+**Aggregates need no Scratch construct** (v0.6, extended to the ABI in v0.7).
+Because an aggregate reaches the backend as `DataLayout` byte offsets plus scalar
+leaves, the existing byte-exact heap already realizes one: a static-data image
+seeded one list item per byte, and width-exact little-endian scalar loads/stores
+at layout offsets. The same bytes are therefore observable through a typed field
+access, a nested GEP chain, and an `unsigned char *` byte view (`aggbytes`) —
+which is exactly what the old one-cell-per-address model could not do
+(`AGGREGATE_DATA_MODEL.md` §6). The aggregate *ABI* adds nothing either: a
+temporary slot is heap storage, a byte copy is a list-item copy, and the
+`sret`/`byval`/synthesized result pointer is an ordinary pointer value the frame
+ABI already carries (`AGGREGATE_ABI.md` §9). All eight aggregate-ABI fixtures
+clear the Scratch stage.
 
 ## 7. Explicitly rejected — summary
 
 Anything not listed above is rejected with an explicit, actionable diagnostic
 (`UnsupportedInstruction` / `UnsupportedType`), including: float ops and float
-conversions, aggregate *values*, zero-sized types (`[0 x T]`, `{}`), indirect
+conversions, an aggregate in a genuinely scalar position, zero-sized types
+(`[0 x T]`, `{}`), non-power-of-two integer widths (`i24`/`i40`/`i48`),
+aggregate-returning declarations, indirect
 calls, the unsupported global shapes named in §5.4 (`undef`/`poison`, `void`
 globals, relocations to undeclared globals, initializer/type shape mismatches),
 unknown `llvm.*` intrinsics, `i128`/vectors, and `volatile`/`atomic`.
@@ -442,14 +457,21 @@ frontend case.
    are not modeled. The `align N` attributes clang emits are never semantically
    observable in this subset and are ignored; a genuinely packed struct needs
    its own layout rule.
-7. **Aggregate-by-value ABI** — passing or returning a struct by value — is
-   future work. It is the reason `IrType` has no aggregate variant: the value
-   representation is a prerequisite, and inventing one here would fix the ABI by
-   accident (`AGGREGATE_DATA_MODEL.md` §7).
+7. **Aggregate ABI boundaries** — parameter and return passing of an aggregate is
+   implemented (v0.7, [`AGGREGATE_ABI.md`](../design/AGGREGATE_ABI.md)) as a
+   pointer crossing the boundary, so `IrType` still has no aggregate variant.
+   Two sub-cases stay out, each refused by name: **non-power-of-two integer
+   widths** (`i24`/`i40`/`i48`, reached when clang coerces a record of that
+   extent — rounding would silently shift every later argument) and
+   **aggregate-returning declarations** (the synthesized result pointer is a
+   convention an external function cannot be assumed to honour). Aggregate
+   varargs, exceptional/non-default calling conventions, packed aggregate ABI,
+   vector ABI, atomic ABI and EH are likewise unimplemented and unimplemented
+   deliberately.
 
 ## 9. Verification
 
-Three layers prove the matrix (counts updated at the v0.5 gate, §LLVM_TRANSLATION
+Three layers prove the matrix (counts updated at the v0.6 gate, §LLVM_TRANSLATION
 and the generated status report):
 
 1. **Committed real-clang fixtures** (`tests/c_programs/*.{c,ll}` plus the
@@ -477,6 +499,11 @@ and the generated status report):
    (`aggarray` 138), whole-struct `memcpy` assignment over a padded layout
    (`aggstruct` 56), a byte view of aggregate memory through `unsigned char *`
    (`aggbytes` 514 — the same bytes the typed accesses observe),
+   the eight aggregate-**ABI** fixtures (`abi-struct-param` 57,
+   `abi-struct-return` 66, `abi-nested-param` 125, `abi-nested-return` 126,
+   `abi-i64-field` 7, `abi-ptr-field` 36, `abi-multi-agg` 119, `abi-mixed-args`
+   87 — both SysV classes, nesting, `i64` and pointer members, several
+   aggregates in one call, and scalar/aggregate interleaving),
    runtime-length memory operations
    and every SART string builtin in one program (`runtime_mem` 255 — lengths
    computed at run time so the calls survive translation), plus arrays, globals,
@@ -499,7 +526,11 @@ and the generated status report):
    (memcpy/memmove/memset), `aggregate_tests.rs` (the exact static-data byte
    image an aggregate global initializer produces — layout offsets, zero
    padding, array element stride, the pointer source stride, `zeroinitializer`,
-   determinism), `reject_tests.rs` (indirect calls, aggregate *value* types,
+   determinism), `aggregate_abi_tests.rs` (the v0.7 ABI: byte-exact copy
+   extents, fresh-slot-per-call-site, the `byval` prologue copy, the appended
+   hidden result pointer, `extractvalue`/`insertvalue` layout offsets, and
+   translation determinism), `reject_tests.rs` (indirect calls, an aggregate in
+   a scalar position, odd integer widths, aggregate-returning declarations,
    zero-sized types, `undef`/`poison` globals, undeclared relocations), the driver's
    `vm_backend_tests.rs` (interpreter/VM agreement incl. the multi-cell `i64`
    corpus and profile-driven limb counts, byte-granular globals, `i1`/`i8`/`i16`
@@ -519,7 +550,7 @@ and the generated status report):
    bodyless callee rejected by both engines).
 5. **Compatibility benchmark** (`scratcharch-compat` + `scratcharch test-compat`,
    see [`LLVM_COMPATIBILITY_BENCHMARK.md`](../design/LLVM_COMPATIBILITY_BENCHMARK.md)):
-   runs the whole committed corpus (40 fixtures as of the v0.5 gate) through
+   runs the whole committed corpus (49 fixtures as of the v0.6 gate) through
    parser → SAIR → optimizer → interpreter → ISA lowering → VM → ScratchGraph,
    records a
    PASS/FAIL/UNSUPPORTED per stage and the semantic-core Overall, cross-checks
@@ -532,6 +563,34 @@ and the generated status report):
 
 ## 10. Change log
 
+- **v0.7 (2026-09-10)**: the aggregate **ABI** — aggregate parameters and return
+  values (§4, §5.5; normative contract in
+  [`AGGREGATE_ABI.md`](../design/AGGREGATE_ABI.md), convention in
+  [`ABI.md`](./ABI.md) §5.4). An aggregate value is now backed by a
+  **compiler-managed temporary slot** and crosses a call boundary as a
+  **pointer**, not as a cell run: clang's memory-class `sret(%T)`/`byval(%T)`
+  pointer is an ordinary explicit parameter passed through unchanged (a `byval`
+  parameter gets a private callee-prologue copy and the parameter name is
+  re-bound to it), while a record clang returns **in registers** is realized by a
+  translator-synthesized hidden result pointer **appended after the explicit
+  parameters** with the function returning `void`. Every aggregate move is a
+  byte-exact copy of `DataLayout::size` bytes (`load`/`store`/`insertvalue`/
+  nested `extractvalue`/`byval` prologue each allocate a **fresh** slot — so
+  `insertvalue` is a functional update and two calls to the same function never
+  alias), and `extractvalue` of a scalar leaf is an ordinary scalar load at the
+  field offset, read from the same `DataLayout` function the GEP path uses, so
+  the two cannot disagree. `IrType` still gains **no** aggregate variant and the
+  ISA gains **no** aggregate instruction: the interpreter and VM execute the
+  slot copies over the primitives v0.6 established, and the Scratch backend
+  needs no new construct. Explicit boundaries (each a named diagnostic):
+  non-power-of-two integer widths (`i24`/`i40`/`i48`, reached through aggregate
+  coercion) and aggregate-returning declarations; aggregate varargs,
+  exceptional/non-default conventions, packed aggregate ABI, vector ABI, atomic
+  ABI and EH stay unimplemented. Also fixes a latent parser bug: a named
+  aggregate return type in `ret %T %v` was consumed as an SSA value, which broke
+  every function whose body returned a named aggregate. The corpus grows 40 → 49
+  with eight real-clang ABI fixtures plus an odd-width boundary fixture, and the
+  gate is green at Overall 90% / Scratch 84% with 0 semantic mismatches.
 - **v0.6 (2026-09-10)**: the aggregate data model (§4, §5.4; normative contract
   in [`AGGREGATE_DATA_MODEL.md`](../design/AGGREGATE_DATA_MODEL.md)).
   `scratcharch_target::layout` becomes the **single authority for aggregate

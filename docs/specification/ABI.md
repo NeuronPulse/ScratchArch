@@ -293,15 +293,38 @@ Hidden parameters are appended *after* the explicit parameters in cell order.
 
 ### 5.4 Aggregate arguments
 
-Struct and array arguments are passed **cell-by-cell in memory order** (struct
-fields in declaration order, array elements in index order). Each element is
-decomposed according to its type.
+An aggregate (struct or array) argument crosses the boundary as **one pointer
+cell**, not as a flattened cell run. The pointee is operated on through the
+ordinary byte-addressable memory model, so an aggregate's field offsets,
+padding and internal cell order are the memory layout's business
+([MEMORY.md §4](./MEMORY.md)) and never the calling convention's.
 
-> **Realization note.** For struct types, the decomposition follows the
-> in-memory layout defined in MEMORY.md §4, including alignment padding between
-> fields. This ensures that the cell representation of an aggregate argument
-> matches its representation in memory, so `load`/`store` on the callee's
-> parameter area works correctly.
+> **Design decision (v0.6).** The alternative — decomposing a record into
+> `cells(T)` positional cells — was rejected: it would make the *value* of an
+> aggregate a sequence of cells with an ABI-defined identity, duplicating the
+> layout authority and letting padding become part of the value. The pointer
+> form keeps `IrType` scalar and keeps `DataLayout` the single source of
+> geometry. It also matches what clang emits at `-O0`, which materializes
+> memory-class records through pointers already.
+
+Three shapes reach the boundary, and each is already pre-shaped by the
+frontend:
+
+| Emitted form | Cells |
+|---|---|
+| A record coerced to a scalar (`{i32,i32}` → `i64`) or decomposed into scalars | the ordinary scalar cells, in declaration order |
+| An annotated pointer: `sret(%T)` / `byval(%T)` | one pointer cell; the pointee is the aggregate |
+| An aggregate-typed value returned in registers | one synthesized hidden pointer cell (§5.3), appended after the explicit parameters |
+
+The full decomposition rules — which record shapes map to which form, cell
+ordering, nesting, alignment, padding, empty aggregates, and the temporary-slot
+lifecycle — are normative in
+[`AGGREGATE_ABI.md`](../design/AGGREGATE_ABI.md).
+
+> **Realization note.** A `byval` pointer is the caller's object, but the callee
+> is permitted to write through it, so the callee takes a private byte copy in
+> its prologue and re-binds the parameter name to the copy. An `sret` pointer is
+> written through directly — the caller owns that storage.
 
 ---
 
@@ -513,15 +536,19 @@ stack before the recursive call and restored after.
 | Indirect call via `@llvm.call.preallocated` | `!fnptr` hidden parameter (§8.2) |
 | Tail call | Recognized but not optimized in v0.1 (prototype rejected tail calls); reserved for future ABI extension |
 | `inalloca` | Not supported in v0.1; future ABI may define an equivalent |
-| `sret` (struct return) | Not needed: aggregates are decomposed into cells (§5.4) |
-| `byval` | Not needed: arguments are passed by value as cells |
+| `sret` (struct return) | An ordinary explicit pointer parameter written through by the callee when clang emits one; otherwise a pointer appended as a hidden parameter (§5.3), with `-> void` (§5.4) |
+| `byval` | An ordinary explicit pointer parameter; the callee copies the pointee into a private slot in its prologue |
 | `nest` | Not supported in v0.1 |
 | `swiftcc`/`preserve_mostcc`/... | Not applicable; ScratchArch has a single calling convention for v0.1 |
 
 **Backend obligations.** An LLVM→ScratchArch backend must:
 - Decompose each argument type into cells according to the target profile.
+- Pass an aggregate argument as one pointer cell and let the callee operate on
+  the pointee through the byte-addressable memory model (§5.4); never flatten a
+  record into positional cells.
 - Emit the transmission sequence (cell-by-cell) and reassembly on the callee side.
-- Insert hidden parameters where needed (indirect calls, multi-site returns, varargs).
+- Insert hidden parameters where needed (indirect calls, multi-site returns,
+  aggregate returns, varargs).
 - Generate save/restore code for values live across calls on profiles with flat storage.
 
 ---
@@ -539,9 +566,13 @@ above with the following restrictions:
 - **Function pointers** are specified as virtual addresses in §8 but are not
   yet supported by the LLVM translator or SAIR interpreter.
 - **Variadic functions** (§9) are not yet supported.
-- **Aggregate arguments** are passed as opaque pointer values in the current
-  test programs; full cell-by-cell decomposition per §5.4 is not yet enforced
-  by the translator.
+- **Aggregate arguments** cross as pointer cells (§5.4) and are fully realized
+  by the translator: clang's coerced/decomposed scalar forms, its `sret`/`byval`
+  pointers, and the register-returned aggregate form (a synthesized hidden
+  pointer, §5.3) all lower to the existing memory model. Non-power-of-two
+  integer widths reached through aggregate coercion (`i24`/`i40`/`i48`) and
+  aggregate-returning *declarations* remain explicit boundaries — see
+  [`AGGREGATE_ABI.md`](../design/AGGREGATE_ABI.md) §10.
 
 These limitations describe the current implementation surface; they do not
 change the ABI semantics.
@@ -552,10 +583,11 @@ change the ABI semantics.
   a `call` to the same function (or a function with an equivalent frame) may
   recycle the current activation instead of creating a new one. The prototype
   detected but rejected tail calls; v0.2 may define when they are safe.
-- **Struct return (`sret`).** For large aggregates where cell decomposition
-  would be expensive, a caller-allocated buffer pointer could be passed as a
-  hidden parameter. This is the LLVM `sret` convention and is reserved for
-  v0.2.
+- **Struct return (`sret`).** Implemented (v0.6). clang's own `sret(%T)`
+  parameter is passed through as an ordinary pointer; a record clang returns in
+  registers gets a caller-allocated result buffer passed as a hidden parameter
+  (§5.3) and a `void` return. See
+  [`AGGREGATE_ABI.md`](../design/AGGREGATE_ABI.md).
 - **Multiple return values.** LLVM's `call` returns one value. A future
   extension could allow returning multiple values through multiple output
   slots (similar to `llvm.mul.with.overflow`'s two-output intrinsic pattern).
@@ -584,3 +616,6 @@ change the ABI semantics.
 9. The stack frame is reclaimed by restoring the stack pointer on `ret` (§7).
 10. Function pointer dispatch is runtime-defined; the ABI requires only
     correct target selection (§8.2).
+11. An aggregate crosses the boundary as one pointer cell, never as a
+    positional cell run; `DataLayout` remains the sole authority for its
+    geometry (§5.4, [`AGGREGATE_ABI.md`](../design/AGGREGATE_ABI.md)).

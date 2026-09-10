@@ -70,7 +70,7 @@ arbitrary C code.
 | `void` | `IrType::Void` | No return value |
 | `[N x T]` | element type | For value ops; *allocations* are byte arrays |
 | `%T` / `{…}` | element type | Struct layout only (via `scratcharch_target::layout`) |
-| aggregate *values* | — | No SAIR representation (no aggregate-by-value ABI): rejected, never flattened |
+| aggregate *values* | temporary slot | Backed by a compiler-managed `alloca`; the "value" is the slot's address and crosses a call as a pointer (`AGGREGATE_ABI.md`). No aggregate `IrType` variant |
 
 Aggregate **geometry** comes from `scratcharch_target::layout` and nowhere else
 (`AGGREGATE_DATA_MODEL.md`): `AggregateType` (`Scalar`/`Array`/`Struct`) plus
@@ -80,9 +80,12 @@ translator's `type_size_align`, global seeding and GEP offsets are all thin
 adapters over `DataLayout` — none of them re-implements a layout rule, so a
 field offset cannot drift between the three.
 
-Floating-point (`half`/`float`/`double`/`f128`), vectors, `i128`, aggregate
-*values* and zero-sized types (`[0 x T]`, `{}`) produce a clear
-**UnsupportedType** error at parse/translate time.
+Floating-point (`half`/`float`/`double`/`f128`), vectors, `i128`, non-power-of-two
+integer widths (`i24`/`i40`/`i48`) and zero-sized types (`[0 x T]`, `{}`) produce a
+clear **UnsupportedType** error at parse/translate time. An aggregate *value* is
+*supported* — it is a temporary slot, not an `IrType` — but an aggregate in a
+genuinely scalar position (an arithmetic operand, say) is rejected, since it has
+no scalar representation to give.
 
 ### Values
 
@@ -163,6 +166,11 @@ the last non-declaration) is used as the module entry point.
   storage; scalar leaves are reached through GEP and read/written as ordinary
   scalars, so an aggregate never needs a value representation
   (`AGGREGATE_DATA_MODEL.md`)
+- Aggregate **values**: `load`/`store`/`insertvalue`/`extractvalue` of an
+  aggregate, and aggregate parameters and returns, become byte-exact copies
+  through a compiler-managed temporary slot; `byval` parameters get a private
+  callee-prologue copy and a register-returned aggregate gets a hidden result
+  pointer appended after the explicit parameters (`AGGREGATE_ABI.md`)
 - Aggregate global initializers: constant integer leaves, nested arrays and
   structs, `c"…"` byte arrays, pointer relocations and `zeroinitializer`,
   serialized into the byte-exact `StaticData` image at `DataLayout` offsets with
@@ -183,9 +191,14 @@ the last non-declaration) is used as the module entry point.
 
 - Floating-point values/ops (`float`/`double`/`fadd`/`fsub`/…), vectors,
   `i128` and other unsupported types
-- Aggregate *values* — a struct/array load, phi or parameter passing an
-  aggregate by value. There is no aggregate-by-value ABI, so the diagnostic
-  points at the layout-preserving path instead of inventing a representation
+- Non-power-of-two integer widths (`i24`/`i40`/`i48`) — reached when clang
+  coerces a record of that extent; refused by name rather than rounded, which
+  would silently shift every later argument (`AGGREGATE_ABI.md` §10)
+- An aggregate in a genuinely *scalar* position (e.g. an arithmetic operand) —
+  there is no scalar representation to give it, so the diagnostic points at the
+  layout-preserving access path instead of inventing one
+- An aggregate-returning **declaration** — the hidden result pointer is a
+  convention an external function cannot be assumed to honour
 - Zero-sized types (`[0 x T]`, `{}`) — no layout exists; `DataLayout` reports
   `LayoutError::ZeroSized` rather than a made-up size that would shift every
   later offset
@@ -316,6 +329,7 @@ plus a fresh-clang re-compile of each `.c` on every run:
 | `aggstruct`, `aggarray` | whole-struct `memcpy` assignment over a padded layout; array-of-struct and struct-of-array |
 | `aggglobal`, `aggmatrix`, `aggnested` | nested aggregate *global* initializers with interior padding, a pointer field, and arrays of strings |
 | `aggbytes` | byte view of aggregate memory through `unsigned char *` (the same bytes seen three ways) |
+| `abi-struct-param`, `abi-struct-return`, `abi-nested-param`, `abi-nested-return`, `abi-i64-field`, `abi-ptr-field`, `abi-multi-agg`, `abi-mixed-args` | the aggregate ABI: both SysV classes, nested records, an `i64` member, a pointer member, several aggregates in one call, scalar/aggregate interleaving |
 
 The corpus is executed on three surfaces (`scratcharch-pipeline/tests/
 llvm_corpus_surfaces.rs`): the SAIR interpreter, the ISA VM (exact where
@@ -335,7 +349,7 @@ an `lcg` random sweep), plus the `unreachable` trap on both engines;
 `scratcharch-llvm/tests/` adds hand-written
 loop/`phi` fixtures and the memory-intrinsic matrix.
 
-Aggregate-specific coverage lives at two layers.
+Aggregate-specific coverage lives at three layers.
 `crates/scratcharch-llvm/tests/aggregate_tests.rs` pins the exact static-data
 *byte image* an aggregate initializer produces — struct fields at
 `DataLayout` offsets with zero inter-field and trailing padding, array elements
@@ -345,22 +359,34 @@ address, `zeroinitializer` reserving storage, and determinism across
 translations. The layout *rules* themselves (padding, nested struct,
 array-of-struct, struct-of-array, stride, alignment, zero-sizing) are unit-tested
 in `crates/scratcharch-target/src/layout.rs`.
-`crates/scratcharch-llvm/tests/reject_tests.rs` pins the new boundary
-diagnostics: an aggregate *value* type at an operation (`array value type
-[2 x i32] has no SAIR value representation`) and a zero-sized aggregate
-(`[0 x i32]` → `LayoutError::ZeroSized`), alongside the `undef`/`poison` global
-and undeclared-relocation rejections.
+`crates/scratcharch-llvm/tests/aggregate_abi_tests.rs` pins the ABI shape:
+byte-exact copy extents for `load`/`store`/`insertvalue`, the
+fresh-slot-per-call-site rule for a register-returned aggregate, the `byval`
+prologue copy (with a two-function semantic check that the caller's object
+survives a callee write), the appended hidden result pointer, `extractvalue`
+offsets agreeing with the GEP path, and translation determinism.
+`crates/scratcharch-llvm/tests/reject_tests.rs` pins the boundary
+diagnostics: an aggregate in a scalar position (`array value type [2 x i32] has
+no SAIR value representation`), a non-power-of-two width (`i24`), an
+aggregate-returning declaration, and a zero-sized aggregate (`[0 x i32]` →
+`LayoutError::ZeroSized`), alongside the `undef`/`poison` global and
+undeclared-relocation rejections.
 
 ## 8. Future work
 
-Aggregate *memory* is complete (v0.5); the boundaries below are deliberate, each
-a separate milestone rather than a half-done aggregate feature. Normative detail
-in [`AGGREGATE_DATA_MODEL.md`](./AGGREGATE_DATA_MODEL.md) §7.
+Aggregate *memory* (v0.5) and the aggregate *ABI* (v0.6) are complete; the
+boundaries below are deliberate, each a separate milestone rather than a
+half-done aggregate feature. Normative detail in
+[`AGGREGATE_ABI.md`](./AGGREGATE_ABI.md) §10 and
+[`AGGREGATE_DATA_MODEL.md`](./AGGREGATE_DATA_MODEL.md) §7.
 
-- **Aggregate-by-value ABI**: passing or returning a struct/array by value, with
-  the spilling and coercion rules that go with it. This is why `IrType` has no
-  aggregate variant — inventing one here would fix the ABI by accident. An
-  aggregate value at an operation is rejected with a named diagnostic today.
+- **Non-power-of-two integer widths** (`i24`/`i40`/`i48`): reached when clang
+  coerces a record of that extent. SAIR has `i1/i8/i16/i32/i64`, so the width is
+  refused by name rather than rounded. Adding a generic arbitrary-width integer
+  is a separate milestone, not a rounding shortcut.
+- **Aggregate varargs / packed aggregate ABI / vector ABI / atomic ABI / EH**:
+  each needs a different ABI rule than the positional-pointer form, and each is
+  out of scope for the word ISA today.
 - **Zero-sized / flexible-array types**: `struct S { int n; int a[]; }` and
   explicit `[0 x T]` are rejected (`LayoutError::ZeroSized`) rather than given a
   made-up size that would shift every later offset. Supporting them means

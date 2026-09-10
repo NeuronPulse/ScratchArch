@@ -1,8 +1,8 @@
 # LLVM Compatibility Benchmark
 
-> Design/method for the **LLVM Compatibility Benchmark v0.3** (current gate).
+> Design/method for the **LLVM Compatibility Benchmark v0.6** (current gate).
 > Companion to the [`LLVM_COMPATIBILITY_BASELINE.md`](./LLVM_COMPATIBILITY_BASELINE.md)
-> (the recorded v0.3 snapshot; v0.2 and v0.1 kept as history) and the normative matrix
+> (the recorded v0.6 snapshot; earlier gates kept as history) and the normative matrix
 > [`docs/specification/LLVM_COMPATIBILITY.md`](../specification/LLVM_COMPATIBILITY.md).
 > Status: normative for the benchmark harness.
 
@@ -34,8 +34,8 @@ does not depend on a compiler being present (recompilable with `--fresh-clang`).
 The corpus is deliberately small and sharp rather than large and shallow. Each
 fixture is a *capability probe* tagged with the LLVM features it exercises; the
 feature taxonomy is fixed (`integer, i64, bitwise, shift, memory, global, phi,
-switch, intrinsic, pointer, struct, array, float, vector, indirect-call,
-atomic`).
+switch, intrinsic, pointer, struct, array, aggregate-abi, struct-param,
+struct-return, nested-aggregate, float, vector, indirect-call, atomic`).
 
 ## 2. The staged pipeline
 
@@ -181,4 +181,4 @@ cargo test -p scratcharch-compat                                        # unit t
 ```
 
 See `tests/corpus/llvm/manifest.json` for the oracle and
-`docs/design/LLVM_COMPATIBILITY_BASELINE.md` for the recorded v0.3 numbers.
+`docs/design/LLVM_COMPATIBILITY_BASELINE.md` for the recorded v0.6 numbers.
