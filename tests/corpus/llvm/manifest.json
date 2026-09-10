@@ -564,13 +564,13 @@
         "integer"
       ],
       "expected_result": 51,
-      "expected_stage": "parser",
-      "expected_status": "unsupported",
+      "expected_stage": "scratch",
+      "expected_status": "success",
       "vm": {
-        "rejected": "unsupported"
+        "exact": 51
       },
       "scratch": {
-        "rejected": "unsupported"
+        "constructs": true
       }
     },
     {

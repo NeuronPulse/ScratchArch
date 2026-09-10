@@ -190,7 +190,11 @@ pub struct LlvmGlobal {
 
 /// The static initializer of a global. `Zero` is `zeroinitializer` (and the
 /// no-initializer form of `external`/`common` globals), which is legal for any
-/// type; the remaining variants carry scalar/pointer/array values.
+/// type; the remaining variants carry scalar/pointer/aggregate values.
+///
+/// Aggregate initializers nest: an `Array` element or a `Struct` field is
+/// itself a `LlvmGlobalInit`, so `[[3 x i32] [i32 1, i32 2, i32 3]]` and
+/// `[%struct.Pair { i32 1, i32 2 }]` are both representable without flattening.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LlvmGlobalInit {
     /// `zeroinitializer` (or a global with no explicit initializer).
@@ -205,6 +209,8 @@ pub enum LlvmGlobalInit {
     Bytes(Vec<u8>),
     /// `[<ty> <val>, …]` — a typed constant-array element list.
     Array(Vec<LlvmGlobalInit>),
+    /// `{ <ty> <val>, … }` — a typed constant-struct field list.
+    Struct(Vec<LlvmGlobalInit>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1492,17 +1498,14 @@ impl Parser {
             }
         }
         let ty = self.parse_type()?;
-        // Struct/void globals are not modeled. Reject at parse time with an
-        // explicit diagnostic, so no unsupported initializer syntax needs
-        // consuming afterwards.
-        match &ty {
-            LlvmType::Struct(_) | LlvmType::UnnamedStruct { .. } | LlvmType::Void => {
-                return Err(LlvmError::Parse(format!(
-                    "global '@{}' of type {:?} is not supported (global struct/void data is not modeled)",
-                    name_owned, ty
-                )))
-            }
-            _ => {}
+        // Void globals are not modeled (there is nothing to lay out). Struct
+        // globals *are* modeled: their initializer is a constant field list
+        // whose layout the translator derives from `DataLayout`.
+        if let LlvmType::Void = &ty {
+            return Err(LlvmError::Parse(format!(
+                "global '@{}' of type {:?} is not supported (a void global has no storage)",
+                name_owned, ty
+            )));
         }
         // Only an `external`/`common` global may omit its initializer (printed
         // as `@x = external global i32[, attrs]`). Anything else must carry one,
@@ -1536,6 +1539,20 @@ impl Parser {
         )
     }
 
+    /// Is the parser at the start of a new module-level item? Used to detect an
+    /// unterminated constant list.
+    ///
+    /// Unlike [`Self::at_module_item_end`] this deliberately does *not* treat a
+    /// `%name` as a boundary: inside a constant list `%name` is how an aggregate
+    /// field or element type begins (`%struct.Pair { … }`), so treating it as an
+    /// item end would truncate every nested-aggregate initializer.
+    fn at_constant_item_end(&self) -> bool {
+        matches!(
+            &self.current,
+            Token::Eof | Token::Define | Token::Declare | Token::GlobalId(_)
+        )
+    }
+
     /// Consume tokens up to the next module-level item boundary (trailing
     /// global attributes such as `align N`, `section "…"`, `comdat`).
     fn skip_to_module_item(&mut self) {
@@ -1547,29 +1564,152 @@ impl Parser {
     /// Parse a global initializer constant of the given expected type. The
     /// token grammar mirrors LLVM constant expressions: scalar integers, `null`
     /// / `@name` pointer values, `c"…"` strings, typed constant-array lists,
-    /// and `zeroinitializer`.
+    /// typed constant-struct lists, and `zeroinitializer`.
     fn parse_global_init(&mut self, expected: &LlvmType) -> Result<LlvmGlobalInit, LlvmError> {
+        self.parse_typed_constant(expected)
+    }
+
+    /// Parse a constant of the (already parsed) type `ty`, dispatching on the
+    /// token that begins it.
+    ///
+    /// Aggregate constants recurse through [`Self::parse_typed_element`], so
+    /// arrays of arrays, structs of arrays, arrays of structs and structs of
+    /// structs are all representable without flattening.
+    fn parse_typed_constant(&mut self, ty: &LlvmType) -> Result<LlvmGlobalInit, LlvmError> {
+        // `zeroinitializer` / `undef` / `poison` may stand for a value of any
+        // type, so they are recognized before the type-directed dispatch.
+        if let Token::Ident(s) = &self.current {
+            match s.as_str() {
+                "zeroinitializer" => {
+                    self.advance();
+                    return Ok(LlvmGlobalInit::Zero);
+                }
+                "undef" | "poison" => {
+                    return Err(LlvmError::Parse(format!(
+                        "'{}' global initializer is not supported (SAIR has no undefined values)",
+                        s
+                    )))
+                }
+                _ => {}
+            }
+        }
+        match (&self.current, ty) {
+            (Token::OpenBrace, LlvmType::Struct(_) | LlvmType::UnnamedStruct { .. }) => {
+                self.parse_struct_literal(ty)
+            }
+            (Token::OpenBracket, LlvmType::Array { .. }) => self.parse_array_literal(ty),
+            (Token::StringLiteral(_), LlvmType::Array { .. }) => self.parse_bytes_literal(ty),
+            _ => self.parse_scalar_literal(ty),
+        }
+    }
+
+    /// Parse the `{ … }` field list of a struct constant.
+    ///
+    /// Each field carries its own type, exactly as clang prints it; the parser
+    /// does not itself know the struct's field list, so the declared field type
+    /// is what drives the field's own bytes. The translator checks the field
+    /// count against the struct's layout, so a truncated or over-long
+    /// initializer is an explicit error rather than a silently mislaid image.
+    fn parse_struct_literal(&mut self, ty: &LlvmType) -> Result<LlvmGlobalInit, LlvmError> {
+        self.expect(&Token::OpenBrace)?;
+        let mut fields = Vec::new();
+        while self.current != Token::CloseBrace {
+            if self.at_constant_item_end() {
+                return Err(LlvmError::Parse(
+                    "unterminated struct-literal global initializer".into(),
+                ));
+            }
+            let declared = self.try_parse_element_type().ok_or_else(|| {
+                LlvmError::Parse(format!(
+                    "struct-literal global initializer field of {:?} is missing its type",
+                    ty
+                ))
+            })?;
+            fields.push(self.parse_typed_constant(&declared)?);
+            if self.current == Token::Comma {
+                self.advance();
+            }
+        }
+        self.expect(&Token::CloseBrace)?;
+        Ok(LlvmGlobalInit::Struct(fields))
+    }
+
+    /// Parse the `[ … ]` element list of an array constant of type `ty`.
+    fn parse_array_literal(&mut self, ty: &LlvmType) -> Result<LlvmGlobalInit, LlvmError> {
+        let inner = match ty {
+            LlvmType::Array { inner, .. } => (**inner).clone(),
+            other => {
+                return Err(LlvmError::Parse(format!(
+                    "array constant initializer for non-array type {:?}",
+                    other
+                )))
+            }
+        };
+        self.expect(&Token::OpenBracket)?;
+        let mut elems = Vec::new();
+        while self.current != Token::CloseBracket {
+            if self.at_constant_item_end() {
+                return Err(LlvmError::Parse(
+                    "unterminated global array initializer".into(),
+                ));
+            }
+            elems.push(self.parse_typed_element(&inner)?);
+            if self.current == Token::Comma {
+                self.advance();
+            }
+        }
+        self.expect(&Token::CloseBracket)?;
+        Ok(LlvmGlobalInit::Array(elems))
+    }
+
+    /// Parse a `c"…"` byte-string constant, which is only meaningful as a
+    /// `[N x i8]` array value.
+    fn parse_bytes_literal(&mut self, ty: &LlvmType) -> Result<LlvmGlobalInit, LlvmError> {
+        let bytes = match &self.current {
+            Token::StringLiteral(b) => b.clone(),
+            other => {
+                return Err(LlvmError::Parse(format!(
+                    "unsupported string initializer token {:?}",
+                    other
+                )))
+            }
+        };
+        match ty {
+            LlvmType::Array { inner, .. } if **inner == LlvmType::I8 => {
+                self.advance();
+                Ok(LlvmGlobalInit::Bytes(bytes))
+            }
+            other => Err(LlvmError::Parse(format!(
+                "string global initializer is not valid for type {:?}",
+                other
+            ))),
+        }
+    }
+
+    /// Parse a non-aggregate constant of type `ty`: an integer leaf, a pointer
+    /// relocation (`@other`), or `null`.
+    fn parse_scalar_literal(&mut self, ty: &LlvmType) -> Result<LlvmGlobalInit, LlvmError> {
         match &self.current {
             Token::Number(n) => {
                 let value = *n;
                 self.advance();
                 Ok(LlvmGlobalInit::Scalar(LlvmConst {
                     value,
-                    ty: expected.clone(),
+                    ty: ty.clone(),
                 }))
             }
             Token::True => {
                 self.advance();
                 Ok(LlvmGlobalInit::Scalar(LlvmConst {
                     value: 1,
-                    ty: expected.clone(),
+                    ty: ty.clone(),
                 }))
             }
             Token::False => {
                 self.advance();
                 Ok(LlvmGlobalInit::Scalar(LlvmConst {
                     value: 0,
-                    ty: expected.clone(),
+                    ty: ty.clone(),
                 }))
             }
             Token::GlobalId(g) => {
@@ -1577,52 +1717,14 @@ impl Parser {
                 self.advance();
                 Ok(LlvmGlobalInit::GlobalRef(g))
             }
-            Token::Ident(s) if s == "zeroinitializer" => {
-                self.advance();
-                Ok(LlvmGlobalInit::Zero)
-            }
             Token::Ident(s) if s == "null" => {
                 self.advance();
                 Ok(LlvmGlobalInit::Null)
             }
-            Token::Ident(s) if s == "undef" || s == "poison" => Err(LlvmError::Parse(format!(
-                "'{}' global initializer is not supported (SAIR has no undefined values)",
-                s
+            Token::OpenBrace | Token::OpenBracket => Err(LlvmError::Parse(format!(
+                "aggregate constant initializer is not valid for non-aggregate type {:?}",
+                ty
             ))),
-            Token::StringLiteral(bytes) => {
-                let b = bytes.clone();
-                self.advance();
-                Ok(LlvmGlobalInit::Bytes(b))
-            }
-            Token::OpenBracket => {
-                self.advance(); // '['
-                let inner = match expected {
-                    LlvmType::Array { inner, .. } => (**inner).clone(),
-                    _ => {
-                        return Err(LlvmError::Parse(format!(
-                            "array constant initializer for non-array type {:?}",
-                            expected
-                        )))
-                    }
-                };
-                let mut elems = Vec::new();
-                while self.current != Token::CloseBracket {
-                    if self.at_module_item_end() {
-                        return Err(LlvmError::Parse(
-                            "unterminated global array initializer".into(),
-                        ));
-                    }
-                    elems.push(self.parse_array_element(&inner)?);
-                    if self.current == Token::Comma {
-                        self.advance();
-                    }
-                }
-                self.expect(&Token::CloseBracket)?;
-                Ok(LlvmGlobalInit::Array(elems))
-            }
-            Token::OpenBrace => Err(LlvmError::Parse(
-                "struct-literal global initializers are not supported".into(),
-            )),
             other => Err(LlvmError::Parse(format!(
                 "unsupported global initializer token {:?}",
                 other
@@ -1630,64 +1732,26 @@ impl Parser {
         }
     }
 
-    /// Parse one element of a typed constant-array list. Elements may carry an
-    /// explicit type header (`[i32 1, ptr null]`) which is preferred, else the
-    /// array's inner element type applies.
-    fn parse_array_element(&mut self, expected: &LlvmType) -> Result<LlvmGlobalInit, LlvmError> {
-        let declared = self.try_parse_element_type();
-        let ty = declared.unwrap_or_else(|| expected.clone());
-        match &ty {
-            LlvmType::Array { .. }
-            | LlvmType::Struct(_)
-            | LlvmType::UnnamedStruct { .. }
-            | LlvmType::Void => {
-                return Err(LlvmError::Parse(format!(
-                    "nested-aggregate global initializer element of type {:?} is not supported",
-                    ty
-                )))
+    /// Parse one typed element of an aggregate constant (`<ty> <value>`).
+    ///
+    /// LLVM prints the element type inside an aggregate constant and it is
+    /// authoritative for the element's layout, so when it is present it must
+    /// match the aggregate's declared component type exactly — a mismatch is a
+    /// hard error rather than a silently reinterpreted byte image.
+    fn parse_typed_element(&mut self, expected: &LlvmType) -> Result<LlvmGlobalInit, LlvmError> {
+        let ty = match self.try_parse_element_type() {
+            Some(declared) => {
+                if &declared != expected {
+                    return Err(LlvmError::Parse(format!(
+                        "aggregate element type {:?} does not match the declared component type {:?}",
+                        declared, expected
+                    )));
+                }
+                declared
             }
-            _ => {}
-        }
-        match &self.current {
-            Token::Number(n) => {
-                let value = *n;
-                self.advance();
-                Ok(LlvmGlobalInit::Scalar(LlvmConst {
-                    value,
-                    ty: ty.clone(),
-                }))
-            }
-            Token::True => {
-                self.advance();
-                Ok(LlvmGlobalInit::Scalar(LlvmConst {
-                    value: 1,
-                    ty: ty.clone(),
-                }))
-            }
-            Token::False => {
-                self.advance();
-                Ok(LlvmGlobalInit::Scalar(LlvmConst {
-                    value: 0,
-                    ty: ty.clone(),
-                }))
-            }
-            Token::GlobalId(g) => {
-                let g = g.clone();
-                self.advance();
-                Ok(LlvmGlobalInit::GlobalRef(g))
-            }
-            Token::Ident(s) if s == "null" => {
-                self.advance();
-                Ok(LlvmGlobalInit::Null)
-            }
-            Token::Ident(s) if s == "zeroinitializer" => Err(LlvmError::Parse(
-                "'zeroinitializer' is not valid inside an array constant list".into(),
-            )),
-            other => Err(LlvmError::Parse(format!(
-                "unsupported global array element token {:?}",
-                other
-            ))),
-        }
+            None => expected.clone(),
+        };
+        self.parse_typed_constant(&ty)
     }
 
     /// If the current token begins a type (used for typed array-constant

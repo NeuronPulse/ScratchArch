@@ -35,6 +35,11 @@ fn no_native() -> RunConfig {
 }
 
 /// v0.4 full-corpus snapshot values (must match LLVM_COMPATIBILITY_BASELINE.md).
+///
+/// The aggregate global initializer (`global-agg`) now lays out into the
+/// static-data image, so within the still-v0.4 34-fixture corpus the semantic
+/// core grows 29 → 30, the parse-failure class shrinks 5 → 4, and Scratch gains
+/// one more constructed project (26 → 27).
 fn assert_v04_stage_snapshot(report: &scratcharch_compat::report::Report) {
     let percent_of = |s: Stage| {
         report
@@ -45,12 +50,12 @@ fn assert_v04_stage_snapshot(report: &scratcharch_compat::report::Report) {
             .percent
     };
     assert_eq!(report.total, 34);
-    assert_eq!(report.overall_percent, 85);
-    assert_eq!(percent_of(Stage::Parser), 85);
-    assert_eq!(percent_of(Stage::Sair), 85);
-    assert_eq!(percent_of(Stage::Interpreter), 85);
-    assert_eq!(percent_of(Stage::Vm), 85);
-    assert_eq!(percent_of(Stage::Scratch), 76);
+    assert_eq!(report.overall_percent, 88);
+    assert_eq!(percent_of(Stage::Parser), 88);
+    assert_eq!(percent_of(Stage::Sair), 88);
+    assert_eq!(percent_of(Stage::Interpreter), 88);
+    assert_eq!(percent_of(Stage::Vm), 88);
+    assert_eq!(percent_of(Stage::Scratch), 79);
 }
 
 #[test]
@@ -80,12 +85,12 @@ fn v04_full_corpus_gate_is_green_and_snapshot_holds() {
     assert!(report.semantic_mismatches.is_empty());
     assert_v04_stage_snapshot(&report);
 
-    // Classification matches the v0.4 shape: every non-success fixture is a
-    // *known* capability gap (frontend or Scratch model), never a hidden
-    // correctness failure. The VM now runs every fixture the interpreter does,
-    // so no fixture is a vm-failure any more.
-    assert_eq!(report.class_counts.get("success"), Some(&26));
-    assert_eq!(report.class_counts.get("parse-failure"), Some(&5));
+    // Classification matches the v0.4 shape with the aggregate global
+    // initializer closed: every non-success fixture is a *known* capability gap
+    // (frontend or Scratch model), never a hidden correctness failure. The VM
+    // runs every fixture the interpreter does, so no fixture is a vm-failure.
+    assert_eq!(report.class_counts.get("success"), Some(&27));
+    assert_eq!(report.class_counts.get("parse-failure"), Some(&4));
     assert_eq!(report.class_counts.get("scratch-backend-failure"), Some(&3));
     assert!(!report.class_counts.contains_key("vm-failure"));
     assert!(!report.class_counts.contains_key("semantic-mismatch"));
@@ -112,10 +117,10 @@ fn v04_full_corpus_gate_is_green_and_snapshot_holds() {
     assert!(!json.contains('█') && !json.contains('#'), "JSON must not carry bars");
     let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON report");
     assert_eq!(value["total"].as_u64(), Some(34));
-    assert_eq!(value["overall"].as_u64(), Some(85));
+    assert_eq!(value["overall"].as_u64(), Some(88));
     assert_eq!(value["gate_green"].as_bool(), Some(true));
-    assert_eq!(value["stages"]["scratch"].as_u64(), Some(76));
-    assert_eq!(value["stages"]["vm"].as_u64(), Some(85));
+    assert_eq!(value["stages"]["scratch"].as_u64(), Some(79));
+    assert_eq!(value["stages"]["vm"].as_u64(), Some(88));
 }
 
 #[test]
@@ -154,8 +159,10 @@ fn boundary_filter_selects_parser_gap_fixtures() {
     };
     let outcomes = run_all(&corpus(), &cfg);
     let names: Vec<&str> = outcomes.iter().map(|o| o.name.as_str()).collect();
-    // v0.2 adds `global-agg`, the aggregate-constant global initializer gap.
-    assert_eq!(names, vec!["float", "vector", "indirect-call", "atomic", "global-agg"]);
+    // Four parser gaps remain: `global-agg`, the aggregate-constant global
+    // initializer gap introduced in v0.2, now lays out into the static-data
+    // image and no longer appears here.
+    assert_eq!(names, vec!["float", "vector", "indirect-call", "atomic"]);
     for o in &outcomes {
         assert_eq!(o.class, ResultClass::ParseFailure);
     }

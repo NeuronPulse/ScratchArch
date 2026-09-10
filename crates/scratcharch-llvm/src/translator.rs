@@ -462,7 +462,7 @@ fn write_global_init(
                             count
                         )));
                     }
-                    let (stride, _) = type_size_align(structs, inner)?;
+                    let stride = array_stride_of_llvm(structs, inner)?;
                     for (k, elem) in elems.iter().enumerate() {
                         write_global_init(
                             image,
@@ -480,6 +480,46 @@ fn write_global_init(
                     other, ty
                 ))),
             }
+        }
+        LlvmType::Struct(_) | LlvmType::UnnamedStruct { .. } => {
+            let fields = struct_fields(structs, ty).cloned().ok_or_else(|| {
+                LlvmError::Translation(format!("struct fields not collected for {:?}", ty))
+            })?;
+            let layout = layout_of_llvm(structs, ty)?;
+            let inits = match init {
+                LlvmGlobalInit::Struct(inits) => inits,
+                other => {
+                    return Err(LlvmError::Translation(format!(
+                        "initializer {:?} does not match struct type {:?}",
+                        other, ty
+                    )))
+                }
+            };
+            if inits.len() != fields.len() {
+                return Err(LlvmError::Translation(format!(
+                    "struct initializer holds {} fields for a {}-field struct",
+                    inits.len(),
+                    fields.len()
+                )));
+            }
+            // Each field is written at its `DataLayout` offset; inter-field and
+            // trailing padding are already zero and are never touched, so the
+            // image carries the layout's padding exactly.
+            for ((field_ty, offset), field_init) in fields
+                .iter()
+                .zip(layout.field_offsets.iter())
+                .zip(inits.iter())
+            {
+                write_global_init(
+                    image,
+                    structs,
+                    base + *offset as usize,
+                    field_ty,
+                    field_init,
+                    addr_of,
+                )?;
+            }
+            Ok(())
         }
         _ => write_global_scalar(image, structs, base, ty, init, addr_of),
     }
