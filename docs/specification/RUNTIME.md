@@ -1,10 +1,15 @@
-# ScratchArch Runtime Library (SART) v0.1
+# ScratchArch Runtime Library (SART) v0.2
 
-> Specification version: **v0.1**
+> Specification version: **v0.2**
 > Status: normative for the `sa48` reference profile; portable across profiles.
 > Companion documents: [`ISA.md`](./ISA.md), [`ABI.md`](./ABI.md),
 > [`MEMORY.md`](./MEMORY.md), [`EXECUTION_MODEL.md`](./EXECUTION_MODEL.md),
 > [`TARGET_PROFILE.md`](./TARGET_PROFILE.md).
+>
+> **v0.2** adds the machine-readable `IntrinsicSignature` (§4), the shared
+> bit-math leaf (§4.1), and the ISA-VM integration — load-time runtime
+> resolution and the distinct VM failure categories (§6). No routine's semantics
+> changed and no ISA instruction was added.
 
 ---
 
@@ -140,6 +145,44 @@ fn(&mut dyn ByteMemory, &[u32]) -> Result<IntrinsicResult, RuntimeError>
 All arguments (pointers, lengths, integers) are passed as `u32`. The intrinsic
 interprets them according to its contract.
 
+Every entry also carries an **`IntrinsicSignature`**: the operand-stack shape of
+the call in 32-bit words.
+
+```rust
+struct IntrinsicSignature { arg_words: u8, result_words: u8 }
+```
+
+`arg_words` is how many operand-stack cells the call consumes and
+`result_words` how many it leaves (`0` for a void routine). The signature is
+declared at registration time (`register_with_signature`, or the
+`word_args(n)` / `void()` shorthands) and read back with
+`IntrinsicRegistry::signature(name)`. An interpreter that passes its arguments
+as a fresh slice does not need it, but a **stack machine** does: the VM must
+know how many cells to pop before the call and how many to push after, and it
+must know that *before* running the routine. The signature is the single
+machine-readable source of that arity, so the two engines cannot disagree about
+a routine's cell shape.
+
+The signature says nothing about the routine's *semantics* — that stays in the
+function body, which both engines share.
+
+### 4.1 Shared bit-math leaf
+
+`crates/scratcharch-runtime/src/bitops.rs` holds one neutral, dependency-free
+leaf the engines share for the `llvm.*` bit intrinsics:
+
+```rust
+fn bit_intrinsic_value(kind: BitIntrinsicKind, width: u32, value: u64) -> Option<u64>
+```
+
+It masks `value` to `width` bits, returns `width` for `ctlz`/`cttz` of `0`
+(ScratchArch's no-poison policy — see LLVM_COMPATIBILITY.md §8.3) and reverses
+the low `width/8` bytes for `bswap`; `width` must be one of `8/16/32/64`, and
+any other width returns `None`. It is deliberately *not* a registered intrinsic
+and carries no `llvm.*` name string: the interpreter's bit-intrinsic handler and
+the VM's load-time runtime resolver both call it, so the two engines evaluate
+these intrinsics bit-for-bit identically instead of each re-implementing them.
+
 ---
 
 ## 5. Integration with the SAIR interpreter
@@ -156,7 +199,45 @@ space as ordinary SAIR load/store instructions.
 
 ---
 
-## 6. Future expansion
+## 6. Integration with the ISA VM
+
+The ISA is frozen, and SART adds **no** ISA instruction. A program that calls a
+bodyless runtime routine still carries an ordinary named ISA `Call`; the VM
+resolves that name **once, at load time** (`scratcharch-vm/src/runtime.rs`) and
+rewrites the call to an internal `Code::CallRuntime` entry pointing at its
+runtime table. The execute loop then dispatches on the resolved *kind* — an
+enum match — never on a name string, and never per execution.
+
+Resolution order mirrors the interpreter's dispatch tiers exactly:
+
+1. **SART builtins** — looked up in the same `IntrinsicRegistry` the
+   interpreter consults; the entry's `IntrinsicSignature` supplies the
+   operand-stack arity.
+2. **`llvm.memcpy`/`memmove`/`memset` variants** the translator leaves as calls
+   (runtime-length, volatile, oversized) — resolved to a flat
+   copy/move/set op with the interpreter's contiguous-range,
+   null-destination, and as-if-through-a-temporary rules.
+3. **`llvm.bswap`/`ctpop`/`ctlz`/`cttz.iN`** — evaluated through the shared
+   `bit_intrinsic_value` leaf (§4.1).
+
+The VM implements [`ByteMemory`] over its linear memory for step 1, so the SART
+routine body executed on the VM is the *same function* the interpreter runs. A
+name that resolves to none of the three tiers stays a load-time error
+(`undefined function: <name>`); the interpreter reports the same program as an
+unknown intrinsic when the call is reached. Neither engine approximates.
+
+**Failure categories.** `RuntimeError` maps onto distinct VM failure categories —
+`Abort`, `Panic`, `Trap` (runtime), and the ISA's own `DivisionByZero` — so a
+runtime abort is never reported as the ISA `unreachable` trap and vice versa.
+
+**Compiler-synthesized helpers are not runtime routines.** The `__sair_*`
+lowering helpers (EXECUTION_MODEL.md §5.7–§5.8) are appended to the program by
+the ISA lowerer and never pass through the registry; the registry path serves
+only calls the *source* program makes to a bodyless named function.
+
+---
+
+## 7. Future expansion
 
 Future versions of SART may add:
 
@@ -168,3 +249,8 @@ Future versions of SART may add:
 
 All additions must remain architecture-independent and must not modify the ISA,
 ABI, MEMORY, EXECUTION_MODEL, TARGET_PROFILE, or SAIR semantics.
+
+A new runtime routine is added by registering it (with its `IntrinsicSignature`)
+in `scratcharch-runtime`; **both** engines then pick it up, the interpreter
+through its dispatch and the VM through its load-time resolver — no per-engine
+implementation, and no change to the ISA.

@@ -1,6 +1,6 @@
 # LLVM Compatibility
 
-> Specification version: **v0.4**
+> Specification version: **v0.5**
 > Status: normative (defines what `scratcharch-llvm` accepts and how it behaves)
 > Companion documents: [`LLVM_TRANSLATION.md`](../design/LLVM_TRANSLATION.md)
 > (design/mapping), [`LLVM_COMPATIBILITY_STATUS.md`](../design/LLVM_COMPATIBILITY_STATUS.md)
@@ -64,7 +64,7 @@ some things that SAIR and the VM handle fine.
 |--------|---------|
 | **Supported** | LLVM→SAIR is exact **and** the SAIR executes exactly on the interpreter **and** the VM backend. No caveat. |
 | **Partial** | Exact on the interpreter; the VM backend lowers a *documented subset* and rejects the rest with an explicit diagnostic (or the construct is exact only for a documented input sub-range). |
-| **Interpreter only** | Exact on the interpreter; the VM backend has no lowering for it yet (every use is an explicit diagnostic). A faithful VM path is compatible with the current ISA and tracked. |
+| **Interpreter only** | Exact on the interpreter; the VM backend has no lowering for it yet (every use is an explicit diagnostic). A faithful VM path is compatible with the current ISA and tracked. **No matrix row currently carries this status** — the last one (bodyless runtime intrinsics) closed when the VM gained its load-time runtime resolver (§6.1). The status is retained so a future construct with the same shape is classified honestly rather than mislabelled. |
 | **VM unsupported** | Exact on the interpreter; the VM backend deliberately rejects it because faithful execution would need VM/ISA work beyond current scope. The explicit diagnostic is the intended terminal behavior — never a silent approximation. |
 | **Scratch backend unsupported** | Exact through SAIR (and the VM where noted), but not expressible as a ScratchGraph project (§6). |
 | **Unsupported** | Rejected at parse/translate time with an explicit, actionable diagnostic; the LLVM frontend does not accept the construct. |
@@ -94,7 +94,9 @@ C source --clang -S -emit-llvm--> .ll text
   Every produced module passes `IrModule::validate()` before execution.
 - `declare`d functions are parsed; the interpreter resolves them at call time
   via the runtime-intrinsic registry or the bit-intrinsic handler. The VM
-  backend only runs functions that have a `define`d body — see §6.
+  backend resolves a bodyless named `Call` *once, at load time* against the
+  same runtime names (§6.1) and otherwise runs only functions with a `define`d
+  body.
 - Entry point: the `define`d function named `main` (fallback: last
   non-declaration).
 - Endianness: little-endian; an address is an integer of pointer width
@@ -140,6 +142,10 @@ and only `i64`-wide scalar values cross the call ABI as two cells.
 Legend for the per-row status: **S** = Supported, **P** = Partial,
 **IO** = Interpreter only, **VU** = VM unsupported, **U** = Unsupported.
 Every row is exact on the SAIR interpreter unless the notes say otherwise.
+As of v0.5 every row is **S**, **P**, or **U**: no row carries **IO** or **VU**
+(the bodyless-runtime-intrinsic row, the last **IO**, closed with the VM
+load-time runtime resolver — §6.1). Both statuses stay defined so a future
+construct of the same shape is classified honestly.
 
 ### 5.1 Arithmetic and bitwise
 
@@ -198,9 +204,9 @@ width (`i1`–`i64`), on the interpreter and on the VM's two-limb path alike.
 | LLVM | SAIR | Status | Notes |
 |------|------|--------|-------|
 | `call @f` (direct, recursion) | `Call` | **S** | Independent frames. VM path pinned for the ≤32-bit ABI; `i64`-wide arguments/returns travel the same cell-slot ABI |
-| `call @__scratcharch_*` | `Call` | **S** / **IO** | Three-operand `__scratcharch_memcpy(dst, src, const len)` is expanded by the translator to byte copies (§6.1) and runs on both engines. Other runtime intrinsics (e.g. `__scratcharch_strlen`) are interpreter-only: the runtime-intrinsic registry lives in the interpreter and there is no `define`d body for the VM to call |
-| `call @llvm.memcpy/memmove/memset.*` | `Call` → expansion | **S** / **IO** | Canonical constant-length, non-volatile forms (`llvm.memcpy.p0.p0.iN`, `llvm.memmove.p0.p0.iN`, `llvm.memset.p0.iN`) are expanded by the translator into width-exact `i8` load/store sequences, so they run on the interpreter *and* the VM; runtime-length, volatile, or >4096-byte calls stay interpreter-resolved. Non-canonical variants (`llvm.memcpy.inline.*`, `llvm.memcpy.element.unordered.*`) get an explicit diagnostic — never a silent copy (§6.1) |
-| `call @llvm.bswap/ctpop/ctlz/cttz` | `Call` | **IO** | Interpreter reference expansion over the declared width (`i8…i64`); see `LLVM_TRANSLATION.md` |
+| `call @__scratcharch_*` | `Call` | **S** | Three-operand `__scratcharch_memcpy(dst, src, const len)` is expanded by the translator to byte copies (§6.1). Every other runtime intrinsic (`__scratcharch_memcpy/memmove/memset/memcmp/strcmp/strcpy/strncpy/strlen/abort/panic/trap`) is a bodyless named call that resolves through the shared `scratcharch-runtime` **`IntrinsicRegistry`** on *both* engines: the interpreter dispatches its registry entry, the VM resolves the name at load time into a `Code::CallRuntime` entry and runs the same registry body over a flat memory view (§6.1, RUNTIME.md). The registry entry carries the operand-stack **arity** (`arg_words`/`result_words`) so each engine knows the call's cell shape before it runs |
+| `call @llvm.memcpy/memmove/memset.*` | `Call` → expansion / resolution | **S** | Canonical constant-length, non-volatile forms (`llvm.memcpy.p0.p0.iN`, `llvm.memmove.p0.p0.iN`, `llvm.memset.p0.iN`) are expanded by the translator into width-exact `i8` load/store sequences, so they run on the interpreter *and* the VM. Runtime-length, volatile, and oversized (>4096-byte) calls that survive translation as calls are now also VM-supported: the VM resolves them to a flat memory op with the interpreter's contiguous-range, null-destination, and as-if-through-a-temporary rules (§6.1). Non-canonical variants (`llvm.memcpy.inline.*`, `llvm.memcpy.element.unordered.*`) get an explicit diagnostic on both engines — never a silent copy |
+| `call @llvm.bswap/ctpop/ctlz/cttz` | `Call` | **S** | Both engines evaluate the same shared leaf, `scratcharch_runtime::bit_intrinsic_value`, over the declared width (`i8…i64`) — masking to width, `ctlz`/`cttz` of `0` yielding the width, `bswap` reversing the low `width/8` bytes (§6.1, LLVM_TRANSLATION.md) |
 | other `llvm.*` | — | **U** | Explicit `unsupported llvm intrinsic` diagnostic |
 | indirect `call` / function pointers | — | **U** | SAIR/ISA `Call`s name a static callee; there is no function-pointer ABI. Rejected with an explicit diagnostic |
 | `ret` | `Return` | **S** | Value or `void` |
@@ -236,14 +242,57 @@ the frozen ISA VM backend can lower the resulting SAIR:
 | `i1`/`i8`/`i16` loads and stores (byte memory) | Supported | Supported — width-exact `Load8`/`Store8` sequences (§6.1 below) | Supported |
 | `bitcast`/`ptrtoint`/`inttoptr` | Supported | Supported — cell-preserving reinterpretation; `inttoptr i64` traps on a nonzero high limb | Supported |
 | constant-length, non-volatile `llvm.memcpy`/`memmove`/`memset` and `__scratcharch_memcpy` | Supported | Supported — expanded by the translator into width-exact `i8` load/store sequences (load-all-then-store, so overlapping `memmove` is well-defined); runs on both engines | Supported |
-| runtime-length / volatile / oversized (`>4096` bytes) `llvm.memcpy`/`memmove`/`memset`; `llvm.*` bit intrinsics; `__scratcharch_strlen` | Supported | No `define`d body to run | Interpreter only |
+| runtime-length / volatile / oversized (`>4096` bytes) `llvm.memcpy`/`memmove`/`memset` | Supported | Supported — load-time resolved to a flat memory op with the interpreter's contiguous-range / null-destination / through-a-temporary rules | Supported |
+| `llvm.bswap`/`ctpop`/`ctlz`/`cttz.iN` | Supported | Supported — resolved at load time, evaluated by the shared `bit_intrinsic_value` leaf | Supported |
+| `__scratcharch_*` builtins (`memcpy`/`memmove`/`memset`/`memcmp`/`strcmp`/`strcpy`/`strncpy`/`strlen`/`abort`/`panic`/`trap`) | Supported | Supported — resolved at load time through the same `IntrinsicRegistry` the interpreter consults; the shared registry body runs over a flat `ByteMemory` view of VM memory | Supported |
 | global data, word-granular (aligned `i32`/`i64`/`ptr` leaves) | Supported | Supported (VM-exact static segment) | Supported |
 | global data, sub-word/byte leaves (`i1`/`i8`/`i16`, byte strings, arrays with byte elements) | Supported | Supported (byte-exact static segment; neighbouring bytes preserved) | Supported |
 
 No `VM unsupported` row remains: every construct the VM can express — exactly,
-or via a program-level software helper (§5.8) — is marked Supported, and what
-it cannot (bodyless runtime-intrinsic calls) is on the `Interpreter only` side
-with a compatible, tracked path.
+via a program-level software helper (§5.8), or through the load-time runtime
+resolver below — is marked Supported. **No `Interpreter only` row remains
+either** as of this revision: the last one (bodyless runtime intrinsics) closed
+when the VM gained the load-time runtime resolver.
+
+**Runtime and intrinsic calls on the VM (load-time resolution).** The ISA is
+frozen and gains no libc-specific instruction; instead the *VM's* `Code` space
+grows one variant, `CallRuntime(FnId)`. At `load_program` the VM resolves every
+bodyless named `Call` **once, per name, per program** against the same runtime
+names the interpreter resolves at run time, and rewrites it to the resolved
+table entry. Resolution order mirrors the interpreter's dispatch tiers:
+
+1. **SART builtins** — the name is looked up in the shared
+   `scratcharch-runtime` `IntrinsicRegistry` (the *same* registry instance
+   semantics the interpreter uses); its `IntrinsicSignature` supplies the
+   operand-stack arity (`arg_words`/`result_words`) the VM needs to pop
+   arguments and push results.
+2. **`llvm.mem*`** — canonical variants resolve to a flat `Copy`/`Move`/`Set`
+   op sized from the length type in the name; the VM applies the interpreter's
+   documented rules (a zero length succeeds *before* any null check; a null
+   destination is rejected; a non-contiguous range is rejected; the copy is
+   as-if-through-a-temporary).
+3. **`llvm.bswap`/`ctpop`/`ctlz`/`cttz.iN`** — resolved per family and width and
+   evaluated through the shared `bit_intrinsic_value` leaf, so interpreter and
+   VM cannot diverge.
+
+The execute loop dispatches on the resolved **kind** — an enum match — never on
+a name string; there is no per-execution string comparison. Anything else stays
+a load-time `undefined function: <name>` (the interpreter rejects the same
+program with an unknown-intrinsic error when the call is reached). No engine
+ever approximates: what the VM cannot execute faithfully it refuses to load.
+
+**Compiler-synthesized helpers are separate from runtime functions.** The
+`__sair_*` helpers (EXECUTION_MODEL.md §5.7–§5.8) are *lowering artifacts* the
+ISA lowerer appends to the program and are never resolved through the runtime
+registry; the registry path exists only for calls the *source* program makes to
+a bodyless named function. The two families do not overlap by name or by
+mechanism.
+
+**Failure categories stay distinguishable on the VM.** A runtime failure is not
+collapsed into the ISA trap: the VM raises distinct `Abort`, `Panic`, `Trap`
+(runtime), and `DivisionByZero` categories, and `unreachable` remains the ISA
+`Trap` path (§5.6). A runtime `abort` is never reported as an `unreachable`, and
+a division by zero is never reported as a trap.
 
 The VM gaps above are **backend** limitations, not translator ones. Nothing is
 approximated: constructs the VM cannot execute faithfully are rejected with a
@@ -300,9 +349,9 @@ copy reads **every source byte into an SSA value before storing any destination
 byte** — the as-if-through-a-temporary semantics `memmove` guarantees for
 overlapping regions at no extra cost — and `memset` is a per-byte store of the
 resolved value. The expansion is bounded (`MAX_INLINE_MEMOP` = 4096 bytes) and
-gated on a literal `isvolatile = false`; runtime-length, volatile, or oversized
-calls are left as ordinary calls for the interpreter's memory-intrinsic dispatch
-and stay on the `Interpreter only` side of the VM matrix. Non-canonical names
+gated on a literal `isvolatile = false`; runtime-length, volatile, and oversized
+calls are left as ordinary calls and are handled by both engines through the
+runtime resolver below. Non-canonical names
 that merely share the `llvm.mem*` prefix (`llvm.memcpy.inline.*`,
 `llvm.memcpy.element.unordered.*`) are *not* expanded and are rejected with a
 diagnostic that names the intrinsic — the translator matches exactly the same
@@ -344,10 +393,14 @@ frozen ISA semantics merely to satisfy a frontend case.
 
 ## 8. Known gaps
 
-1. **Bodyless runtime intrinsics are interpreter-only** — `__scratcharch_strlen`,
-   the `llvm.*` bit intrinsics, and runtime-length / volatile / oversized memory
-   ops: there is no `define`d body for the VM to call. Constant-length canonical
-   memory ops are *not* in this class — they are expanded to the VM (see §6.1).
+1. **Runtime intrinsics are supported on both engines, with no VM gap left.**
+   `__scratcharch_*` builtins, the `llvm.*` bit intrinsics, and runtime-length /
+   volatile / oversized memory ops all resolve on the ISA VM through the
+   load-time runtime resolver (§6.1). The resolver is deliberately *closed*: a
+   name it does not know is a load-time `undefined function` on the VM and an
+   unknown-intrinsic error on the interpreter — never a silent approximation.
+   Adding a runtime function therefore means registering it (with its arity) in
+   `scratcharch-runtime`, which both engines then pick up.
 2. **Hex literals are not lexed** (`0x…`); integer constants are decimal.
 3. **Poison is not modeled.** Per SAIR's no-poison policy, overflow wraps and
    zero-operand `ctlz`/`cttz` return the width even when LLVM would permit
@@ -361,7 +414,7 @@ frozen ISA semantics merely to satisfy a frontend case.
 
 ## 9. Verification
 
-Three layers prove the matrix (counts updated at the v0.3 gate, §LLVM_TRANSLATION
+Three layers prove the matrix (counts updated at the v0.4 gate, §LLVM_TRANSLATION
 and the generated status report):
 
 1. **Committed real-clang fixtures** (`tests/c_programs/*.{c,ll}` plus the
@@ -382,7 +435,9 @@ and the generated status report):
    (`struct-array` 66, `ptrstruct` 36), mixed-width packed struct fields with
    padding (`char-mix` 7988), an `i64` member inside a struct (`i64-struct` 45),
    byte-exact manual string scan (`byte-scan` 5), an aggregate-constant global
-   table (`global-agg` 51 — parser gap, §8.5), plus arrays, globals,
+   table (`global-agg` 51 — parser gap, §8.5), runtime-length memory operations
+   and every SART string builtin in one program (`runtime_mem` 255 — lengths
+   computed at run time so the calls survive translation), plus arrays, globals,
    `llvm.*`/runtime intrinsics, memory intrinsics, and
    function calls. `phi` loops do not appear in clang `-O0` output (clang keeps
    induction variables in memory at `-O0`); loop-carried `phi` is exercised by
@@ -404,17 +459,21 @@ and the generated status report):
    corpus and profile-driven limb counts, byte-granular globals, `i1`/`i8`/`i16`
    loads/stores, and reinterpret round-trips with `inttoptr` overflow trapping
    on both engines), and the interpreter's
-   `vm_differential_tests.rs` (31 tests requiring bit-for-bit
+   `vm_differential_tests.rs` (40 tests requiring bit-for-bit
    interpreter-vs-VM agreement: `and`/`or`/`xor`/`shl`/`lshr`/`ashr` across
    `i1`–`i64`, poison-region shift amounts, negative sign-fill, cross-limb `i64`
    shifts, full-width `i64` `mul`/`udiv`/`urem` — carry-across-limbs, exact
    long-division matches, boundary divisors, and an `lcg` random sweep over both
    — plus `unreachable` trapping in both engines, `i1`/`i8`/`i16` memory
-   round-trips, and cell-preserving `ptrtoint`/`inttoptr`/`bitcast`
-   reinterpretation with the `inttoptr i64` overflow trap).
+   round-trips, cell-preserving `ptrtoint`/`inttoptr`/`bitcast`
+   reinterpretation with the `inttoptr i64` overflow trap, the
+   `llvm.*` bit intrinsics across families and widths, runtime-length
+   `llvm.mem*`, the SART string/memory builtins, the distinct
+   `Abort`/`Panic`/`Trap`/`DivisionByZero` failure categories, and an unknown
+   bodyless callee rejected by both engines).
 5. **Compatibility benchmark** (`scratcharch-compat` + `scratcharch test-compat`,
    see [`LLVM_COMPATIBILITY_BENCHMARK.md`](../design/LLVM_COMPATIBILITY_BENCHMARK.md)):
-   runs the whole committed corpus (33 fixtures as of the v0.3 gate) through
+   runs the whole committed corpus (34 fixtures as of the v0.4 gate) through
    parser → SAIR → optimizer → interpreter → ISA lowering → VM → ScratchGraph,
    records a
    PASS/FAIL/UNSUPPORTED per stage and the semantic-core Overall, cross-checks
@@ -427,6 +486,25 @@ and the generated status report):
 
 ## 10. Change log
 
+- **v0.5 (2026-09-10)**: the VM runtime resolver. Bodyless runtime/intrinsic
+  calls are no longer `Interpreter only`: at `load_program` the ISA VM resolves
+  every named `Call` **once, per name, per program** against the shared
+  `scratcharch-runtime` `IntrinsicRegistry` (whose new `IntrinsicSignature`
+  carries the operand-stack arity), the canonical `llvm.mem*` variants, and the
+  `llvm.bswap/ctpop/ctlz/cttz.iN` bit intrinsics, rewriting it to an internal
+  `Code::CallRuntime` entry (spec §2/§5.5/§6.1). The ISA is unchanged — no
+  libc-specific instruction — and the execute loop dispatches on the resolved
+  kind, never on a name string. Compiler-synthesized `__sair_*` helpers remain
+  separate from runtime functions. Interpreter and VM now share the
+  bit-intrinsic leaf `scratcharch_runtime::bit_intrinsic_value`, so the two
+  engines cannot diverge (including the no-poison zero-operand `ctlz`/`cttz`
+  case). VM failure categories stay distinct — `Abort`, `Panic`, `Trap`
+  (runtime), `DivisionByZero` — and never collapse into the `unreachable` ISA
+  trap. An unresolvable name stays a load-time `undefined function`. The
+  runtime-intrinsic corpus fixtures (`string`, `intrinsics`) become full
+  successes, the `vm-failure` class disappears (VM 79% → 85%), and the corpus
+  grows to 34 with `runtime_mem` — runtime-length memory ops plus every SART
+  string builtin in one program. The differential suite grows 31 → 40 tests.
 - **v0.4 (2026-09-09)**: real-world coverage expansion. The compat corpus grows
   to 33 fixtures with aggregate programs — structs and struct fields,
   nested/whole-struct assignment, struct arrays and pointer-to-struct member

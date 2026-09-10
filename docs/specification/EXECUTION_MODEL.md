@@ -610,6 +610,56 @@ Interpreter/VM agreement for both helpers is pinned by the differential suite
 divisors, exact long-division matches, and an `lcg` random sweep over `i64`
 mul/div/rem operands).
 
+### 5.9 Runtime and intrinsic call resolution on the VM
+
+The software helpers of §5.7–§5.8 are *lowering artifacts*: the ISA lowerer
+appends them to the program, and they never reach a runtime registry. A
+**bodyless runtime call** — a named `Call` whose callee has no `define`d body,
+such as `__scratcharch_strlen`, `llvm.bswap.i16`, or a runtime-length
+`llvm.memcpy.*` — is a different case. The ISA is frozen and gains no
+libc-specific instruction, so the VM's `Code` space grows one internal variant,
+`CallRuntime(FnId)`, and the resolution happens **at load time**:
+
+1. `load_program` walks every `Call`. A name with a `define`d body is bound as
+   before. A bodyless name is resolved **once, per name, per program** against
+   the runtime tiers (SART builtins via the shared `scratcharch-runtime`
+   `IntrinsicRegistry`; canonical `llvm.mem*` variants; the
+   `llvm.bswap`/`ctpop`/`ctlz`/`cttz.iN` bit intrinsics), and the instruction is
+   rewritten to a `Code::CallRuntime` index into the VM's runtime table.
+2. Each resolved entry records the call's **operand-stack arity** in words
+   (`arg_words`, `result_words`), taken from the registry's
+   `IntrinsicSignature` or derived from the intrinsic variant, so the VM knows
+   the call's cell shape before it runs.
+3. The execute loop dispatches on the resolved **kind** — an enum match — never
+   on a name string, and never per execution. There is no runtime cost for
+   resolution beyond the call itself.
+
+A SART builtin executes the *same function* the interpreter dispatches: the VM
+presents its linear memory through the `ByteMemory` trait and calls the shared
+registry body, so interpreter and VM cannot disagree about a routine's
+semantics. The `llvm.*` bit intrinsics likewise share one leaf
+(`scratcharch_runtime::bit_intrinsic_value`).
+
+A name that resolves to none of the tiers is a load-time
+`VmError::UndefinedFunction` — the interpreter reports the same program as an
+unknown intrinsic when the call is reached. Neither engine approximates: what
+the VM cannot execute faithfully it refuses to load.
+
+**Failure categories are distinct.** `RuntimeError` maps onto VM failure
+categories that never collapse into the ISA trap: `Abort`, `Panic`, `Trap`
+(runtime), and `DivisionByZero` (§5.8). The SAIR `unreachable` instruction
+remains the ISA `Trap` primitive (§5.6). A runtime abort is therefore never
+reported as an `unreachable`, and a division by zero is never reported as a
+trap — a caller can tell which happened.
+
+**Migration note.** Before this mechanism, a bodyless runtime call was a
+load-time `undefined function` failure on the VM, and such programs were
+classified `Interpreter only` (LLVM_COMPATIBILITY.md §2). Existing programs need
+no change: a name that was rejected before and is now resolved produces the same
+result the interpreter always produced, and is verified by the differential
+suite. Programs that call a name the registry does not know are still rejected —
+at load time instead of never succeeding.
+
 ---
 
 ## 6. Memory Model
@@ -722,6 +772,13 @@ and manipulates an operand stack. Stack-based instructions consume operands
 from and push results onto this stack; `local.get` and `local.set` transfer
 values between the operand stack and the frame-local slots described in
 §5.5, allowing SSA values to survive across block boundaries.
+
+One variant is supplied by the program *loader* rather than the ISA: a
+`CallRuntime(idx)` is emitted when a bodyless named `Call` resolves against the
+runtime table at load time (§5.9). It is not an ISA instruction — it never
+appears in a lowered program's text, and it is the only `Code` variant whose
+identity depends on load-time resolution. Runtime failures it produces map onto
+the distinct categories of §5.9 rather than the generic error path.
 
 ### 7.3 Dispatch Equivalence
 
