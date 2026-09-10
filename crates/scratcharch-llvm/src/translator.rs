@@ -146,14 +146,50 @@ fn field_offset_of_llvm(
         })
 }
 
+/// Whether `ty` is an aggregate (array or struct) rather than a scalar.
+///
+/// Aggregates are a *layout* concern, never a SAIR value: an aggregate-typed SSA
+/// value is realized as a compiler-managed temporary slot (see
+/// [`AggregateSlot`] and `docs/design/AGGREGATE_ABI.md`), and the ABI crosses a
+/// function boundary through memory.
+fn is_aggregate(ty: &LlvmType) -> bool {
+    matches!(
+        ty,
+        LlvmType::Array { .. } | LlvmType::Struct(_) | LlvmType::UnnamedStruct { .. }
+    )
+}
+
+/// A compiler-managed temporary slot backing an aggregate-typed SSA value.
+///
+/// The slot is the *only* form an aggregate takes inside a function: there is no
+/// aggregate `IrType`, so an aggregate SSA name resolves to the address of a byte
+/// region whose geometry is fixed by `DataLayout`. Keeping `ty` alongside the
+/// address is what preserves the value's **layout identity** — the descriptor
+/// records the logical aggregate type (and hence its field offsets and
+/// alignment), rather than flattening the aggregate into an anonymous list of
+/// leaves. Because the identity is checked on every use (see
+/// [`resolve_aggregate_slot`]), an aggregate can never be moved through a slot of
+/// a different type: the layout geometry and the value's type cannot disagree.
+#[derive(Clone)]
+struct AggregateSlot {
+    /// The logical LLVM aggregate type this slot stands for.
+    ty: LlvmType,
+    /// `DataLayout` size in bytes, trailing padding included, so a copy of the
+    /// full extent is byte-exact.
+    size: u32,
+    /// Address of the temporary.
+    addr: ValueId,
+}
+
 /// Map a *scalar* LLVM type to its SAIR value type.
 ///
 /// SAIR has no aggregate values — aggregation is a memory/layout concern (see
-/// [`llvm_type_to_aggregate`] and `docs/design/AGGREGATE_DATA_MODEL.md`) — so an
-/// aggregate operand is a hard error rather than a silent collapse onto a leaf
-/// type. clang `-O0` never emits an aggregate `load`/`store` (it lowers struct
-/// assignment to `llvm.memcpy` over the byte layout), so this only fires on
-/// genuinely unsupported input.
+/// [`llvm_type_to_aggregate`], [`AggregateSlot`] and
+/// `docs/design/AGGREGATE_ABI.md`). An aggregate-typed operand is therefore
+/// routed through its temporary slot by `load`/`store`/`extractvalue`/
+/// `insertvalue`/`call`/`ret`; reaching this function with an aggregate means an
+/// aggregate appeared in a genuinely scalar position (an arithmetic operand, a
+/// `select`, a `phi`, a cast), which has no representation at all.
 fn llvm_type_to_ir(ty: &LlvmType) -> Result<IrType, LlvmError> {
     match ty {
         LlvmType::I1 => Ok(IrType::I1),
@@ -165,8 +201,9 @@ fn llvm_type_to_ir(ty: &LlvmType) -> Result<IrType, LlvmError> {
         LlvmType::Void => Ok(IrType::Void),
         LlvmType::Array { .. } | LlvmType::Struct(_) | LlvmType::UnnamedStruct { .. } => {
             Err(LlvmError::UnsupportedType(format!(
-                "aggregate value type {} has no SAIR value representation; \
-                 access its scalar leaves through GEP over the aggregate layout",
+                "aggregate value type {} has no SAIR value representation and is not valid as a \
+                 scalar operand; aggregates move through memory (load, store, call, ret, \
+                 extractvalue and insertvalue are supported)",
                 llvm_type_name(ty)
             )))
         }
@@ -350,7 +387,15 @@ struct FnState {
     /// now carry that edge. A phi in `target` whose incoming predecessor is the
     /// (expanded) `source` must list the dispatch block instead.
     phi_pred_remap: HashMap<(String, String), Vec<String>>,
-}
+    /// Aggregate-typed SSA values, mapped to the compiler-managed temporary that
+    /// backs them. A name here is *not* a scalar register value; its `addr` is
+    /// the address of the aggregate's bytes.
+    aggregates: HashMap<String, AggregateSlot>,
+    /// Set when the function returns an aggregate by value: the hidden result
+    /// pointer the function must write its result through, the aggregate's
+    /// `DataLayout` size, and the aggregate type itself (checked against the
+    /// returned value's slot type). See `docs/design/AGGREGATE_ABI.md`.
+    sret: Option<(ValueId, u32, LlvmType)>,}
 
 impl FnState {
     fn new() -> Self {
@@ -359,6 +404,8 @@ impl FnState {
             switch_counter: 0,
             phi_fixups: Vec::new(),
             phi_pred_remap: HashMap::new(),
+            aggregates: HashMap::new(),
+            sret: None,
         }
     }
 }
@@ -635,23 +682,77 @@ pub fn translate(program: &LlvmProgram) -> Result<IrModule, LlvmError> {
 
     for func in &program.functions {
         if func.is_declaration {
-            // External references (runtime intrinsics, llvm.* intrinsics) are
-            // resolved at call sites by the interpreter.
+            // An external function that returns an aggregate by value would have
+            // to honour *this* module's hidden result-pointer convention, which
+            // an external definition cannot know. Reject it explicitly rather
+            // than emit a call that hands the pointer to an incompatible callee.
+            if is_aggregate(&func.return_ty) {
+                return Err(LlvmError::Translation(format!(
+                    "declaration of @{} returns the aggregate {} by value: the aggregate ABI is \
+                     realized with a hidden result pointer, which an external function cannot \
+                     honour (see docs/design/AGGREGATE_ABI.md)",
+                    func.name,
+                    llvm_type_name(&func.return_ty)
+                )));
+            }
+            // Other external references (runtime intrinsics, llvm.* intrinsics)
+            // are resolved at call sites by the interpreter.
             continue;
         }
 
-        let return_ty = llvm_type_to_ir(&func.return_ty)?;
+        let mut st = FnState::new();
+
+        // An aggregate return is realized with a hidden result pointer appended
+        // *after* the explicit parameters (ABI.md §5.3), so the SAIR function
+        // returns void and writes its result through memory.
+        let returns_aggregate = is_aggregate(&func.return_ty);
+        let return_ty = if returns_aggregate {
+            IrType::Void
+        } else {
+            llvm_type_to_ir(&func.return_ty)?
+        };
         builder.start_function(func.name.clone(), return_ty);
 
-        let mut st = FnState::new();
-        for (param_ty, param_name) in &func.params {
-            let ir_ty = llvm_type_to_ir(param_ty)?;
-            let id = builder.add_param(ir_ty, param_name.clone());
-            st.values.insert(param_name.clone(), id);
+        // `byval` parameters own a private copy of the pointed-to aggregate; the
+        // copy is emitted in the prologue below, once the entry block exists.
+        let mut byval_params: Vec<(String, LlvmType, ValueId)> = Vec::new();
+        for p in &func.params {
+            let ir_ty = llvm_type_to_ir(&p.ty)?;
+            let id = builder.add_param(ir_ty, p.name.clone());
+            match &p.byval {
+                Some(agg_ty) => byval_params.push((p.name.clone(), agg_ty.clone(), id)),
+                None => {
+                    st.values.insert(p.name.clone(), id);
+                }
+            }
+        }
+        if returns_aggregate {
+            // The result pointer carries no LLVM-level name of its own (it does
+            // not exist in the source IR), so it gets a reserved one that cannot
+            // collide with a `%N` name.
+            let ptr = builder.add_param(IrType::Pointer, "!sret".to_string());
+            let size = layout_of_llvm(&program.struct_types, &func.return_ty)?.size;
+            st.sret = Some((ptr, size, func.return_ty.clone()));
         }
 
-        for block in &func.blocks {
-            builder.new_block(block.label.clone());
+        // The entry block is created before the body so the `byval` copies land
+        // ahead of the translated instructions.
+        if let Some(first) = func.blocks.first() {
+            builder.new_block(first.label.clone());
+        }
+        for (name, agg_ty, param_ptr) in byval_params {
+            let slot = fresh_aggregate_slot(&mut builder, &program.struct_types, &agg_ty)?;
+            emit_byte_copy(&mut builder, slot.addr, param_ptr, slot.size as u64);
+            // The parameter *name* denotes the copy's address from here on, so
+            // every `getelementptr %T, ptr %0, …` in the body addresses the
+            // callee's own copy and the caller's object is left untouched.
+            st.values.insert(name, slot.addr);
+        }
+
+        for (i, block) in func.blocks.iter().enumerate() {
+            if i > 0 {
+                builder.new_block(block.label.clone());
+            }
             for instr in &block.instructions {
                 translate_instruction(
                     &mut builder,
@@ -840,6 +941,143 @@ fn emit_byte_set(builder: &mut IrBuilder, dst: ValueId, value: ValueId, len: u64
     }
 }
 
+/// Address of `base + offset` bytes.
+fn byte_offset_addr(builder: &mut IrBuilder, base: ValueId, offset: u32) -> ValueId {
+    let off = builder.const_i32(offset);
+    builder.gep(IrType::I8, base, vec![GepIndex::Dynamic(off)])
+}
+
+/// Allocate a fresh temporary slot for an aggregate of type `ty`.
+///
+/// The size comes from `DataLayout` and includes the type's trailing padding,
+/// so copying `size` bytes reproduces the value exactly — padding included. A
+/// zero-sized type has no layout and is rejected upstream by `DataLayout`
+/// (`LayoutError::ZeroSized`) rather than given a made-up size.
+fn fresh_aggregate_slot(
+    builder: &mut IrBuilder,
+    structs: &HashMap<String, Vec<LlvmType>>,
+    ty: &LlvmType,
+) -> Result<AggregateSlot, LlvmError> {
+    let layout = layout_of_llvm(structs, ty)?;
+    let addr = builder.alloca_array(IrType::I8, layout.size);
+    Ok(AggregateSlot {
+        ty: ty.clone(),
+        size: layout.size,
+        addr,
+    })
+}
+
+/// The slot backing an aggregate-typed SSA value, checked to hold exactly
+/// `expected`.
+///
+/// The operand must be an aggregate-typed SSA name — a `load`, a call result, an
+/// `insertvalue` result, or an extracted sub-aggregate. An aggregate *constant*
+/// operand has no slot; clang materializes aggregate constants in static storage
+/// and copies them, so a constant reaching here is diagnosed rather than given an
+/// invented representation.
+///
+/// Requiring the slot's logical type to match the type the instruction declares
+/// is what makes the layout identity load-bearing: field offsets, the copy extent
+/// and the leaf types all come from `DataLayout` for *that* type, so a mismatch
+/// would silently reinterpret the bytes. It is reported instead.
+fn resolve_aggregate_slot(
+    st: &FnState,
+    val: &LlvmValue,
+    expected: &LlvmType,
+) -> Result<AggregateSlot, LlvmError> {
+    let slot = match val {
+        LlvmValue::Local(name) => st.aggregates.get(name).cloned().ok_or_else(|| {
+            LlvmError::Translation(format!(
+                "%{} is used where an aggregate value is required, but it does not hold an \
+                 aggregate (only load, call, insertvalue, extractvalue and byval results do)",
+                name
+            ))
+        })?,
+        other => {
+            return Err(LlvmError::Translation(format!(
+                "an aggregate operand must be an aggregate-typed SSA value, got {:?}",
+                other
+            )))
+        }
+    };
+    if slot.ty != *expected {
+        return Err(LlvmError::Translation(format!(
+            "aggregate value of type {} is used as {}",
+            llvm_type_name(&slot.ty),
+            llvm_type_name(expected)
+        )));
+    }
+    Ok(slot)
+}
+
+/// Fold an `extractvalue`/`insertvalue` index path into a byte offset and the
+/// type it addresses.
+///
+/// Every step is read from `DataLayout` (`field_offset_of_llvm` for a struct
+/// field, `array_stride_of_llvm` for an array element), so the offset is by
+/// construction the same one a `getelementptr` over the identical path computes
+/// — the two paths cannot disagree. Each index must be a constant (enforced by
+/// the parser): a dynamic aggregate index has no meaning when the field offsets
+/// are fixed by the layout.
+fn aggregate_leaf_offset(
+    structs: &HashMap<String, Vec<LlvmType>>,
+    ty: &LlvmType,
+    indices: &[u32],
+) -> Result<(u32, LlvmType), LlvmError> {
+    let overflow = || LlvmError::Translation("aggregate index offset overflow".into());
+    let mut offset: u32 = 0;
+    let mut cur = ty.clone();
+    for &idx in indices {
+        match &cur {
+            LlvmType::Array { inner, count } => {
+                if idx >= *count {
+                    return Err(LlvmError::Translation(format!(
+                        "aggregate index {} is out of bounds of {} ({} elements)",
+                        idx,
+                        llvm_type_name(&cur),
+                        count
+                    )));
+                }
+                let stride = array_stride_of_llvm(structs, inner)?;
+                offset = offset
+                    .checked_add(stride.checked_mul(idx).ok_or_else(overflow)?)
+                    .ok_or_else(overflow)?;
+                cur = (**inner).clone();
+            }
+            LlvmType::Struct(_) | LlvmType::UnnamedStruct { .. } => {
+                let field_count = struct_fields(structs, &cur)
+                    .map(|f| f.len())
+                    .ok_or_else(|| {
+                        LlvmError::Translation(format!(
+                            "struct fields not collected for {}",
+                            llvm_type_name(&cur)
+                        ))
+                    })?;
+                if idx as usize >= field_count {
+                    return Err(LlvmError::Translation(format!(
+                        "aggregate index {} is out of bounds of {} ({} fields)",
+                        idx,
+                        llvm_type_name(&cur),
+                        field_count
+                    )));
+                }
+                offset = offset
+                    .checked_add(field_offset_of_llvm(structs, &cur, idx)?)
+                    .ok_or_else(overflow)?;
+                cur = struct_fields(structs, &cur).expect("checked above")[idx as usize].clone();
+            }
+            other => {
+                return Err(LlvmError::Translation(format!(
+                    "aggregate index {} indexes into {}, which is not an aggregate",
+                    idx,
+                    llvm_type_name(other)
+                )))
+            }
+        }
+    }
+    Ok((offset, cur))
+}
+
 fn translate_instruction(
     builder: &mut IrBuilder,
     structs: &HashMap<String, Vec<LlvmType>>,
@@ -993,15 +1231,28 @@ fn translate_instruction(
                 }
             }
         }
-        LlvmInstr::Ret { value } => match value {
-            Some(v) => {
-                let id = resolve_value_or_emit(builder, structs, syms, st, v)?;
-                builder.ret(Some(id));
-            }
-            None => {
+        LlvmInstr::Ret { value } => {
+            if let Some((sret_ptr, size, ret_ty)) = st.sret.clone() {
+                // An aggregate return is written through the hidden result
+                // pointer instead of being returned in a register; the SAIR
+                // function itself returns void.
+                if let Some(v) = value {
+                    let slot = resolve_aggregate_slot(st, v, &ret_ty)?;
+                    emit_byte_copy(builder, sret_ptr, slot.addr, size as u64);
+                }
                 builder.ret(None);
+            } else {
+                match value {
+                    Some(v) => {
+                        let id = resolve_value_or_emit(builder, structs, syms, st, v)?;
+                        builder.ret(Some(id));
+                    }
+                    None => {
+                        builder.ret(None);
+                    }
+                }
             }
-        },
+        }
         LlvmInstr::Br { target } => {
             builder.br(target.clone());
         }
@@ -1016,16 +1267,30 @@ fn translate_instruction(
             st.values.insert(dest.clone(), result);
         }
         LlvmInstr::Load { dest, ty, addr } => {
-            let ir_ty = llvm_type_to_ir(ty)?;
             let addr_id = resolve_value_or_emit(builder, structs, syms, st, addr)?;
-            let result = builder.load(ir_ty, addr_id);
-            st.values.insert(dest.clone(), result);
+            if is_aggregate(ty) {
+                // An aggregate load is an exact byte-length copy out of memory
+                // into a compiler-managed temporary slot (layout size, padding
+                // included), not a scalar read.
+                let slot = fresh_aggregate_slot(builder, structs, ty)?;
+                emit_byte_copy(builder, slot.addr, addr_id, slot.size as u64);
+                st.aggregates.insert(dest.clone(), slot);
+            } else {
+                let ir_ty = llvm_type_to_ir(ty)?;
+                let result = builder.load(ir_ty, addr_id);
+                st.values.insert(dest.clone(), result);
+            }
         }
         LlvmInstr::Store { ty, value, addr } => {
-            let ir_ty = llvm_type_to_ir(ty)?;
-            let val_id = resolve_value_or_emit(builder, structs, syms, st, value)?;
             let addr_id = resolve_value_or_emit(builder, structs, syms, st, addr)?;
-            builder.store(ir_ty, val_id, addr_id);
+            if is_aggregate(ty) {
+                let src = resolve_aggregate_slot(st, value, ty)?;
+                emit_byte_copy(builder, addr_id, src.addr, src.size as u64);
+            } else {
+                let ir_ty = llvm_type_to_ir(ty)?;
+                let val_id = resolve_value_or_emit(builder, structs, syms, st, value)?;
+                builder.store(ir_ty, val_id, addr_id);
+            }
         }
         LlvmInstr::Call { dest, return_ty, callee, args } => {
             // Constant-length memory ops are expanded inline so they execute on
@@ -1040,16 +1305,29 @@ fn translate_instruction(
                     }
                 }
                 MemIntrinsicLowering::NotExpanded => {
-                    let ir_ret_ty = llvm_type_to_ir(return_ty)?;
                     let mut arg_ids = Vec::new();
                     for arg in args {
                         let id = resolve_value_or_emit(builder, structs, syms, st, arg)?;
                         arg_ids.push(id);
                     }
-                    let result = builder.call(ir_ret_ty, callee.clone(), arg_ids);
-                    if let Some(name) = dest {
-                        if let Some(id) = result {
-                            st.values.insert(name.clone(), id);
+                    if is_aggregate(return_ty) {
+                        // The callee writes its result through a hidden pointer
+                        // appended after the explicit arguments (ABI.md §5.3).
+                        // Each call site gets its *own* fresh slot so two calls
+                        // never alias one another.
+                        let slot = fresh_aggregate_slot(builder, structs, return_ty)?;
+                        arg_ids.push(slot.addr);
+                        builder.call(IrType::Void, callee.clone(), arg_ids);
+                        if let Some(name) = dest {
+                            st.aggregates.insert(name.clone(), slot);
+                        }
+                    } else {
+                        let ir_ret_ty = llvm_type_to_ir(return_ty)?;
+                        let result = builder.call(ir_ret_ty, callee.clone(), arg_ids);
+                        if let Some(name) = dest {
+                            if let Some(id) = result {
+                                st.values.insert(name.clone(), id);
+                            }
                         }
                     }
                 }
@@ -1094,6 +1372,58 @@ fn translate_instruction(
         }
         LlvmInstr::Unreachable => {
             builder.unreachable();
+        }
+        LlvmInstr::ExtractValue { dest, agg_ty, value, indices } => {
+            // `extractvalue` *reads* a leaf; it never keeps a reference into the
+            // source aggregate. The leaf is loaded (scalar) or copied (nested
+            // aggregate) out of the source slot, so a later `insertvalue` on the
+            // source cannot be observed through the extracted value.
+            let base = resolve_aggregate_slot(st, value, agg_ty)?;
+            let (offset, leaf_ty) = aggregate_leaf_offset(structs, agg_ty, indices)?;
+            let addr = byte_offset_addr(builder, base.addr, offset);
+            if is_aggregate(&leaf_ty) {
+                let slot = fresh_aggregate_slot(builder, structs, &leaf_ty)?;
+                emit_byte_copy(builder, slot.addr, addr, slot.size as u64);
+                st.aggregates.insert(dest.clone(), slot);
+            } else {
+                let ir_ty = llvm_type_to_ir(&leaf_ty)?;
+                if ir_ty == IrType::Void {
+                    return Err(LlvmError::Translation(format!(
+                        "extractvalue from {} selects a void leaf",
+                        llvm_type_name(agg_ty)
+                    )));
+                }
+                let v = builder.load(ir_ty, addr);
+                st.values.insert(dest.clone(), v);
+            }
+        }
+        LlvmInstr::InsertValue { dest, agg_ty, value, elem_ty, elem, indices } => {
+            // `insertvalue` is a *functional* update: the result is a distinct
+            // aggregate value and the operand keeps its old contents. The update
+            // therefore happens in a fresh copy of the whole aggregate — copying
+            // every unrelated byte, padding included — rather than in place.
+            let base = resolve_aggregate_slot(st, value, agg_ty)?;
+            let (offset, leaf_ty) = aggregate_leaf_offset(structs, agg_ty, indices)?;
+            if leaf_ty != *elem_ty {
+                return Err(LlvmError::Translation(format!(
+                    "insertvalue into {} writes an {} into the {} leaf selected by the index path",
+                    llvm_type_name(agg_ty),
+                    llvm_type_name(elem_ty),
+                    llvm_type_name(&leaf_ty)
+                )));
+            }
+            let slot = fresh_aggregate_slot(builder, structs, agg_ty)?;
+            emit_byte_copy(builder, slot.addr, base.addr, slot.size as u64);
+            let addr = byte_offset_addr(builder, slot.addr, offset);
+            if is_aggregate(elem_ty) {
+                let src = resolve_aggregate_slot(st, elem, elem_ty)?;
+                emit_byte_copy(builder, addr, src.addr, src.size as u64);
+            } else {
+                let ir_ty = llvm_type_to_ir(elem_ty)?;
+                let e = resolve_value_or_emit(builder, structs, syms, st, elem)?;
+                builder.store(ir_ty, e, addr);
+            }
+            st.aggregates.insert(dest.clone(), slot);
         }
         LlvmInstr::Gep { dest, elem_ty, base, indices } => {
             let base_id = resolve_value_or_emit(builder, structs, syms, st, base)?;

@@ -150,6 +150,44 @@ pub enum LlvmInstr {
         /// One incoming `(value, predecessor block label)` per predecessor.
         incoming: Vec<(LlvmValue, String)>,
     },
+    /// `%d = extractvalue <aggty> <agg>, <idx>[, <idx>]...` — read a scalar leaf
+    /// out of an aggregate value by a constant index path.
+    ExtractValue {
+        dest: String,
+        agg_ty: LlvmType,
+        value: LlvmValue,
+        indices: Vec<u32>,
+    },
+    /// `%d = insertvalue <aggty> <agg>, <elemty> <elem>, <idx>[, <idx>]...` —
+    /// a *functional* update: the result is a new aggregate value that differs
+    /// from the input at exactly the leaf addressed by the index path.
+    InsertValue {
+        dest: String,
+        agg_ty: LlvmType,
+        value: LlvmValue,
+        elem_ty: LlvmType,
+        elem: LlvmValue,
+        indices: Vec<u32>,
+    },
+}
+
+/// One formal parameter of a `define`/`declare`.
+///
+/// The aggregate ABI attributes are recorded rather than skipped because they
+/// are *semantically* load-bearing: `byval` tells the callee it owns a private
+/// copy of the pointed-to aggregate (clang relies on the backend to materialize
+/// it, so the IR contains no copy), while `sret` only marks the pointer as
+/// caller-allocated result storage (no copy, the callee writes through it).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LlvmParam {
+    pub ty: LlvmType,
+    pub name: String,
+    /// `byval(<ty>)` — the parameter is a pointer to an aggregate the callee may
+    /// freely overwrite; the callee must operate on its own copy.
+    pub byval: Option<LlvmType>,
+    /// `sret(<ty>)` — the parameter is a pointer to caller-allocated storage for
+    /// the aggregate this call returns.
+    pub sret: Option<LlvmType>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -162,7 +200,7 @@ pub struct LlvmBlock {
 pub struct LlvmFunction {
     pub name: String,
     pub return_ty: LlvmType,
-    pub params: Vec<(LlvmType, String)>,
+    pub params: Vec<LlvmParam>,
     pub blocks: Vec<LlvmBlock>,
     pub is_declaration: bool,
 }
@@ -497,17 +535,35 @@ impl Lexer {
 pub struct Parser {
     lexer: Lexer,
     current: Token,
+    /// One-token lookahead, filled by [`Parser::peek_token`]. Used to tell a
+    /// parenthesized attribute (`byval(%struct.Big)`) from a bare one.
+    lookahead: Option<Token>,
 }
 
 impl Parser {
     pub fn new(input: &str) -> Self {
         let mut lexer = Lexer::new(input);
         let current = lexer.next_token();
-        Parser { lexer, current }
+        Parser {
+            lexer,
+            current,
+            lookahead: None,
+        }
     }
 
     fn advance(&mut self) {
-        self.current = self.lexer.next_token();
+        self.current = match self.lookahead.take() {
+            Some(t) => t,
+            None => self.lexer.next_token(),
+        };
+    }
+
+    /// The token after the current one, without consuming either.
+    fn peek_token(&mut self) -> Token {
+        if self.lookahead.is_none() {
+            self.lookahead = Some(self.lexer.next_token());
+        }
+        self.lookahead.clone().expect("lookahead just filled")
     }
 
     fn expect(&mut self, expected: &Token) -> Result<(), LlvmError> {
@@ -576,6 +632,18 @@ impl Parser {
                     // `i64` is not a reserved keyword token; recognize it from
                     // the identifier stream.
                     Token::Ident(s) if s == "i64" => Ok(LlvmType::I64),
+                    // Any other `iN` is a real integer width with no SAIR
+                    // representation. clang reaches these through aggregate
+                    // coercion (a struct of three `char`s becomes `i24`), so the
+                    // diagnostic names the width instead of echoing the token.
+                    Token::Ident(s) if is_integer_width_name(&s) => {
+                        Err(LlvmError::UnsupportedType(format!(
+                            "integer width {} is not supported: SAIR represents i1, i8, i16, \
+                             i32 and i64 only (clang coerces a struct whose fields total an odd \
+                             number of bytes — e.g. three `char`s — to a width like {})",
+                            s, s
+                        )))
+                    }
                     _ => Err(LlvmError::UnsupportedType(format!("{:?}", tok))),
                 }
             }
@@ -655,7 +723,7 @@ impl Parser {
         self.parse_value_of_type_opt(Some(ty))
     }
 
-    fn parse_params(&mut self, names_required: bool) -> Result<Vec<(LlvmType, String)>, LlvmError> {
+    fn parse_params(&mut self, names_required: bool) -> Result<Vec<LlvmParam>, LlvmError> {
         let mut params = Vec::new();
         self.expect(&Token::OpenParen)?;
         while self.current != Token::CloseParen {
@@ -666,8 +734,8 @@ impl Parser {
             }
             let ty = self.parse_type()?;
             // Parameter attributes sit between the type and the name
-            // (`i32 noundef %0`).
-            self.skip_param_attrs();
+            // (`i32 noundef %0`, `ptr byval(%struct.Big) align 8 %0`).
+            let (byval, sret) = self.parse_param_attrs()?;
             let name = match &self.current {
                 Token::LocalId(n) => {
                     let name = n.clone();
@@ -684,7 +752,12 @@ impl Parser {
                     String::new()
                 }
             };
-            params.push((ty, name));
+            params.push(LlvmParam {
+                ty,
+                name,
+                byval,
+                sret,
+            });
             if self.current == Token::Comma {
                 self.advance();
             }
@@ -713,45 +786,118 @@ impl Parser {
         }
     }
 
-    /// Parameter/argument attributes that may appear between a type and the
-    /// value in a parameter list or call (`i32 noundef %0`). Only plain
-    /// identifier attributes are handled; anything with an argument list is
-    /// left for the caller to reject.
-    fn skip_param_attrs(&mut self) {
-        while let Token::Ident(s) = &self.current {
-            let s = s.clone();
-            let known = matches!(
-                s.as_str(),
-                "noundef"
-                    | "signext"
-                    | "zeroext"
-                    | "noalias"
-                    | "nocapture"
-                    | "nonnull"
-                    | "returned"
-                    | "inreg"
-                    | "sret"
-                    | "swiftself"
-                    | "nest"
-                    | "readonly"
-                    | "writeonly"
-                    | "readnone"
-                    | "immarg"
-                    | "captures"
-                    | "align"
-            );
-            if !known {
-                break;
-            }
+    /// The constant index path of an `extractvalue`/`insertvalue`: one or more
+    /// comma-separated untyped integers (`extractvalue { i64, i32 } %v, 0`).
+    ///
+    /// LLVM requires these to be constants — a dynamic aggregate index has no
+    /// meaning, since the field offsets are fixed by the layout.
+    fn parse_aggregate_indices(&mut self) -> Result<Vec<u32>, LlvmError> {
+        let mut indices = Vec::new();
+        while self.current == Token::Comma {
             self.advance();
-            // `align N` (clang emits it on call operands: `ptr align 4 %x`)
-            // carries a trailing integer that is not an attribute word.
-            if s == "align" {
-                if let Token::Number(_) = self.current {
+            match self.current.clone() {
+                Token::Number(n) if n >= 0 => {
+                    indices.push(n as u32);
                     self.advance();
+                }
+                other => {
+                    return Err(LlvmError::Parse(format!(
+                        "aggregate index must be a non-negative constant, got {:?}",
+                        other
+                    )))
                 }
             }
         }
+        if indices.is_empty() {
+            return Err(LlvmError::Parse(
+                "extractvalue/insertvalue requires at least one index".into(),
+            ));
+        }
+        Ok(indices)
+    }
+
+    /// Parameter/argument attributes that may appear between a type and the
+    /// value in a parameter list or call (`i32 noundef %0`).
+    ///
+    /// The aggregate ABI attributes `byval(<ty>)` and `sret(<ty>)` are
+    /// *captured*, not merely skipped: `byval` obliges the callee to work on a
+    /// private copy (clang leaves the copy to the backend, so the IR has none),
+    /// and the translator must materialize it. Every other parenthesized
+    /// attribute (`dereferenceable(8)`, …) is skipped whole.
+    fn parse_param_attrs(&mut self) -> Result<(Option<LlvmType>, Option<LlvmType>), LlvmError> {
+        let mut byval = None;
+        let mut sret = None;
+        while let Token::Ident(s) = &self.current {
+            let s = s.clone();
+            match s.as_str() {
+                "byval" | "sret" => {
+                    self.advance();
+                    self.expect(&Token::OpenParen)?;
+                    let ty = self.parse_type()?;
+                    self.expect(&Token::CloseParen)?;
+                    if s == "byval" {
+                        byval = Some(ty);
+                    } else {
+                        sret = Some(ty);
+                    }
+                }
+                "noundef"
+                | "signext"
+                | "zeroext"
+                | "noalias"
+                | "nocapture"
+                | "nonnull"
+                | "returned"
+                | "inreg"
+                | "swiftself"
+                | "nest"
+                | "readonly"
+                | "writeonly"
+                | "readnone"
+                | "immarg"
+                | "captures"
+                | "dead_on_unwind"
+                | "writable"
+                | "align" => {
+                    self.advance();
+                    // `align N` (clang emits it on call operands: `ptr align 4
+                    // %x`) carries a trailing integer that is not an attribute
+                    // word.
+                    if s == "align" {
+                        if let Token::Number(_) = self.current {
+                            self.advance();
+                        }
+                    }
+                }
+                // Any other parenthesized attribute: skip the whole group so an
+                // unknown annotation cannot derail the parameter list.
+                _ if matches!(self.peek_token(), Token::OpenParen) => {
+                    self.advance();
+                    self.skip_paren_group()?;
+                }
+                _ => break,
+            }
+        }
+        Ok((byval, sret))
+    }
+
+    /// Consume a balanced `( … )` group; the opening paren is already consumed.
+    fn skip_paren_group(&mut self) -> Result<(), LlvmError> {
+        let mut depth = 1usize;
+        while depth > 0 {
+            match &self.current {
+                Token::Eof => {
+                    return Err(LlvmError::Parse(
+                        "reached end of input inside an attribute group".into(),
+                    ))
+                }
+                Token::OpenParen => depth += 1,
+                Token::CloseParen => depth -= 1,
+                _ => {}
+            }
+            self.advance();
+        }
+        Ok(())
     }
 
     /// Skip attribute/`#N` tokens between a function header and its body.
@@ -809,7 +955,10 @@ impl Parser {
         while self.current != Token::CloseParen {
             // Call arguments are written `<ty> <attr>* <value>`; attribute words
             // may also precede the type (`noundef i32 5` in some frontends).
-            self.skip_param_attrs();
+            // `byval`/`sret` on a call operand are informational: the callee owns
+            // the byval copy and the caller owns the sret storage, so both are
+            // plain pointers here.
+            self.parse_param_attrs()?;
             match &self.current {
                 // A bare value without an explicit type prefix is unusual in
                 // calls but tolerated.
@@ -819,7 +968,7 @@ impl Parser {
                 }
                 _ => {
                     let ty = self.parse_type()?;
-                    self.skip_param_attrs();
+                    self.parse_param_attrs()?;
                     match &self.current {
                         Token::Number(n) => {
                             let val = *n;
@@ -995,6 +1144,16 @@ impl Parser {
                             self.advance();
                             Ok(LlvmInstr::Ret { value: None })
                         } else {
+                            // `ret <ty> <value>`. A named aggregate type shares
+                            // its `%name` spelling with an SSA value, so
+                            // `parse_value` would take `%struct.S` for the
+                            // operand and leave the actual value behind. Prefer
+                            // the type reading when another value token follows.
+                            if matches!(self.current, Token::LocalId(_))
+                                && starts_value(&self.peek_token())
+                            {
+                                self.parse_type()?;
+                            }
                             let value = self.parse_value()?;
                             Ok(LlvmInstr::Ret { value: Some(value) })
                         }
@@ -1244,6 +1403,37 @@ impl Parser {
                             dest,
                             ty,
                             incoming,
+                        })
+                    }
+                    "extractvalue" => {
+                        let agg_ty = self.parse_type()?;
+                        let value = self.parse_value_of_type(&agg_ty)?;
+                        let indices = self.parse_aggregate_indices()?;
+                        let dest = dest
+                            .ok_or_else(|| LlvmError::Parse("extractvalue requires dest".into()))?;
+                        Ok(LlvmInstr::ExtractValue {
+                            dest,
+                            agg_ty,
+                            value,
+                            indices,
+                        })
+                    }
+                    "insertvalue" => {
+                        let agg_ty = self.parse_type()?;
+                        let value = self.parse_value_of_type(&agg_ty)?;
+                        self.expect(&Token::Comma)?;
+                        let elem_ty = self.parse_type()?;
+                        let elem = self.parse_value_of_type(&elem_ty)?;
+                        let indices = self.parse_aggregate_indices()?;
+                        let dest = dest
+                            .ok_or_else(|| LlvmError::Parse("insertvalue requires dest".into()))?;
+                        Ok(LlvmInstr::InsertValue {
+                            dest,
+                            agg_ty,
+                            value,
+                            elem_ty,
+                            elem,
+                            indices,
                         })
                     }
                     _ => Err(LlvmError::UnsupportedInstruction(op_name.to_string())),
@@ -1774,6 +1964,26 @@ impl Parser {
             None
         }
     }
+}
+
+/// Whether an identifier spells an LLVM integer type name (`i17`, `i24`, …).
+///
+/// `i1`/`i8`/`i16`/`i32` are reserved keyword tokens and `i64` is matched
+/// separately, so this only ever recognizes the widths SAIR cannot represent.
+fn is_integer_width_name(s: &str) -> bool {
+    let Some(digits) = s.strip_prefix('i') else {
+        return false;
+    };
+    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Whether `tok` can begin a typed operand's value, i.e. what may follow the
+/// `<ty>` in `ret <ty> <value>`.
+fn starts_value(tok: &Token) -> bool {
+    matches!(
+        tok,
+        Token::LocalId(_) | Token::GlobalId(_) | Token::Number(_) | Token::True | Token::False
+    )
 }
 
 pub fn parse_llvm(input: &str) -> Result<LlvmProgram, LlvmError> {

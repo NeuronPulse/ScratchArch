@@ -96,16 +96,19 @@ entry:
 }
 
 #[test]
-fn struct_value_type_is_rejected() {
+fn struct_value_in_scalar_position_is_rejected() {
     // A struct *value* has no SAIR representation: there is no aggregate-by-value
-    // ABI, so a `load %T` cannot produce an operand. The translator must say so
-    // rather than flatten the struct into a scalar.
+    // ABI. A `load %T` is fine (it becomes a byte-exact copy into a temporary
+    // slot, see `aggregate_abi_tests.rs`), but an aggregate in a genuinely scalar
+    // position — an arithmetic operand, here — cannot be given a value at all, so
+    // the translator must say so rather than flatten the struct into a scalar.
     let ir = r#"
 %T = type { i32, i32 }
 define i32 @main() {
 entry:
   %p = alloca %T
   %v = load %T, ptr %p
+  %w = add %T %v, %v
   ret i32 0
 }
 "#;
@@ -118,13 +121,16 @@ entry:
 }
 
 #[test]
-fn array_value_type_is_rejected() {
+fn array_value_in_scalar_position_is_rejected() {
     // Same rule for arrays; the diagnostic points at the layout-preserving path.
     let ir = r#"
 define i32 @main() {
 entry:
   %a = alloca [2 x i32]
+  %p = alloca [2 x i32]
   %v = load [2 x i32], ptr %a
+  %w = load [2 x i32], ptr %p
+  %s = select i1 true, [2 x i32] %v, [2 x i32] %w
   ret i32 0
 }
 "#;
@@ -133,6 +139,31 @@ entry:
     assert!(
         msg.contains("[2 x i32]") && msg.contains("no SAIR value representation"),
         "diagnostic must explain the array-value rejection, got: {msg}"
+    );
+}
+
+#[test]
+fn aggregate_index_path_type_mismatch_is_rejected() {
+    // `extractvalue` names the aggregate type it reads. If that type disagrees
+    // with the type of the value actually held, the layout identities differ and
+    // the field offset would be read from the wrong geometry — reject rather than
+    // reinterpret the bytes.
+    let ir = r#"
+%T = type { i32, i32 }
+%U = type { i32, i32, i32 }
+define i32 @main() {
+entry:
+  %p = alloca %T
+  %v = load %T, ptr %p
+  %x = extractvalue %U %v, 0
+  ret i32 %x
+}
+"#;
+    let err = translate_llvm(ir).expect_err("aggregate type mismatch must be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("%T") && msg.contains("%U"),
+        "diagnostic must name both aggregate types, got: {msg}"
     );
 }
 
@@ -201,5 +232,58 @@ entry:
     assert!(
         msg.contains("@inc") && msg.contains("SSA value"),
         "diagnostic must explain the function-address rejection, got: {msg}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// v0.6 aggregate-ABI boundaries. Two constructs inside the aggregate surface
+// are deliberately *not* implemented, and each must be refused by name rather
+// than approximated. See `docs/design/AGGREGATE_ABI.md` §"Explicit boundaries".
+// ---------------------------------------------------------------------------
+
+#[test]
+fn odd_width_integer_is_rejected_with_its_width() {
+    // `struct S { char a, b, c; }` is three bytes, which the SysV ABI coerces to
+    // an `i24` parameter. SAIR has i1/i8/i16/i32/i64 only, so an arbitrary-width
+    // integer is an explicit boundary of this milestone: naming the width keeps
+    // it honest, where rounding it to i32 would silently shift every later
+    // argument in the same call.
+    let ir = r#"
+%S = type { i8, i8, i8 }
+define i32 @main(i24 %x) {
+entry:
+  ret i32 0
+}
+"#;
+    let err = translate_llvm(ir).expect_err("i24 must be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("i24") && msg.contains("i1, i8, i16, i32 and i64"),
+        "diagnostic must name the unsupported width, got: {msg}"
+    );
+}
+
+#[test]
+fn aggregate_returning_declaration_is_rejected() {
+    // The aggregate return ABI is realized with a hidden result pointer that the
+    // caller allocates and the callee writes through. A declaration has no body
+    // to write through it, and an external function cannot be assumed to follow
+    // the convention, so the translator refuses rather than invent a convention
+    // the callee may not implement.
+    let ir = r#"
+%Pair = type { i32, i32 }
+declare %Pair @external_make(i32)
+
+define i32 @main() {
+entry:
+  %p = call %Pair @external_make(i32 1)
+  ret i32 0
+}
+"#;
+    let err = translate_llvm(ir).expect_err("aggregate-returning declaration must be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("external_make") && msg.contains("hidden result pointer"),
+        "diagnostic must explain the declaration rejection, got: {msg}"
     );
 }
