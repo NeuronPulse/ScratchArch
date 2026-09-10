@@ -12,10 +12,11 @@
 //!
 //! Everything else — non-canonical variants (`llvm.memcpy.inline.*`,
 //! `llvm.memcpy.element.unordered.*`), runtime-length, volatile, or oversized
-//! calls — is left as an ordinary call: the interpreter resolves it against its
-//! flat memory (canonical families) or rejects it with a named diagnostic
-//! (variants), while the VM rejects any undefined named callee with an explicit
-//! diagnostic. No engine ever silently approximates.
+//! calls — is left as an ordinary call: the interpreter resolves a canonical
+//! family against its flat memory at run time and the VM resolves it at load
+//! time (its runtime resolver, `scratcharch-vm/src/runtime.rs`), while a
+//! non-canonical variant is rejected by both with a named diagnostic. A callee
+//! neither engine knows is an explicit rejection, never a silent approximation.
 
 use std::path::PathBuf;
 
@@ -194,11 +195,12 @@ declare void @llvm.memcpy.inline.p0.p0.i64(ptr nocapture writeonly, ptr nocaptur
 }
 
 #[test]
-fn test_runtime_length_memcpy_stays_interpreter_only() {
+fn test_runtime_length_memcpy_runs_on_both_engines() {
     // A length read from memory is not a compile-time constant, so the
-    // translator leaves the call intact. The interpreter resolves the canonical
-    // `llvm.memcpy` against its flat memory at the runtime length; the VM has no
-    // such callee and must reject it with an explicit diagnostic — never run.
+    // translator leaves the call intact. Both engines resolve the canonical
+    // `llvm.memcpy` at the runtime length: the interpreter against its flat
+    // memory at run time, the VM at load time (its runtime resolver rewrites
+    // the bodyless named callee), so they must agree exactly.
     let ir = r#"
 define i32 @main() {
 entry:
@@ -224,14 +226,47 @@ declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)
 
     let module = translate_llvm(ir).expect("runtime-length IR should translate");
     let mut interp = Interpreter::new(module, 65536, 4096);
-    match interp.run().expect("interpreter must run the runtime-length memcpy") {
-        Some(RuntimeValue::I32(v)) => assert_eq!(v, 0x04030201, "runtime-length memcpy result"),
+    let expected = match interp
+        .run()
+        .expect("interpreter must run the runtime-length memcpy")
+    {
+        Some(RuntimeValue::I32(v)) => v,
         other => panic!("expected I32, got {other:?}"),
-    }
+    };
+    assert_eq!(expected, 0x04030201, "runtime-length memcpy result");
 
-    let err = run_vm(ir).expect_err("VM must reject the undefined callee");
+    let vm_value = run_vm(ir).expect("VM must resolve the runtime-length memcpy");
+    assert_eq!(
+        vm_value, expected,
+        "VM must agree with the interpreter at the runtime length"
+    );
+}
+
+#[test]
+fn test_unknown_runtime_callee_is_rejected_by_both_engines() {
+    // A name the runtime registry does not know is never approximated: the
+    // interpreter reports it as an unknown intrinsic when the call is reached,
+    // and the VM rejects it at *load* time (a bodyless callee it cannot
+    // resolve). This is the negative twin of the resolver tests above.
+    let ir = r#"
+define i32 @main() {
+entry:
+  %r = call i32 @no_such_runtime_function()
+  ret i32 %r
+}
+
+declare i32 @no_such_runtime_function()
+"#;
+
+    let interp_err = run_interp(ir).expect_err("interpreter must reject the unknown callee");
     assert!(
-        err.contains("undefined function: llvm.memcpy.p0.p0.i64"),
-        "VM diagnostic should name the callee, got: {err}"
+        interp_err.contains("no_such_runtime_function"),
+        "interpreter diagnostic should name the callee, got: {interp_err}"
+    );
+
+    let vm_err = run_vm(ir).expect_err("VM must reject the unknown callee");
+    assert!(
+        vm_err.contains("undefined function: no_such_runtime_function"),
+        "VM diagnostic should name the callee, got: {vm_err}"
     );
 }

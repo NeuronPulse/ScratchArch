@@ -11,10 +11,12 @@
 
 use scratcharch_core::value::Value;
 use scratcharch_ir::builder::IrBuilder;
-use scratcharch_ir::instruction::CastOp;
+use scratcharch_ir::instruction::{CastOp, GepIndex};
 use scratcharch_ir::lower::IsaLowerer;
+use scratcharch_ir::r#module::IrModule;
 use scratcharch_ir::types::IrType;
 use scratcharch_ir::value::ValueId;
+use scratcharch_runtime::RuntimeError;
 use scratcharch_sair_interpreter::{InterpError, Interpreter, RuntimeValue};
 use scratcharch_vm::vm::Vm;
 
@@ -742,4 +744,454 @@ fn diff_ashr8_fixture_shape_sext_after_trunc() {
         let ff = b.const_i32(0xFF);
         b.and(IrType::I32, y, ff)
     });
+}
+
+// ── Runtime / intrinsic differential coverage ─────────────────────
+//
+// A bodyless runtime/intrinsic call is resolved once at VM load time: SART
+// `__scratcharch_*` builtins run the shared registry body over a flat memory
+// view, `llvm.bswap/ctpop/ctlz/cttz.iN` evaluate the shared bit-math leaf, and
+// `llvm.mem*` follow the flat-memory rules. The interpreter is the reference;
+// every module below runs on both engines and must agree bit-for-bit — or on
+// the same failure category, for the abort/panic/trap/div-by-zero families.
+
+/// Interpret `module` and return its result (`Ok(None)` for a void `main`) or
+/// the reference error.
+fn interp_run(module: IrModule) -> Result<Option<RuntimeValue>, InterpError> {
+    Interpreter::new(module, 65536, 4096).run()
+}
+
+/// Lower `module`, load it on the VM, run it to completion, and return the VM
+/// so the caller can read the result off the operand stack.
+fn vm_run(module: &IrModule) -> Result<Vm, scratcharch_vm::vm::VmError> {
+    let program = IsaLowerer::new().lower(module).expect("lower failed");
+    let mut vm = Vm::new(65536, 4096);
+    vm.load_program(&program).expect("VM load failed");
+    vm.run()?;
+    Ok(vm)
+}
+
+/// The failure of running `module` on the VM, which `module` is expected to
+/// provoke (`Vm` has no `Debug`, so `expect_err` is unavailable).
+fn vm_err(module: &IrModule) -> scratcharch_vm::vm::VmError {
+    match vm_run(module) {
+        Ok(_) => panic!("VM was expected to fail but ran to completion"),
+        Err(e) => e,
+    }
+}
+
+/// Assert `build()` agrees bit-for-bit between the interpreter and the VM at
+/// `width`.
+fn assert_build_agrees(width: u32, label: &str, build: impl Fn() -> IrModule) {
+    let module = build();
+    module
+        .validate()
+        .unwrap_or_else(|e| panic!("{label}: module did not validate: {e}"));
+    let expected = runtime_bits(
+        &interp_run(build())
+            .unwrap_or_else(|e| panic!("{label}: interpreter failed: {e:?}"))
+            .expect("interpreter produced no result"),
+    );
+    let vm = vm_run(&module).unwrap_or_else(|e| panic!("{label}: VM failed: {e:?}"));
+    let got = vm_result_bits(&vm, width);
+    let mask = width_mask(width);
+    assert_eq!(
+        got & mask,
+        expected & mask,
+        "{label}: interpreter {:#x}, VM {:#x}",
+        expected & mask,
+        got & mask,
+    );
+}
+
+fn wide_const(b: &mut IrBuilder, width: u32, v: u64) -> ValueId {
+    match width {
+        8 => b.const_i8(v as u8),
+        16 => b.const_i16(v as u16),
+        32 => b.const_i32(v as u32),
+        64 => b.const_i64(v),
+        _ => unreachable!("unsupported test width {width}"),
+    }
+}
+
+/// Store `bytes` at `base + 0..`.
+fn store_bytes(b: &mut IrBuilder, base: ValueId, bytes: &[u8]) {
+    for (i, &byte) in bytes.iter().enumerate() {
+        let off = b.const_i32(i as u32);
+        let p = b.gep(IrType::I8, base, vec![GepIndex::Dynamic(off)]);
+        let v = b.const_i8(byte);
+        b.store(IrType::I8, v, p);
+    }
+}
+
+/// An `i32` checksum (byte sum) of the first `n` bytes at `base`.
+fn checksum(b: &mut IrBuilder, base: ValueId, n: u32) -> ValueId {
+    let mut acc = b.const_i32(0);
+    for i in 0..n {
+        let off = b.const_i32(i);
+        let p = b.gep(IrType::I8, base, vec![GepIndex::Dynamic(off)]);
+        let byte = b.load(IrType::I8, p);
+        let wide = b.cast(CastOp::Zext, IrType::I8, IrType::I32, byte);
+        acc = b.add(IrType::I32, acc, wide);
+    }
+    acc
+}
+
+/// `bswap`/`ctpop`/`ctlz`/`cttz` at every width clang emits (8/16/32/64),
+/// including the 64-bit limb boundary and the `ctlz`/`cttz` zero case (`0`
+/// yields the width, not poison). `ctlz`/`cttz` carry the `is_zero_undef` i1
+/// immarg the interpreter reads-and-ignores; the VM must pop and ignore it too.
+#[test]
+fn diff_llvm_bit_intrinsics_agree() {
+    let samples = |width: u32| -> Vec<u64> {
+        match width {
+            8 => vec![0, 1, 0x80, 0xAA, 0xFF],
+            16 => vec![0, 1, 0x00FF, 0x8000, 0xABCD, 0xFFFF],
+            32 => vec![0, 1, 0x8000_0000, 0xFFFF_FFFF, 0x1234_5678],
+            _ => vec![0, 1, 0x8000_0000_0000_0000, 0xFFFF_FFFF_FFFF_FFFF, 0x0123_4567_89AB_CDEF],
+        }
+    };
+    for &width in &[8u32, 16, 32, 64] {
+        for family in ["bswap", "ctpop", "ctlz", "cttz"] {
+            let callee = format!("llvm.{family}.i{width}");
+            for v in samples(width) {
+                let build = || {
+                    let ty = ir_type(width);
+                    let mut b = IrBuilder::new("main");
+                    b.start_function("main", ty);
+                    b.new_block("entry");
+                    let val = wide_const(&mut b, width, v);
+                    let mut args = vec![val];
+                    if family == "ctlz" || family == "cttz" {
+                        args.push(b.const_i1(false));
+                    }
+                    let r = b.call(ty, callee.clone(), args).expect("returns a value");
+                    b.ret(Some(r));
+                    b.finish()
+                };
+                assert_build_agrees(width, &format!("{callee} on {v:#x}"), build);
+            }
+        }
+    }
+}
+
+/// `llvm.memcpy`/`llvm.memmove`/`llvm.memset` with a *run-time* length (so the
+/// translator leaves the call for the VM runtime resolver instead of inlining
+/// it). `memmove` copies an overlapping region, exercising the
+/// as-if-through-a-temporary rule.
+#[test]
+fn diff_llvm_mem_intrinsics_agree() {
+    let runtime_len = |b: &mut IrBuilder, n: u32| {
+        // Two plus (n - 2): a computed value the translator cannot treat as a
+        // literal length.
+        let two = b.const_i32(2);
+        let rest = b.const_i32(n - 2);
+        b.add(IrType::I32, two, rest)
+    };
+
+    let build_memcpy = || {
+        let mut b = IrBuilder::new("main");
+        b.start_function("main", IrType::I32);
+        b.new_block("entry");
+        let src = b.alloca_array(IrType::I8, 8);
+        store_bytes(&mut b, src, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        let dst = b.alloca_array(IrType::I8, 8);
+        let len = runtime_len(&mut b, 5);
+        let vol = b.const_i1(false);
+        b.call(IrType::Void, "llvm.memcpy.p0.p0.i32", vec![dst, src, len, vol]);
+        let sum = checksum(&mut b, dst, 8);
+        b.ret(Some(sum));
+        b.finish()
+    };
+    assert_build_agrees(32, "llvm.memcpy runtime length", build_memcpy);
+
+    let build_memmove = || {
+        let mut b = IrBuilder::new("main");
+        b.start_function("main", IrType::I32);
+        b.new_block("entry");
+        let buf = b.alloca_array(IrType::I8, 8);
+        store_bytes(&mut b, buf, &[10, 20, 30, 40, 50, 60, 70, 80]);
+        let one = b.const_i32(1);
+        let dst = b.gep(IrType::I8, buf, vec![GepIndex::Dynamic(one)]);
+        let len = runtime_len(&mut b, 4);
+        let vol = b.const_i1(false);
+        b.call(IrType::Void, "llvm.memmove.p0.p0.i32", vec![dst, buf, len, vol]);
+        let sum = checksum(&mut b, buf, 8);
+        b.ret(Some(sum));
+        b.finish()
+    };
+    assert_build_agrees(32, "llvm.memmove overlap runtime length", build_memmove);
+
+    let build_memset = || {
+        let mut b = IrBuilder::new("main");
+        b.start_function("main", IrType::I32);
+        b.new_block("entry");
+        let buf = b.alloca_array(IrType::I8, 8);
+        let val = b.const_i8(0xAB);
+        let len = runtime_len(&mut b, 5);
+        let vol = b.const_i1(false);
+        b.call(IrType::Void, "llvm.memset.p0.i32", vec![buf, val, len, vol]);
+        let sum = checksum(&mut b, buf, 8);
+        b.ret(Some(sum));
+        b.finish()
+    };
+    assert_build_agrees(32, "llvm.memset runtime length", build_memset);
+}
+
+/// The SART string/memory builtins: `strlen` returns the count, `strcmp`/
+/// `memcmp` the comparison sign, and the writing routines are checked by a
+/// destination checksum. The `__scratcharch_mem*` copies use a run-time length
+/// so the VM runtime resolver (not the translator's constant-length inlining)
+/// executes them.
+#[test]
+fn diff_sarb_string_and_mem_builtins_agree() {
+    let build_strlen = || {
+        let mut b = IrBuilder::new("main");
+        b.start_function("main", IrType::I32);
+        b.new_block("entry");
+        let buf = b.alloca_array(IrType::I8, 8);
+        store_bytes(&mut b, buf, b"hello\0");
+        let r = b.call(IrType::I32, "__scratcharch_strlen", vec![buf]).expect("value");
+        b.ret(Some(r));
+        b.finish()
+    };
+    assert_build_agrees(32, "__scratcharch_strlen", build_strlen);
+
+    let build_strcmp = || {
+        let mut b = IrBuilder::new("main");
+        b.start_function("main", IrType::I32);
+        b.new_block("entry");
+        let a = b.alloca_array(IrType::I8, 4);
+        store_bytes(&mut b, a, b"abc\0");
+        let c = b.alloca_array(IrType::I8, 4);
+        store_bytes(&mut b, c, b"abd\0");
+        let r = b.call(IrType::I32, "__scratcharch_strcmp", vec![a, c]).expect("value");
+        b.ret(Some(r));
+        b.finish()
+    };
+    assert_build_agrees(32, "__scratcharch_strcmp", build_strcmp);
+
+    let build_strcpy = || {
+        let mut b = IrBuilder::new("main");
+        b.start_function("main", IrType::I32);
+        b.new_block("entry");
+        let dst = b.alloca_array(IrType::I8, 8);
+        let src = b.alloca_array(IrType::I8, 4);
+        store_bytes(&mut b, src, b"hi\0");
+        b.call(IrType::Pointer, "__scratcharch_strcpy", vec![dst, src]);
+        let sum = checksum(&mut b, dst, 8);
+        b.ret(Some(sum));
+        b.finish()
+    };
+    assert_build_agrees(32, "__scratcharch_strcpy", build_strcpy);
+
+    let build_strncpy = || {
+        let mut b = IrBuilder::new("main");
+        b.start_function("main", IrType::I32);
+        b.new_block("entry");
+        let dst = b.alloca_array(IrType::I8, 8);
+        let src = b.alloca_array(IrType::I8, 4);
+        store_bytes(&mut b, src, b"hi\0");
+        let n = b.const_i32(6);
+        b.call(IrType::Pointer, "__scratcharch_strncpy", vec![dst, src, n]);
+        let sum = checksum(&mut b, dst, 8);
+        b.ret(Some(sum));
+        b.finish()
+    };
+    assert_build_agrees(32, "__scratcharch_strncpy", build_strncpy);
+
+    let build_memcmp = || {
+        let mut b = IrBuilder::new("main");
+        b.start_function("main", IrType::I32);
+        b.new_block("entry");
+        let a = b.alloca_array(IrType::I8, 4);
+        store_bytes(&mut b, a, &[1, 2, 3, 4]);
+        let c = b.alloca_array(IrType::I8, 4);
+        store_bytes(&mut b, c, &[1, 2, 9, 4]);
+        let n = {
+            let two = b.const_i32(2);
+            let rest = b.const_i32(2);
+            b.add(IrType::I32, two, rest)
+        };
+        let r = b.call(IrType::I32, "__scratcharch_memcmp", vec![a, c, n]).expect("value");
+        b.ret(Some(r));
+        b.finish()
+    };
+    assert_build_agrees(32, "__scratcharch_memcmp", build_memcmp);
+
+    let build_runtime_memcpy = || {
+        let mut b = IrBuilder::new("main");
+        b.start_function("main", IrType::I32);
+        b.new_block("entry");
+        let src = b.alloca_array(IrType::I8, 8);
+        store_bytes(&mut b, src, &[3, 1, 4, 1, 5, 9, 2, 6]);
+        let dst = b.alloca_array(IrType::I8, 8);
+        let len = {
+            let two = b.const_i32(2);
+            let rest = b.const_i32(3);
+            b.add(IrType::I32, two, rest)
+        };
+        b.call(IrType::Pointer, "__scratcharch_memcpy", vec![dst, src, len]);
+        let sum = checksum(&mut b, dst, 8);
+        b.ret(Some(sum));
+        b.finish()
+    };
+    assert_build_agrees(32, "__scratcharch_memcpy runtime length", build_runtime_memcpy);
+
+    let build_runtime_memset = || {
+        let mut b = IrBuilder::new("main");
+        b.start_function("main", IrType::I32);
+        b.new_block("entry");
+        let buf = b.alloca_array(IrType::I8, 8);
+        let val = b.const_i32(7);
+        let len = {
+            let two = b.const_i32(2);
+            let rest = b.const_i32(3);
+            b.add(IrType::I32, two, rest)
+        };
+        b.call(IrType::Pointer, "__scratcharch_memset", vec![buf, val, len]);
+        let sum = checksum(&mut b, buf, 8);
+        b.ret(Some(sum));
+        b.finish()
+    };
+    assert_build_agrees(32, "__scratcharch_memset runtime length", build_runtime_memset);
+
+    let build_runtime_memmove = || {
+        let mut b = IrBuilder::new("main");
+        b.start_function("main", IrType::I32);
+        b.new_block("entry");
+        let buf = b.alloca_array(IrType::I8, 8);
+        store_bytes(&mut b, buf, &[9, 8, 7, 6, 5, 4, 3, 2]);
+        let one = b.const_i32(1);
+        let dst = b.gep(IrType::I8, buf, vec![GepIndex::Dynamic(one)]);
+        let len = {
+            let two = b.const_i32(2);
+            let rest = b.const_i32(2);
+            b.add(IrType::I32, two, rest)
+        };
+        b.call(IrType::Pointer, "__scratcharch_memmove", vec![dst, buf, len]);
+        let sum = checksum(&mut b, buf, 8);
+        b.ret(Some(sum));
+        b.finish()
+    };
+    assert_build_agrees(32, "__scratcharch_memmove overlap runtime length", build_runtime_memmove);
+}
+
+/// `abort`/`panic`/`trap` keep *distinct* failure categories on both engines,
+/// and the runtime trap stays distinct from the ISA `unreachable` trap
+/// (`InterpError::Trap` / `VmError::Trap`).
+#[test]
+fn diff_runtime_failure_categories_distinct() {
+    let void_call = |callee: &'static str| {
+        move || {
+            let mut b = IrBuilder::new("main");
+            b.start_function("main", IrType::Void);
+            b.new_block("entry");
+            b.call(IrType::Void, callee, vec![]);
+            b.ret(None);
+            b.finish()
+        }
+    };
+
+    let abort = void_call("__scratcharch_abort");
+    let err = interp_run(abort()).unwrap_err();
+    assert!(
+        matches!(err, InterpError::Runtime(RuntimeError::Abort)),
+        "interpreter abort: {err:?}"
+    );
+    let err = vm_err(&abort());
+    assert!(
+        matches!(err, scratcharch_vm::vm::VmError::Abort),
+        "VM abort: {err:?}"
+    );
+
+    let panic = void_call("__scratcharch_panic");
+    let err = interp_run(panic()).unwrap_err();
+    assert!(
+        matches!(err, InterpError::Runtime(RuntimeError::Panic { .. })),
+        "interpreter panic: {err:?}"
+    );
+    let err = vm_err(&panic());
+    assert!(
+        matches!(err, scratcharch_vm::vm::VmError::Panic(_)),
+        "VM panic: {err:?}"
+    );
+
+    let trap = void_call("__scratcharch_trap");
+    let err = interp_run(trap()).unwrap_err();
+    assert!(
+        matches!(err, InterpError::Runtime(RuntimeError::Trap)),
+        "interpreter runtime trap: {err:?}"
+    );
+    let err = vm_err(&trap());
+    assert!(
+        matches!(err, scratcharch_vm::vm::VmError::RuntimeTrap),
+        "VM runtime trap: {err:?}"
+    );
+    // Distinct from the `unreachable` ISA trap on the VM.
+    assert!(
+        !matches!(err, scratcharch_vm::vm::VmError::Trap { .. }),
+        "runtime trap must not collapse into the unreachable trap"
+    );
+}
+
+/// An unknown bodyless callee is rejected by both engines — never silently
+/// approximated. The VM rejects it at *load* time ([`VmError::UndefinedFunction`]);
+/// the interpreter rejects it when the call is reached (an unknown intrinsic).
+#[test]
+fn diff_unknown_runtime_call_rejected_by_both_engines() {
+    let build = || {
+        let mut b = IrBuilder::new("main");
+        b.start_function("main", IrType::I32);
+        b.new_block("entry");
+        let r = b
+            .call(IrType::I32, "no_such_runtime_function", vec![])
+            .expect("returns a value");
+        b.ret(Some(r));
+        b.finish()
+    };
+
+    let err = interp_run(build()).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            InterpError::Runtime(RuntimeError::UnknownIntrinsic(ref n))
+                if n == "no_such_runtime_function"
+        ),
+        "interpreter unknown callee: {err:?}"
+    );
+
+    let program = IsaLowerer::new().lower(&build()).expect("lower failed");
+    let mut vm = Vm::new(65536, 4096);
+    match vm.load_program(&program) {
+        Err(scratcharch_vm::vm::VmError::UndefinedFunction(n)) => {
+            assert_eq!(n, "no_such_runtime_function");
+        }
+        other => panic!("VM must reject the unknown callee at load time, got {other:?}"),
+    }
+}
+
+/// Division by zero keeps its own category on both engines.
+#[test]
+fn diff_division_by_zero_category() {
+    let build = || {
+        let mut b = IrBuilder::new("main");
+        b.start_function("main", IrType::I32);
+        b.new_block("entry");
+        let one = b.const_i32(1);
+        let zero = b.const_i32(0);
+        let q = b.div(IrType::I32, one, zero);
+        b.ret(Some(q));
+        b.finish()
+    };
+    let err = interp_run(build()).unwrap_err();
+    assert!(
+        matches!(err, InterpError::DivisionByZero),
+        "interpreter div0: {err:?}"
+    );
+    let err = vm_err(&build());
+    assert!(
+        matches!(err, scratcharch_vm::vm::VmError::DivisionByZero),
+        "VM div0: {err:?}"
+    );
 }
