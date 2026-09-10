@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 cargo build                          # build all crates
-cargo test --workspace               # run all workspace tests (624 total)
+cargo test --workspace               # run all workspace tests (652 total)
 cargo test -p scratcharch-transform  # test a single crate
 cargo test -p scratcharch-llvm -- test_name --nocapture  # run one test
 cargo clippy --workspace --all-targets  # lint (zero warnings required)
@@ -97,10 +97,24 @@ ISA was needed. Sub-word memory is byte-exact: `i1`/`i8`/`i16` loads/stores
 lower to width-exact `Load8`/`Store8` sequences and the static-data segment is
 seeded byte-exact on both backends; reinterpret casts
 (`bitcast`/`ptrtoint`/`inttoptr`) lower to zero-cost cell-preserving copies
-(`ptrtoint i64` zero-extends, `inttoptr i64` traps on a nonzero high limb). The
-remaining constructs are `Interpreter only`: `llvm.*`/runtime intrinsics (no
-`define`d body to call). The VM never approximates —
-what it cannot execute faithfully it rejects with a named diagnostic.
+(`ptrtoint i64` zero-extends, `inttoptr i64` traps on a nonzero high limb).
+Bodyless `llvm.*`/runtime calls are resolved at load time through the shared
+`scratcharch-runtime` registry, so the interpreter-only class is empty. The VM
+never approximates — what it cannot execute faithfully it rejects with a named
+diagnostic.
+
+**Aggregates are a layout concern, not a value representation.**
+`scratcharch-target::layout` (`DataLayout`, `AggregateType`, `TypeLayout`) is the
+single authority for scalar size/alignment, array stride, struct alignment,
+field offsets, aggregate size and padding — no consumer recomputes them.
+Aggregates are never `IrType` values (there is no aggregate-by-value ABI): a
+struct/array access becomes bytes at `DataLayout` offsets plus ordinary scalar
+loads/stores, and an aggregate global initializer is serialized recursively into
+`StaticData.image` little-endian with padding zero. An aggregate *value* type at
+an operation and a zero-sized type (`[0 x T]`, `{}`) are rejected with named
+diagnostics — never silently flattened. The VM and the ScratchGraph byte-exact
+heap both needed no aggregate construct. See
+`docs/design/AGGREGATE_DATA_MODEL.md`.
 
 The authoritative per-construct status lives in
 `docs/specification/LLVM_COMPATIBILITY.md` (interpreter/VM matrix, known gaps,
@@ -131,10 +145,23 @@ software-helper semantics and `docs/design/LLVM_TRANSLATION.md` the mapping.
 ### Test layout
 
 - `crates/scratcharch-llvm/tests/pipeline_tests.rs` — full LLVM→SAIR→interpreter
-  path over committed real-clang `-O0` `.ll` output in `tests/c_programs/`.
+  path over committed real-clang `-O0` `.ll` output in `tests/c_programs/`
+  (including the aggregate fixtures `aggstruct`/`aggarray`/`aggglobal`/
+  `aggmatrix`/`aggnested`/`aggbytes`).
 - `crates/scratcharch-llvm/tests/corpus_clang_tests.rs` — recompiles each
   `tests/c_programs/*.c` with clang on every run so the committed `.ll` corpus
   cannot drift (skips silently when clang is absent).
+- `crates/scratcharch-llvm/tests/aggregate_tests.rs` — the exact static-data
+  *byte image* an aggregate global initializer produces: `DataLayout` offsets,
+  zero interior/trailing padding, array element stride, the reserved pointer
+  source stride, `zeroinitializer`, and determinism across translations. The
+  layout *rules* are unit-tested in `crates/scratcharch-target/src/layout.rs`.
+- `crates/scratcharch-llvm/tests/reject_tests.rs` — the boundary diagnostics:
+  an aggregate *value* type at an operation, a zero-sized aggregate, an
+  `undef`/`poison` global, an undeclared pointer relocation.
+- `crates/scratcharch-pipeline/tests/llvm_corpus_surfaces.rs` — the per-fixture
+  five-surface record (parser / SAIR / interpreter / VM / Scratch) plus the
+  native-reference differential.
 - `crates/scratcharch-driver/tests/vm_backend_tests.rs` — VM/interpreter
   agreement over real-clang fixtures, including the multi-cell `i64` corpus
   (two-limb arithmetic and the software-helper mul/div/rem) and
@@ -142,6 +169,8 @@ software-helper semantics and `docs/design/LLVM_TRANSLATION.md` the mapping.
 - `crates/scratcharch-sair-interpreter/tests/vm_differential_tests.rs` —
   bit-for-bit interpreter-vs-VM agreement for the bitwise/shift family, full-width
   `i64` mul/udiv/urem, and the `unreachable` trap on both engines.
+- `crates/scratcharch-compat/tests/benchmark_integration.rs` — the v0.5 corpus
+  gate and stage snapshot (40 fixtures, Overall 90%, Scratch 83%).
 - `crates/scratcharch-sb3/tests/sb3_tests.rs` — SB3 write/read roundtrips and
   asset handling.
 - `crates/scratcharch-scratchgraph/tests/parser_tests.rs` — JSON→Project parsing

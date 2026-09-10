@@ -1,14 +1,15 @@
 # LLVM Compatibility — Status Report
 
-> Generated for the **v0.4 corpus-benchmark gate** (2026-09-10) — the VM runtime
-> resolver closing the last `Interpreter only` gap, over the recorded v0.3
+> Generated for the **v0.5 corpus-benchmark gate** (2026-09-10) — the aggregate
+> data model making aggregate memory first-class, over the recorded v0.4
 > baseline [`LLVM_COMPATIBILITY_BASELINE.md`](./LLVM_COMPATIBILITY_BASELINE.md).
 > Companion to [`docs/specification/LLVM_COMPATIBILITY.md`](../specification/LLVM_COMPATIBILITY.md)
-> (the normative matrix) and [`LLVM_TRANSLATION.md`](./LLVM_TRANSLATION.md) (the
-> mapping design). This document records *where the toolchain currently stands*:
-> what is exact, what is deliberately rejected, and the reason for each
-> rejection. It is a snapshot, refreshed at milestone gates. Machine record:
-> `tests/corpus/llvm/results/latest.json`.
+> (the normative matrix), [`LLVM_TRANSLATION.md`](./LLVM_TRANSLATION.md) (the
+> mapping design) and [`AGGREGATE_DATA_MODEL.md`](./AGGREGATE_DATA_MODEL.md) (the
+> aggregate layout contract). This document records *where the toolchain
+> currently stands*: what is exact, what is deliberately rejected, and the reason
+> for each rejection. It is a snapshot, refreshed at milestone gates. Machine
+> record: `tests/corpus/llvm/results/latest.json`.
 
 ## Execution surfaces (recap)
 
@@ -34,27 +35,32 @@ A matrix row is **`Supported`** only when surfaces 1, 2, *and* 3 are all exact.
 Anything the VM cannot execute faithfully is rejected with a diagnostic that
 names the missing ISA/runtime capability — never approximated.
 
-## v0.4 scores (34 fixtures)
+## v0.5 scores (40 fixtures)
 
 Bars are 20 cells; the denominator is explicit so no percentage reads as a bare
 score. `Overall` is the *semantic core* (correct on the reference interpreter,
 whether or not a target backend could build it); each stage row is fixtures that
 pass *through* that stage.
 
+**Denominator change: 34 → 40 fixtures.** Six real-clang aggregate fixtures were
+added and `global-agg` (the aggregate-constant global initializer gap) became
+supported. Absolute passes grew 29 → 36 at the same time, so the percentage moves
+less than the count.
+
 ```
 Overall
-  85% (29/34)  █████████████████░░░
+  90% (36/40)  ██████████████████░░
 
 Frontend
-Parser      85% (29/34)  █████████████████░░░
-SAIR        85% (29/34)  █████████████████░░░
+Parser      90% (36/40)  ██████████████████░░
+SAIR        90% (36/40)  ██████████████████░░
 
 Execution
-Interpreter 85% (29/34)  █████████████████░░░
-VM          85% (29/34)  █████████████████░░░
+Interpreter 90% (36/40)  ██████████████████░░
+VM          90% (36/40)  ██████████████████░░
 
 Targets
-Scratch     76% (26/34)  ███████████████░░░░░
+Scratch     83% (33/40)  █████████████████░░░
 ```
 
 Gate: **green** (0 expectation violations). 0 semantic mismatches, 0 failures.
@@ -62,12 +68,12 @@ Gate: **green** (0 expectation violations). 0 semantic mismatches, 0 failures.
 Result classes:
 
 ```
-success                   26    full end-to-end through Scratch
+success                   33    full end-to-end through Scratch
 scratch-backend-failure    3    correct on interpreter+VM; Scratch model cannot
                                 express the construct (bitwise/shift, i64 helper
                                 shifts, `and`)
-parse-failure              5    frontend gaps (float, vector, indirect-call,
-                                atomic, global-agg)
+parse-failure              4    frontend gaps (float, vector, indirect-call,
+                                atomic)
 ```
 
 There is **no `vm-failure` class**: the ISA VM executes every fixture the
@@ -82,14 +88,7 @@ frontend cannot consume. Feasibility study: [`FLOATING_POINT.md`](./FLOATING_POI
 — recommends option **C** (interpreter-exact `f64` plus `f32`-by-emulation)
 near-term, with **A** (VM-exact) deferred until the interpreter model is proven.
 
-### 2. Aggregate-constant global tables (parser) — `global-agg`
-
-`parse error: unterminated global array initializer` on
-`@t = [3 x %struct.Pair] [%struct.Pair { i32 1, i32 2 }, …]`. Static tables of
-structs/arrays are idiomatic real C. Scalar and flat-array-of-scalar globals are
-supported; struct/nested-aggregate constant *elements* are the gap (spec §8.5).
-
-### 3. Function pointers / indirect calls (parser) — `indirect-call`
+### 2. Function pointers / indirect calls (parser) — `indirect-call`
 
 Callbacks, vtables, and function tables need an indirect-call ABI; the SAIR/ISA
 `Call` names a static callee. Rejected explicitly — never a wrong dispatch.
@@ -97,15 +96,24 @@ Feasibility study: [`FUNCTION_POINTERS.md`](./FUNCTION_POINTERS.md) — a
 function-id `i32` + per-site dispatch (`CallIndirect` expanded to eq/branch/
 named-`Call`/`Trap` at lowering) is feasible; recommended for a later milestone.
 
-### 4. `atomicrmw` (parser) — `atomic`
+### 3. `atomicrmw` (parser) — `atomic`
 
 `unsupported instruction: atomicrmw`. Rare in scalar `-O0` code but real in
 multithreaded libraries; out of scope for the word ISA.
 
-### 5. Vector types (parser) — `vector`
+### 4. Vector types (parser) — `vector`
 
 `unsupported type: Ident("<")`. Explicit SIMD vector types are niche for this
 toolchain's targets.
+
+### 5. Aggregate-by-value ABI, zero-sized/flexible-array types (future work)
+
+Not measured by the corpus yet, but the next aggregate-adjacent boundaries now
+that aggregate *memory* is first-class: passing/returning a struct by value (the
+reason `IrType` still has no aggregate variant) and zero-sized types
+(`struct S { int n; int a[]; }`, `[0 x T]`), which `DataLayout` rejects with
+`LayoutError::ZeroSized` rather than giving a made-up size. See
+[`AGGREGATE_DATA_MODEL.md`](./AGGREGATE_DATA_MODEL.md) §7.
 
 ### 6. Scratch number model (Scratch target) — 3 fixtures
 
@@ -125,28 +133,32 @@ the byte-exact memory model lowered every one of them exactly, moving `globals`,
 `signedcmp`, `i64arith`, `reinterp`, `struct-array`, `ptrstruct`, `byte-scan`,
 `char-mix`, `i64-struct`, and `intrinsics` to full success.
 
-The former **#6 gap — bodyless runtime intrinsics on the VM** — is closed. The
-VM resolves `__scratcharch_*` builtins, the `llvm.*` bit intrinsics, and
-runtime-length `llvm.mem*` calls at load time through the same registry the
-interpreter consults; `string` and `intrinsics` are now full successes on all
-four measured stages.
+The former **bodyless runtime intrinsics on the VM** gap is closed (v0.4) and the
+former **aggregate-constant global initializer** gap (`global-agg`) is closed in
+v0.5: aggregate initializers now lay out into the static-data image through
+`DataLayout`, so static tables of structs/arrays are a full success.
 
 These are the Scratch-model limits recorded in spec §6.2, surfaced here as
 measured blockers rather than opcode counts.
 
-## Not a bottleneck (v0.1→v0.2 expanded these)
+## Not a bottleneck (exact end-to-end)
 
 The following are exact end-to-end; listed so a stale copy of this list is not
 mistaken for the current one:
 
-- **Structs and aggregates (real clang `-O0`)**: struct fields at
-  natural-alignment offsets with padding (`char-mix`), nested structs
+- **Aggregates (real clang `-O0`), now including global initializers**: struct
+  fields at natural-alignment offsets with padding (`char-mix`, and `aggstruct`
+  pinning `{i8,i64,i16}` at offsets 0/8/16, size 24), nested structs
   (`nested-struct` → 156), whole-struct assignment `y = x` lowered by clang to a
-  constant-length `memcpy` (`struct-assign` → 56), struct arrays and
-  pointer-to-struct member access through dynamic `i64` GEP indices
-  (`struct-array` → 66, `ptrstruct` → 36 — exact on the VM), and an `i64` field
-  inside a struct (`i64-struct` → 45). No `datalayout` parsing and no
-  aggregate-by-value ABI were needed (spec §4).
+  constant-length `memcpy` (`struct-assign` → 56, `aggstruct` → 56 over a padded
+  layout), struct arrays and pointer-to-struct member access through dynamic
+  `i64` GEP indices (`struct-array` → 66, `ptrstruct` → 36 — exact on the VM),
+  array-of-struct and struct-of-array layout (`aggarray` → 138), an `i64` field
+  inside a struct (`i64-struct` → 45), nested aggregate *global* initializers
+  with interior padding and a pointer field (`aggglobal` → 162, `aggmatrix` →
+  314, `aggnested` → 63), and byte views of aggregate memory (`aggbytes` → 514).
+  No `datalayout` parsing and no aggregate-by-value ABI were needed (spec §4);
+  every offset comes from `scratcharch_target::layout`.
 - **Constant-length memory ops on the VM** (`llvm.memcpy`/`llvm.memmove`/
   `llvm.memset`, `__scratcharch_memcpy`): the translator expands them into
   width-exact `i8` load/store sequences (load-all-then-store, so overlapping
@@ -230,11 +242,60 @@ mistaken for the current one:
 - **Parser/SAIR/Interpreter unchanged** at 85%; Scratch stays 76% but its
   numerator grows 25 → 26 (the new fixture constructs).
 
+## New since baseline (v0.4 → v0.5)
+
+- **`DataLayout` is the single authority for aggregate geometry.** Aggregates are
+  a *layout* concern, not a value representation: a struct/array never becomes a
+  SAIR value, a VM cell, or a Scratch list element — it becomes bytes at
+  `DataLayout`-computed offsets. `scratcharch_target::layout` answers scalar size
+  and alignment, array stride, struct alignment and field offsets, aggregate size
+  and padding; the translator holds no layout arithmetic of its own, so a field
+  offset cannot drift between the GEP path, the allocator and the static-data
+  serializer (spec §4, [`AGGREGATE_DATA_MODEL.md`](./AGGREGATE_DATA_MODEL.md)).
+- **Aggregate global initializers become a byte image.** `@t = %S { … }`,
+  `[N x %S] […]`, `[[3 x i32] […]]`, `c"…"` byte arrays, pointer relocations and
+  `zeroinitializer` are parsed recursively and serialized into
+  `StaticData.image` little-endian at `DataLayout` offsets, with inter-field and
+  trailing padding exactly zero. A shape mismatch (wrong element/field count,
+  `c"…"` of the wrong length) is an explicit diagnostic — never a silent flatten.
+- **`global-agg` gap closed.** The v0.2 aggregate-constant global initializer
+  parser gap (`parse error: unterminated global array initializer`) is gone;
+  `global-agg` is now a full success (51).
+- **Corpus 34 → 40**: `aggstruct` (56), `aggarray` (138), `aggglobal` (162),
+  `aggmatrix` (314), `aggnested` (63), `aggbytes` (514) — whole-struct `memcpy`
+  assignment over a padded layout, array-of-struct and struct-of-array, nested
+  aggregate *global* initializers with a pointer field, global nested arrays and
+  arrays of strings, a struct-of-array-of-structs global, and a byte view of
+  aggregate memory through `unsigned char *`. Each is native-exact,
+  interpreter-exact and VM-exact, and constructs on Scratch.
+- **Overall 85% → 90%** (semantic core 29/34 → 36/40); Parser/SAIR/Interpreter/VM
+  all 85% → 90%; **Scratch 76% → 83%** (26 → 33 constructed projects).
+  `struct` reaches 100%, `memory` 96%, `global` 88%, `array` 89%,
+  `integer` 90%, `pointer` 90%.
+- **No regression**: every pre-v0.5 fixture keeps its recorded expectation and
+  its value; `parse-failure` 5 → 4 and `scratch-backend-failure` stays 3.
+- **No new VM or ISA construct.** Aggregate memory lowers to the existing
+  byte/word load/store path and the already-verified sub-word exact path; the
+  Scratch backend realizes it on the existing byte-exact heap. Aggregation is a
+  layout concern, not a new VM value representation — which is why the VM gained
+  full aggregate support without changing the frozen ISA.
+- **Explicit rejections preserved and tightened**: an aggregate *value* type at
+  an operation is rejected with a named diagnostic (`aggregate value type %S has
+  no SAIR value representation; access its scalar leaves through GEP over the
+  aggregate layout`), zero-sized types are rejected by `DataLayout`
+  (`LayoutError::ZeroSized`), and `reject_tests.rs` pins both plus the
+  `undef`/`poison` global and undeclared-relocation diagnostics.
+
 ## How this is verified
 
-- **Committed real-clang corpus** `tests/corpus/llvm/fixtures/` (34 fixtures)
-  plus the classic `tests/c_programs/*.{c,ll}`, each with a fresh-clang
-  recompile harness so the committed `.ll` cannot drift.
+- **Committed real-clang corpus** — the classic `tests/c_programs/*.{c,ll}` plus
+  the real-world aggregate programs under `tests/corpus/llvm/fixtures/`, 40
+  fixtures in total as of the v0.5 gate, each with a fresh-clang recompile
+  harness so the committed `.ll` cannot drift.
+- **Aggregate byte-image suite** `crates/scratcharch-llvm/tests/aggregate_tests.rs`:
+  the exact static-data image an aggregate initializer produces — layout offsets,
+  zero padding, array element stride, the reserved pointer source stride,
+  `zeroinitializer`, and determinism across translations.
 - **Five-surface record** `scratcharch-pipeline/tests/llvm_corpus_surfaces.rs`
   pins, per fixture, the parser / SAIR-validation / interpreter / VM /
   Scratch-lower verdict. VM verdicts are *exact value* or *named diagnostic* —
@@ -254,9 +315,9 @@ mistaken for the current one:
   runtime-length `memcpy` is resolved on both engines now that the VM has its
   load-time runtime resolver.
 - **Frontend-focused suites**: `translator_tests.rs`, `phi_icmp_tests.rs`,
-  `reject_tests.rs`, plus the interpreter/VM differential suite
-  (`vm_differential_tests.rs`, 40 tests) and the driver's `vm_backend_tests.rs`
-  for two-limb `i64` and byte memory.
+  `aggregate_tests.rs`, `reject_tests.rs`, plus the interpreter/VM differential
+  suite (`vm_differential_tests.rs`, 40 tests) and the driver's
+  `vm_backend_tests.rs` for two-limb `i64` and byte memory.
 
 Gate commands: `cargo test --workspace`, `cargo clippy --workspace
 --all-targets` (zero warnings), `./scripts/run_c_tests.sh`.

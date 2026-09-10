@@ -1,6 +1,7 @@
 # ScratchArch Development Roadmap
 
-> Last updated: 2026-09-09 (LLVM Compatibility v0.4 completed)
+> Last updated: 2026-09-10 (LLVM Compatibility v0.5 — aggregate data model —
+> implemented and green; awaiting its commit proposal)
 > Status: living document
 
 ## Legend
@@ -577,9 +578,107 @@ remains — floating point and vector types are rejected by the parser (`float`,
 global tables need a parser extension (`global-agg`); and 3 fixtures are exact
 on interpreter+VM but unlowerable to Scratch (the bitwise/shift family).
 
+### LLVM Compatibility v0.5 — Aggregate Data Model (`scratcharch-target` / `scratcharch-llvm` / `scratcharch-scratchgraph` / `scratcharch-compat`)
+
+Milestone goal: make aggregate memory (`[N x T]` arrays, `{ … }` structs,
+nested combinations) first-class and *correct* across LLVM → SAIR → DataLayout →
+StaticData → VM → ScratchGraph — without adding an aggregate value
+representation, without touching the frozen ISA, and without ever silently
+flattening an incompatible layout. Design contract:
+`docs/design/AGGREGATE_DATA_MODEL.md`. Recorded numbers:
+`docs/design/LLVM_COMPATIBILITY_BASELINE.md` (**v0.5 gate** — the
+benchmark-baseline axis), so the dual versioning now reads **spec v0.6 /
+baseline v0.5** (this roadmap titles sections by the spec axis, exactly as the
+previous section's "v0.5" was the spec version of the v0.4-baseline milestone).
+
+- [x] **Aggregate type model** (Part 1): `LayoutScalar`, `AggregateType`
+      (`Scalar`/`Array`/`Struct`) and `TypeLayout`
+      (`size`/`align`/`field_offsets`) in `scratcharch-target::layout`.
+      **No aggregate `IrType` variant** — aggregates are a layout concern, not a
+      value representation, and there is no aggregate-by-value ABI (Part 10).
+      Structural equality makes the layout a pure function of the type shape.
+- [x] **DataLayout completion** (Part 2): `DataLayout::x86_64()` (clang's source
+      offsets) and `DataLayout::from_profile` (SA48 execution) are the *single
+      authority* for scalar size/alignment, array stride, struct alignment, field
+      offsets, aggregate size and padding — every duplicate size/offset
+      computation removed from the translator. Two sizes per scalar: layout size
+      (ptr = 8, what offsets come from) vs value width (ptr = 4, what a memory op
+      moves). Unit tests cover struct padding, nested struct, arrays, nested
+      arrays, array-of-struct, struct-of-array, stride, determinism, zero-sizing.
+- [x] **Aggregate global initializers** (Part 3): nested `{ … }` / `[ … ]` /
+      `c"…"` / pointer / `zeroinitializer` constants parse into
+      `LlvmGlobalInit::{Struct,Array,Bytes,GlobalRef,Zero}` and serialize
+      recursively into `StaticData.image` little-endian at `DataLayout` offsets,
+      with inter-field and trailing padding exactly zero. A shape mismatch
+      (wrong element/field count, `c"…"` of the wrong length, an undefined
+      relocation) is an explicit diagnostic — never a silent flatten.
+      `crates/scratcharch-llvm/tests/aggregate_tests.rs` pins the byte image.
+- [x] **Aggregate GEP** (Part 4): `ByteOffset` folds array/struct/nested index
+      chains into a byte offset via `DataLayout` only — the translator recomputes
+      no field offset, so a field offset cannot drift between GEP, the allocator
+      and the static-data serializer. Constant indices finish as an `i32`
+      constant (VM-lowerable); a dynamic index builds an `i64` offset
+      (interpreter-exact, VM-diagnosed) — a property of the existing scalar path.
+- [x] **VM support** (Part 5): **nothing new in the ISA.** Aggregate memory
+      lowers to the existing byte/word load/store path and the already-verified
+      width-exact `i1`/`i8`/`i16` `Load8`/`Store8` path; constant-length
+      `llvm.memcpy` whole-struct assignment is already expanded by the
+      translator. Aggregation is a layout concern, not a new VM value
+      representation.
+- [x] **ScratchGraph support** (Part 6): the established **byte-exact heap**
+      (`__scratcharch_heap`, one list item per byte, seeded at
+      `STATIC_DATA_BASE + 1 + i`) carries aggregate memory unchanged — explicitly
+      *not* the old one-cell-per-address model, which would make `(char *)&bg`
+      and `bg.a` disagree by construction. The same bytes are observable through
+      a typed field, a nested GEP chain, and a byte view.
+- [x] **Real clang corpus** (Part 7): six new fixtures under
+      `tests/c_programs/` — `aggstruct` (whole-struct `memcpy` assignment over a
+      padded layout, 56), `aggarray` (array-of-struct / struct-of-array, 138),
+      `aggglobal` (global struct initializers with interior padding and a pointer
+      field, 162), `aggmatrix` (nested global arrays and arrays of strings, 314),
+      `aggnested` (struct-of-array-of-structs global, 63), `aggbytes` (byte view
+      of aggregate memory, 514) — each with a committed `.c` + clang-`-O0` `.ll`
+      and a fresh-clang recompile harness.
+- [x] **Differential validation** (Part 8): all six are native-exact,
+      interpreter-exact and VM-exact; the five-surface record pins the parser /
+      SAIR / interpreter / VM / Scratch verdict per fixture. **0 semantic
+      mismatches**, 0 failures, gate green.
+- [x] **Compatibility benchmark** (Part 9): `scratcharch test-compat` reads
+      **Overall 90% (36/40)**, Parser/SAIR/Interpreter/VM 90%, **Scratch 83%**
+      (33/40); the denominator change **34 → 40** is reported explicitly and the
+      v0.4 baseline is archived at `tests/corpus/llvm/results/v0.4.json`.
+- [x] **Scope boundaries** (Part 10): aggregate-by-value ABI, vector types,
+      atomic operations, exception handling and function pointers stay out —
+      each documented as separate future work in `AGGREGATE_DATA_MODEL.md` §7.
+      Zero-sized / flexible-array types are rejected
+      (`LayoutError::ZeroSized`) rather than given a made-up size.
+- [x] **Documentation** (Part 11): new `docs/design/AGGREGATE_DATA_MODEL.md`;
+      `docs/specification/LLVM_COMPATIBILITY.md` advanced to **v0.6** (aggregate
+      rows, GEP layout rule, gaps renumbered, gate section refreshed);
+      `LLVM_COMPATIBILITY_STATUS.md`, `LLVM_COMPATIBILITY_BASELINE.md` and
+      `LLVM_TRANSLATION.md` refreshed; this roadmap updated.
+- [x] **v0.5 benchmark numbers (baseline axis)**: Overall 90% (36/40 semantic
+      core); Parser/SAIR/Interpreter 90%; VM 90%; Scratch 83% (33/40); classes
+      success 33 / scratch-backend-failure 3 / parse-failure 4; gate green,
+      0 mismatches. `struct` reaches 100%.
+
+**Deferred / known gaps at v0.5**: floating-point types and vector types are
+still rejected by the parser (`float`, `vector`); indirect calls have no
+function-pointer ABI (`indirect-call`); `atomicrmw` is out of scope for the word
+ISA (`atomic`); 3 fixtures are exact on interpreter+VM but unlowerable to
+Scratch (the bitwise/shift family). Aggregate-adjacent next boundaries: the
+aggregate-by-value ABI (why `IrType` still has no aggregate variant) and
+zero-sized / flexible-array types. Each is recorded with its pinned diagnostic —
+nothing is silently approximated.
+
 ### Testing
 
 - [x] All tests pass with 0 warnings and 0 clippy errors
+- [x] v0.5 gate (2026-09-10): `cargo test --workspace`,
+      `cargo clippy --workspace --all-targets` (0 warnings), and
+      `./scripts/run_c_tests.sh` all green.
+      `scratcharch test-compat` v0.5 gate green (40 fixtures, Overall 90%,
+      VM 90%, Scratch 83%).
 - [x] v0.4 gate (2026-09-10): `cargo test --workspace`,
       `cargo clippy --workspace --all-targets` (0 warnings), and
       `./scripts/run_c_tests.sh` all green.
@@ -588,8 +687,9 @@ on interpreter+VM but unlowerable to Scratch (the bitwise/shift family).
 
 ## In Progress
 
-**LLVM Compatibility v0.5 — VM runtime intrinsic completion**: implemented and
-green; awaiting the commit proposal (no commit made for this milestone yet).
+Nothing — the **LLVM Compatibility v0.5 aggregate data model** is implemented,
+verified and green; awaiting the commit proposal (no commit made for this
+milestone yet).
 
 ## Future (v0.3+)
 
@@ -621,9 +721,17 @@ green; awaiting the commit proposal (no commit made for this milestone yet).
       the LLVM frontend still rejects float types
 - [ ] **Function-pointer ABI / indirect calls** — feasibility studied in v0.4
       (`docs/design/FUNCTION_POINTERS.md`); still rejected at parse time
-- [ ] **Aggregate-constant global tables** — struct/nested-aggregate constant
-      elements in a global initializer still hit a parser gap (`global-agg`
-      fixture, `parse error: unterminated global array initializer`)
+- [x] **Aggregate-constant global tables** — landed in v0.5: nested
+      struct/array/`c"…"`/pointer/`zeroinitializer` global initializers lay out
+      into the static-data image through `DataLayout` (`global-agg` is now a
+      full success, 51). Aggregate *memory* is complete; the aggregate-by-value
+      ABI and zero-sized/flexible-array types remain open (see the v0.5 section)
+- [ ] **Aggregate-by-value ABI** — passing/returning a struct or array by value,
+      with its spilling/coercion rules; the reason `IrType` still has no
+      aggregate variant. Rejected with a named diagnostic today
+- [ ] **Zero-sized / flexible-array types** (`[0 x T]`, `{}`,
+      `struct S { int n; int a[]; }`) — rejected by `DataLayout` with
+      `LayoutError::ZeroSized` rather than given a made-up size
 
 ### Medium-term
 
