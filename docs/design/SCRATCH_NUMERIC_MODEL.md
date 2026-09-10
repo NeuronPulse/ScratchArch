@@ -152,7 +152,7 @@ full i32/i64 bitwise/shift family exactly — see
 | `float` / `double` types | `UNREPRESENTABLE` (parser rejects; f64 literals would silently round) |
 | vector types | `UNREPRESENTABLE` (parser rejects) |
 | `atomicrmw` / atomics | `UNREPRESENTABLE` (parser rejects; no concurrency model) |
-| `llvm.*` runtime intrinsics (bswap/ctpop/mem* …) | `INTERPRETATION_ONLY` where not folded; the SAIR interpreter resolves them, VM/Scratch report "undefined function" |
+| `llvm.*` runtime intrinsics (bswap/ctpop/mem* …) | Resolved on **both** engines where not folded: the SAIR interpreter at run time, the ISA VM at load time, both through the shared `scratcharch-runtime` registry (RUNTIME.md §6). Only the Scratch backend reports "undefined function" — it has no runtime resolver. |
 | indirect calls | `INTERPRETATION_ONLY`; see `FUNCTION_POINTERS.md` |
 
 ## 4. What this means for the benchmark

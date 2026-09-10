@@ -96,7 +96,7 @@ unsupported types produce a clear **UnsupportedType** error at parse time.
 | `icmp slt/sgt/sle/sge` | sign-bit select (`emit_signed_lt`) | Exact for negatives and mixed signs: `slt(a,b) = sign(a)!=sign(b) ? sign(a) : a <u b`; the other three derive from it |
 | `alloca` | `Alloca` | Byte array sized from layout |
 | `load`/`store` | `Load`/`Store` | Typed |
-| `call` | `Call` | Direct; `llvm.*`/runtime intrinsics dispatched by the interpreter |
+| `call` | `Call` | Direct; `llvm.*`/runtime intrinsics resolved by the runtime registry — the interpreter at run time, the VM at load time |
 | `ret` | `Terminator::Return` | Value or void |
 | `br` | `Terminator::Branch` | Unconditional |
 | `br i1 …` | `Terminator::CondBranch` | Conditional |
@@ -108,7 +108,7 @@ unsupported types produce a clear **UnsupportedType** error at parse time.
 | `getelementptr` | single byte-offset `Gep` over `i8` | Indices folded via `scratcharch_target::layout` |
 
 | `phi` | SAIR `Phi` | Loop-carried and merge phi, one-to-one; predecessor labels remapped to SAIR block names; verified on the interpreter and the VM (edge copies) |
-| `llvm.memcpy`/`llvm.memmove`/`llvm.memset` | calls resolved at runtime | Handled by the SAIR interpreter's memory-intrinsic family; the VM has no body to run and rejects these with an explicit diagnostic |
+| `llvm.memcpy`/`llvm.memmove`/`llvm.memset` | inline expansion, or calls resolved by the runtime | Constant-length, non-volatile calls are expanded by the translator into width-exact `i8` load/store sequences (both engines). Runtime-length, volatile, and oversized calls survive as calls and are resolved by the runtime registry on *both* engines — the interpreter's memory-intrinsic family, the VM's load-time resolver |
 | global variables | static data segment + address constants | Data globals lower to a module `StaticData` image; `@name` references become absolute-address `I32` constants (§ module symbols) |
 
 Floating-point ops, `float`/`double` types, vectors, and indirect calls are
@@ -152,10 +152,13 @@ the last non-declaration) is used as the module entry point.
   operands become absolute-address constants; seeding is byte-exact, so
   word-granular *and* byte-granular segments are VM-exact
 - LLVM bit intrinsics: `llvm.bswap`, `llvm.ctpop`, `llvm.ctlz`, `llvm.cttz`
-  (widths 8/16/32/64), resolved by the interpreter as pure expansions
+  (widths 8/16/32/64), evaluated by the shared `bit_intrinsic_value` leaf on
+  *both* engines
 - `llvm.memcpy`/`llvm.memmove`/`llvm.memset` and runtime intrinsics
   (`__scratcharch_memcpy`, `__scratcharch_memset`, …) via the
-  `scratcharch-runtime` registry (declaration calls resolve at call time)
+  `scratcharch-runtime` registry: the interpreter resolves a declaration call
+  when it executes it, the VM resolves it once at load time
+  (`scratcharch-vm/src/runtime.rs`) into a `Code::CallRuntime` entry
 
 ### Not supported (rejected with an explicit diagnostic)
 
@@ -187,10 +190,14 @@ load/store writes exactly `IrType::size_in_bytes()` bytes via `Load8`/`Store8`
 reinterpretation (`bitcast`/`ptrtoint`/`inttoptr`) lowers to a zero-cost
 cell-preserving copy — `ptrtoint i64` zero-extends into the limb pair, `inttoptr
 i64` traps on a nonzero high limb rather than truncating, and `bitcast` is
-accepted only as a same-size same-kind no-op. Only `llvm.*`/runtime intrinsics
-remain interpreter-exact (no `define`d body for the VM to call); the VM rejects
-those modules with a named diagnostic instead of misreading bytes. Nothing is
-approximated.
+accepted only as a same-size same-kind no-op. `llvm.*`/runtime intrinsics no
+longer limit the VM: a bodyless call resolves at load time through the same
+`scratcharch-runtime` registry the interpreter uses (`__scratcharch_*` builtins,
+canonical `llvm.mem*` variants, and the `llvm.bswap/ctpop/ctlz/cttz.iN` family,
+via the shared `bit_intrinsic_value` leaf), producing a `Code::CallRuntime`
+entry and the identical result on both engines. A name the registry does not
+know stays a load-time `undefined function`; the VM rejects such a module with a
+named diagnostic instead of misreading bytes. Nothing is approximated.
 
 ### Known gaps (see LLVM_COMPATIBILITY.md)
 

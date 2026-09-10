@@ -247,17 +247,22 @@ Per ABI.md §5:
 
 ## 6. Known limitations (v0.1)
 
-1. **Single-cell execution only**: The ISA lowerer supports multi-cell *metadata*
-   (slot counts, parameter/return decomposition) via the target profile, but
-   arithmetic and load/store operations currently require `cell_count == 1`.
-   Multi-cell integer operations (e.g. `i64` on `sa48`) are rejected with a
-   clear error; the generic decomposition path is verified with artificial
-   profiles.
+1. **Multi-cell execution**: The ISA lowerer decomposes wide values through the
+   target profile, and on `sa48` a 64-bit value is two 32-bit limbs.
+   add/sub/compare/cast/load/store/select/phi run per limb; bitwise ops run as
+   per-limb word ops; every shift and full-width `mul`/`udiv`/`urem`/`sdiv`/
+   `srem` is realised by a demand-appended program-level software helper
+   (`__sair_shl64`/`__sair_lshr64`/`__sair_ashr64`, `__sair_mul64`,
+   `__sair_udivrem64`) built from the word ops — no widening ISA was needed
+   (EXECUTION_MODEL.md §5.7–§5.8).
 2. **No struct/array types as SAIR values**: Aggregates can be manipulated
    through pointers and GEP, but they are not first-class SAIR value types.
-3. **Runtime intrinsics are interpreter-only**: `__scratcharch_memcpy`,
-   `__scratcharch_strlen`, and other runtime routines are dispatched by the SAIR
-   interpreter. The VM backend does not yet lower or link calls to them.
+3. **Runtime intrinsics resolve on both engines**: `__scratcharch_memcpy`,
+   `__scratcharch_strlen`, and the other runtime routines are dispatched by the
+   SAIR interpreter at run time and by the VM at load time, both through the
+   shared `scratcharch-runtime` `IntrinsicRegistry` (RUNTIME.md §4/§6). The VM
+   rewrites the bodyless named `Call` into a `Code::CallRuntime` entry; an
+   unknown name is rejected at load.
 4. **No native code emission**: The backend emits `scratcharch-core` ISA, not
    host machine code or TurboWarp blocks.
 
@@ -265,10 +270,14 @@ Per ABI.md §5:
 
 ## 7. Future work
 
-1. **Multi-cell arithmetic**: Expand the instruction-lowering table to emit
-   multi-cell add/sub/mul/div and load/store for types wider than a cell.
+1. **Multi-cell arithmetic**: ✅ Landed — the lowering table emits multi-cell
+   add/sub/compare/cast/load/store for types wider than a cell and realises
+   wide shifts and full-width `mul`/`div`/`rem` through demand-appended
+   software helpers (EXECUTION_MODEL.md §5.7–§5.8).
 2. **Struct/array types**: Decompose aggregates into cells during lowering.
 3. **Intrinsic lowering**: Map runtime intrinsics to ISA call sequences or
-   reference expansions in the VM backend.
+   reference expansions in the VM backend. *(Landed as load-time runtime
+   resolution — RUNTIME.md §6 — rather than as ISA sequences: the ISA stays
+   frozen and no libc-specific instruction was added.)*
 4. **Native backends**: Reuse the lowerer's slot allocation and phi destruction
    while emitting host code or TurboWarp blocks instead of `local.get`/`local.set`.

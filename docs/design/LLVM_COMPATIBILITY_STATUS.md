@@ -1,14 +1,14 @@
 # LLVM Compatibility — Status Report
 
-> Generated for the **v0.3 corpus-benchmark gate** (2026-09-09) — the byte-exact
-> Scratch memory expansion over the recorded v0.2 baseline
-> [`LLVM_COMPATIBILITY_BASELINE.md`](./LLVM_COMPATIBILITY_BASELINE.md).
+> Generated for the **v0.4 corpus-benchmark gate** (2026-09-10) — the VM runtime
+> resolver closing the last `Interpreter only` gap, over the recorded v0.3
+> baseline [`LLVM_COMPATIBILITY_BASELINE.md`](./LLVM_COMPATIBILITY_BASELINE.md).
 > Companion to [`docs/specification/LLVM_COMPATIBILITY.md`](../specification/LLVM_COMPATIBILITY.md)
 > (the normative matrix) and [`LLVM_TRANSLATION.md`](./LLVM_TRANSLATION.md) (the
 > mapping design). This document records *where the toolchain currently stands*:
-> what is exact, what is interpreter-only, and what is deliberately rejected —
-> with the reason for each rejection. It is a snapshot, refreshed at milestone
-> gates. Machine record: `tests/corpus/llvm/results/latest.json`.
+> what is exact, what is deliberately rejected, and the reason for each
+> rejection. It is a snapshot, refreshed at milestone gates. Machine record:
+> `tests/corpus/llvm/results/latest.json`.
 
 ## Execution surfaces (recap)
 
@@ -18,7 +18,7 @@ An LLVM construct crosses three surfaces before it runs:
 |---|---------|------|
 | 1 | Frontend (`parser.rs` + `translator.rs`) | LLVM text → validated SAIR `IrModule` |
 | 2 | SAIR interpreter (`scratcharch-sair-interpreter`) | Semantic reference; every translated construct is exact here |
-| 3 | SA48 VM backend (`scratcharch-ir::lower` + `scratcharch-vm`) | Frozen 32-bit-word ISA; full-width `i64` arithmetic realised by program-level software helpers appended during lowering (EXECUTION_MODEL.md §5.7–§5.8) |
+| 3 | SA48 VM backend (`scratcharch-ir::lower` + `scratcharch-vm`) | Frozen 32-bit-word ISA; full-width `i64` arithmetic realised by program-level software helpers appended during lowering (EXECUTION_MODEL.md §5.7–§5.8); bodyless runtime/intrinsic calls resolved at load time through the shared `scratcharch-runtime` registry (spec §6.1, `RUNTIME.md`) |
 
 A separate axis — the **Scratch backend** (`scratchgraph::lower`) — constructs
 ScratchGraph projects with a **byte-exact, width-aware memory model**
@@ -34,7 +34,7 @@ A matrix row is **`Supported`** only when surfaces 1, 2, *and* 3 are all exact.
 Anything the VM cannot execute faithfully is rejected with a diagnostic that
 names the missing ISA/runtime capability — never approximated.
 
-## v0.3 scores (33 fixtures)
+## v0.4 scores (34 fixtures)
 
 Bars are 20 cells; the denominator is explicit so no percentage reads as a bare
 score. `Overall` is the *semantic core* (correct on the reference interpreter,
@@ -43,18 +43,18 @@ pass *through* that stage.
 
 ```
 Overall
-  85% (28/33)  █████████████████░░░
+  85% (29/34)  █████████████████░░░
 
 Frontend
-Parser      85% (28/33)  █████████████████░░░
-SAIR        85% (28/33)  █████████████████░░░
+Parser      85% (29/34)  █████████████████░░░
+SAIR        85% (29/34)  █████████████████░░░
 
 Execution
-Interpreter 85% (28/33)  █████████████████░░░
-VM          79% (26/33)  ████████████████░░░░
+Interpreter 85% (29/34)  █████████████████░░░
+VM          85% (29/34)  █████████████████░░░
 
 Targets
-Scratch     76% (25/33)  ███████████████░░░░░
+Scratch     76% (26/34)  ███████████████░░░░░
 ```
 
 Gate: **green** (0 expectation violations). 0 semantic mismatches, 0 failures.
@@ -62,14 +62,16 @@ Gate: **green** (0 expectation violations). 0 semantic mismatches, 0 failures.
 Result classes:
 
 ```
-success                23    full end-to-end through Scratch
-scratch-backend-failure  3    correct on interpreter+VM; Scratch model cannot
-                              express the construct (bitwise/shift, i64 helper
-                              shifts, `and`)
-vm-failure               2    interpreter-only runtime intrinsics
-parse-failure            5    frontend gaps (float, vector, indirect-call,
-                              atomic, global-agg)
+success                   26    full end-to-end through Scratch
+scratch-backend-failure    3    correct on interpreter+VM; Scratch model cannot
+                                express the construct (bitwise/shift, i64 helper
+                                shifts, `and`)
+parse-failure              5    frontend gaps (float, vector, indirect-call,
+                                atomic, global-agg)
 ```
+
+There is **no `vm-failure` class**: the ISA VM executes every fixture the
+interpreter does.
 
 ## Top gaps (ordered by how often real `-O0` C hits them)
 
@@ -105,14 +107,7 @@ multithreaded libraries; out of scope for the word ISA.
 `unsupported type: Ident("<")`. Explicit SIMD vector types are niche for this
 toolchain's targets.
 
-### 6. Bodyless runtime intrinsics (VM) — `string`, `intrinsics`
-
-`__scratcharch_strlen` and the `llvm.*` bit intrinsics (`llvm.bswap.i16`) have
-no `define`d body for the VM to call; the interpreter resolves them from its
-runtime/intrinsic registry. Every use is an explicit diagnostic — the VM never
-silently mis-runs a bodyless call.
-
-### 7. Scratch number model (Scratch target) — 3 fixtures
+### 6. Scratch number model (Scratch target) — 3 fixtures
 
 Every one is **exact on the interpreter and the VM**; only the Scratch backend
 blocks it. The remaining blockers are the **bitwise/shift family**, which has no
@@ -128,7 +123,13 @@ from `shl`/`lshr`/`ashr` — so the shift gap cascades to it. The v0.2 width-cas
 blockers (`sext i8/i16`, `zext i8/i16`, `trunc i64→i32`, `ptrtoint`) are gone:
 the byte-exact memory model lowered every one of them exactly, moving `globals`,
 `signedcmp`, `i64arith`, `reinterp`, `struct-array`, `ptrstruct`, `byte-scan`,
-`char-mix`, `i64-struct` to full success (and `intrinsics` to scratch-construct).
+`char-mix`, `i64-struct`, and `intrinsics` to full success.
+
+The former **#6 gap — bodyless runtime intrinsics on the VM** — is closed. The
+VM resolves `__scratcharch_*` builtins, the `llvm.*` bit intrinsics, and
+runtime-length `llvm.mem*` calls at load time through the same registry the
+interpreter consults; `string` and `intrinsics` are now full successes on all
+four measured stages.
 
 These are the Scratch-model limits recorded in spec §6.2, surfaced here as
 measured blockers rather than opcode counts.
@@ -147,11 +148,13 @@ mistaken for the current one:
   inside a struct (`i64-struct` → 45). No `datalayout` parsing and no
   aggregate-by-value ABI were needed (spec §4).
 - **Constant-length memory ops on the VM** (`llvm.memcpy`/`llvm.memmove`/
-  `llvm.memset`, `__scratcharch_memcpy`): the translator now expands them into
+  `llvm.memset`, `__scratcharch_memcpy`): the translator expands them into
   width-exact `i8` load/store sequences (load-all-then-store, so overlapping
   `memmove` is well-defined), moving the `memory`/`memintrin`/`struct-assign`
-  fixtures to full success. Runtime-length/volatile/oversized calls and the bit /
-  `strlen` intrinsics stay interpreter-only with explicit diagnostics.
+  fixtures to full success.
+- **Runtime-length memory ops, the SART string builtins, and the `llvm.*` bit
+  intrinsics on the VM**: load-time resolved, never approximated (`runtime_mem`
+  → 255, `string` → 5, `intrinsics` → 2018928754).
 - Everything the v0.3 spec gate already closed: signed `icmp`; two-limb `i64`
   add/sub/compare/cast/load/store/select/phi and full-width
   `mul`/`udiv`/`urem` (software helpers `__sair_mul64`/`__sair_udivrem64`);
@@ -196,9 +199,40 @@ mistaken for the current one:
   at the aggregate global initializer) — no fixture was made "Supported" by
   weakening a check.
 
+## New since baseline (v0.3 → v0.4)
+
+- **VM runtime resolver**: the ISA VM no longer has an `Interpreter only` class.
+  At `load_program` every bodyless named `Call` is resolved once, per name, per
+  program — first against the shared `scratcharch-runtime` `IntrinsicRegistry`
+  (whose `IntrinsicSignature` supplies the operand-stack arity), then against
+  the canonical `llvm.mem*` variants and the `llvm.bswap/ctpop/ctlz/cttz.iN`
+  bit intrinsics — and rewritten to an internal `Code::CallRuntime` entry. The
+  execute loop dispatches on the resolved kind, never a name string; the ISA is
+  unchanged and gains no libc-specific instruction.
+- **VM 79% → 85%** (26/33 → 29/34); **no `vm-failure` class remains**. The two
+  former interpreter-only fixtures (`string`, `intrinsics`) are full successes.
+- **Failure categories stay distinct on the VM**: `Abort`, `Panic`, `Trap`
+  (runtime), and `DivisionByZero` are separate from the ISA `unreachable` trap —
+  a runtime abort is never reported as an `unreachable`.
+- **Corpus 33 → 34**: `runtime_mem`, a program whose memory-op lengths are
+  computed at run time (so the translator leaves them as calls) and which
+  exercises every SART string builtin — interpreter-exact, VM-exact, and
+  native-exact (255).
+- **Interpreter and VM now share the bit-intrinsic leaf**
+  (`scratcharch_runtime::bit_intrinsic_value`), so the two engines cannot
+  diverge on `bswap`/`ctpop`/`ctlz`/`cttz` including the no-poison
+  zero-operand case.
+- **Differential suite 31 → 40 tests** (`vm_differential_tests.rs`): bit
+  intrinsics across families and widths, runtime-length `llvm.mem*`, the SART
+  string/memory builtins, the distinct failure categories, and an unknown
+  bodyless callee rejected by both engines (VM at load time, interpreter when
+  the call is reached).
+- **Parser/SAIR/Interpreter unchanged** at 85%; Scratch stays 76% but its
+  numerator grows 25 → 26 (the new fixture constructs).
+
 ## How this is verified
 
-- **Committed real-clang corpus** `tests/corpus/llvm/fixtures/` (33 fixtures)
+- **Committed real-clang corpus** `tests/corpus/llvm/fixtures/` (34 fixtures)
   plus the classic `tests/c_programs/*.{c,ll}`, each with a fresh-clang
   recompile harness so the committed `.ll` cannot drift.
 - **Five-surface record** `scratcharch-pipeline/tests/llvm_corpus_surfaces.rs`
@@ -208,7 +242,8 @@ mistaken for the current one:
 - **Native-reference differential**: each `.c` is recompiled and run through a
   real C compiler; native exit, interpreter result, and VM result must all agree
   where the VM is supported, and the VM must reject with the pinned diagnostic
-  where it is not (exit codes compared `& 0xFF`).
+  where it is not (exit codes compared `& 0xFF`). Runtime-helper calls are
+  provided natively by a libc-backed shim (`scratcharch-compat/src/native.rs`).
 - **Compatibility benchmark** (`scratcharch test-compat`) enforces the recorded
   manifest expectations as a regression gate and renders the dashboard above
   with explicit `(pass/total)` denominators. Machine results live in
@@ -216,12 +251,12 @@ mistaken for the current one:
 - **Memory-intrinsic differential suite** (`memintrin_tests.rs`, 5 tests):
   constant-length `memcpy`/`memmove`(overlap)/`memset` must agree bit-for-bit on
   the interpreter *and* the VM; `llvm.memcpy.inline` stays a rejected variant;
-  runtime-length `memcpy` stays interpreter-only (VM rejects the undefined
-  callee by name).
+  runtime-length `memcpy` is resolved on both engines now that the VM has its
+  load-time runtime resolver.
 - **Frontend-focused suites**: `translator_tests.rs`, `phi_icmp_tests.rs`,
   `reject_tests.rs`, plus the interpreter/VM differential suite
-  (`vm_differential_tests.rs`) and the driver's `vm_backend_tests.rs` for
-  two-limb `i64` and byte memory.
+  (`vm_differential_tests.rs`, 40 tests) and the driver's `vm_backend_tests.rs`
+  for two-limb `i64` and byte memory.
 
-Gate commands: `cargo test --workspace` (611 tests), `cargo clippy --workspace
+Gate commands: `cargo test --workspace`, `cargo clippy --workspace
 --all-targets` (zero warnings), `./scripts/run_c_tests.sh`.

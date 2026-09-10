@@ -520,19 +520,76 @@ Scratch (the bitwise/shift family — `and`/`ashr`/`lshr` have no Scratch
 operator). Each is recorded in the matrix with its pinned diagnostic — nothing
 is silently approximated.
 
+### LLVM Compatibility v0.5 — VM Runtime Intrinsic Completion (`scratcharch-vm` / `scratcharch-runtime` / `scratcharch-sair-interpreter` / `scratcharch-compat`)
+
+Milestone goal: close the last VM gap class — bodyless runtime/intrinsic calls —
+without touching the frozen ISA, by giving the VM a **load-time runtime
+resolver** shared with the interpreter. Gap inventory and the chosen mechanism:
+`docs/design/VM_RUNTIME_GAP_ANALYSIS.md`. Recorded numbers:
+`docs/design/LLVM_COMPATIBILITY_BASELINE.md` (**v0.4 gate** — the
+benchmark-baseline axis); the spec change log advances to **v0.5**, so the dual
+versioning now reads spec v0.5 / baseline v0.4.
+
+- [x] **Gap inventory** (M-P1): `docs/design/VM_RUNTIME_GAP_ANALYSIS.md` — the
+      three interpreter tiers (`llvm.mem*`, `llvm.*` bit intrinsics, SART
+      builtins), which bodyless names the corpus reaches, and the ranking
+      (corpus blockers first, then foundation, then edge cases).
+- [x] **Runtime registry for the VM** (M-P2): `scratcharch-vm/src/runtime.rs`
+      resolves a bodyless name **once, per name, per program** at `load_program`
+      into a `Code::CallRuntime` entry; `execute.rs` dispatches on the resolved
+      *kind*, never on a name string. `Instruction::Call(name)` and the SA48 ISA
+      are unchanged; the VM's private `Code` enum grows one variant.
+- [x] **Signature-carrying registry** (M-P2/M-P4): `IntrinsicSignature`
+      (`arg_words`/`result_words`) added to `scratcharch-runtime`, so a stack
+      machine knows a call's cell shape before running it; `scratcharch-vm`
+      depends on `scratcharch-runtime` (acyclic — SART has zero dependencies).
+- [x] **Memory intrinsics on the VM** (M-P3): runtime-length/volatile/oversized
+      `llvm.mem*` resolve to a flat copy/move/set with the interpreter's
+      contiguous-range, null-destination, and as-if-through-a-temporary rules.
+- [x] **String runtime on the VM** (M-P4): the SART builtins execute the *same*
+      registry body the interpreter runs, over a `ByteMemory` view of VM memory
+      — parity by construction, not by re-implementation.
+- [x] **Bit intrinsics on the VM** (M-P5): both engines evaluate the shared
+      `scratcharch_runtime::bit_intrinsic_value` leaf, so
+      `bswap`/`ctpop`/`ctlz`/`cttz` cannot diverge (including the no-poison
+      zero-operand case). The leaf carries no `llvm.*` name string, keeping the
+      runtime crate frontend-neutral.
+- [x] **Distinct failure categories** (M-P6): VM `Abort`, `Panic`, `Trap`
+      (runtime), and `DivisionByZero` stay separate from the ISA `unreachable`
+      trap — a runtime abort is never reported as an `unreachable`.
+- [x] **Differential coverage** (M-P7): corpus fixture `runtime_mem` (runtime
+      lengths + every SART string builtin; 255 on interpreter, VM, *and* native);
+      `vm_differential_tests.rs` grows 31 → 40 tests.
+- [x] **Dashboard + regression guard** (M-P8/M-P9): every dashboard row shows
+      its `(pass/total)` numerator; the manifest pins `string`/`intrinsics` as
+      full successes and carries the `vm-failure` class no more; resolver unit
+      tests cover the accepted and rejected name space.
+- [x] **v0.4 benchmark numbers**: Overall 85% (29/34 semantic core);
+      Parser/SAIR/Interpreter 85% (29/34); **VM 85% (29/34)** — up from 79%,
+      with no `vm-failure` class remaining; Scratch 76% (26/34); classes
+      success 26 / scratch-backend-failure 3 / parse-failure 5; gate green,
+      0 mismatches.
+
+**Deferred / known gaps at v0.5**: unchanged from v0.4 except that no VM gap
+remains — floating point and vector types are rejected by the parser (`float`,
+`vector`); indirect calls have no function-pointer ABI (`indirect-call`);
+`atomicrmw` is out of scope for the word ISA (`atomic`); aggregate-constant
+global tables need a parser extension (`global-agg`); and 3 fixtures are exact
+on interpreter+VM but unlowerable to Scratch (the bitwise/shift family).
+
 ### Testing
 
 - [x] All tests pass with 0 warnings and 0 clippy errors
-- [x] v0.4 gate (2026-09-09): `cargo test --workspace` = 611 passed, 0 failed;
-      `cargo clippy --workspace --all-targets` = 0 warnings;
-      `./scripts/run_c_tests.sh` = 1 passed, 0 failed.
-      `scratcharch test-compat` v0.3 gate green (33 fixtures, Overall 85%,
-      Scratch 76%).
+- [x] v0.4 gate (2026-09-10): `cargo test --workspace`,
+      `cargo clippy --workspace --all-targets` (0 warnings), and
+      `./scripts/run_c_tests.sh` all green.
+      `scratcharch test-compat` v0.4 gate green (34 fixtures, Overall 85%,
+      VM 85%, Scratch 76%).
 
 ## In Progress
 
-**LLVM Compatibility v0.4 — byte-exact Scratch memory (P5)**: implemented and
-green; report pending (no commit made for this milestone yet).
+**LLVM Compatibility v0.5 — VM runtime intrinsic completion**: implemented and
+green; awaiting the commit proposal (no commit made for this milestone yet).
 
 ## Future (v0.3+)
 
@@ -552,9 +609,13 @@ green; report pending (no commit made for this milestone yet).
 - [x] **VM runtime intrinsic linking (constant-length memory ops)** — landed in
       v0.4: the translator expands non-volatile, constant-length
       `llvm.memcpy`/`memmove`/`memset` and `__scratcharch_memcpy` into width-exact
-      `i8` load/store sequences that run on the VM. Runtime-length/volatile/
-      oversized variants and `__scratcharch_strlen` remain interpreter-only
-      (explicit diagnostics).
+      `i8` load/store sequences that run on the VM.
+- [x] **VM runtime intrinsic linking (bodyless calls)** — landed in v0.5: the VM
+      resolves every remaining bodyless runtime/intrinsic call at load time
+      through the shared `scratcharch-runtime` registry
+      (`scratcharch-vm/src/runtime.rs`), so the interpreter-only class is empty.
+      Runtime-length/volatile/oversized memory ops and `__scratcharch_strlen`
+      now run on the ISA VM exactly.
 - [ ] **Floating point**: `fadd`/`fsub`/`fmul`/`fdiv` — feasibility studied in
       v0.4 (`docs/design/FLOATING_POINT.md`, option **C** recommended near-term);
       the LLVM frontend still rejects float types

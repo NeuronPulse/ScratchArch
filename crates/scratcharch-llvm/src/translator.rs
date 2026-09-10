@@ -543,8 +543,10 @@ pub fn translate(program: &LlvmProgram) -> Result<IrModule, LlvmError> {
 /// Largest constant length expanded inline by
 /// [`try_lower_mem_intrinsic`]. Longer constant-length and all runtime-length
 /// memory ops stay as calls: the SAIR interpreter resolves them through its
-/// runtime-intrinsic dispatch, and the VM reports its named
-/// "undefined function" diagnostic — never a silent approximation.
+/// runtime-intrinsic dispatch, and the VM resolves them at load time through
+/// the same `scratcharch-runtime` registry (`scratcharch-vm/src/runtime.rs`) —
+/// a name neither engine knows is an explicit error, never a silent
+/// approximation.
 const MAX_INLINE_MEMOP: i64 = 4096;
 
 /// Result of deciding how a `llvm.mem*`/`__scratcharch_memcpy` call lowers.
@@ -554,7 +556,7 @@ enum MemIntrinsicLowering {
     /// the void `llvm.mem*` intrinsics produce nothing).
     Expanded(Option<ValueId>),
     /// Not a constant-length, non-volatile memory op: emit an ordinary call
-    /// (resolved by the interpreter at runtime).
+    /// (resolved by the runtime registry on both engines at run/load time).
     NotExpanded,
 }
 
