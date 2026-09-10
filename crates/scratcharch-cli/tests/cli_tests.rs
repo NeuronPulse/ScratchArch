@@ -568,15 +568,16 @@ fn run_compat_json(args: &[&str]) -> (bool, serde_json::Value, String) {
 #[test]
 fn test_cli_test_compat_json_gate_green() {
     // The corpus manifest lives at the workspace root; the CLI must discover it
-    // from the crate directory without an explicit --corpus-root. The aggregate
-    // global initializer (`global-agg`) now lays out into the static-data image,
-    // so every `struct`-tagged fixture succeeds end-to-end through Scratch: the
-    // feature is a clean 8/8 rather than the previous mixed distribution.
+    // from the crate directory without an explicit --corpus-root. As of the v0.5
+    // aggregate data model every `struct`-tagged fixture succeeds end-to-end
+    // through Scratch: `global-agg` (the old aggregate-global parser gap) and
+    // the six new aggregate fixtures joined the seven that already constructed,
+    // so the feature is now a clean 14/14 rather than a mixed distribution.
     let (ok, value, output) = run_compat_json(&["--feature", "struct"]);
     assert!(ok, "test-compat failed: {}", output);
     assert_eq!(value["gate_green"].as_bool(), Some(true), "output: {}", output);
-    assert_eq!(value["total"].as_u64(), Some(8), "output: {}", output);
-    assert_eq!(value["classes"]["success"].as_u64(), Some(8), "output: {}", output);
+    assert_eq!(value["total"].as_u64(), Some(14), "output: {}", output);
+    assert_eq!(value["classes"]["success"].as_u64(), Some(14), "output: {}", output);
     assert_eq!(value["classes"]["parse-failure"].as_u64(), None, "output: {}", output);
     assert_eq!(value["stages"]["scratch"].as_u64(), Some(100), "output: {}", output);
 }

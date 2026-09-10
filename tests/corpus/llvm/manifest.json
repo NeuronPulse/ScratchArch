@@ -1,5 +1,5 @@
 {
-  "version": "0.4",
+  "version": "0.5",
   "fixtures": [
     {
       "name": "hello",
@@ -381,6 +381,129 @@
       "expected_status": "success",
       "vm": {
         "exact": 255
+      },
+      "scratch": {
+        "constructs": true
+      }
+    },
+    {
+      "name": "aggstruct",
+      "source": "tests/c_programs/aggstruct.c",
+      "llvm_ir": "tests/c_programs/aggstruct.ll",
+      "feature_tags": [
+        "struct",
+        "memory",
+        "integer"
+      ],
+      "expected_result": 56,
+      "expected_stage": "scratch",
+      "expected_status": "success",
+      "vm": {
+        "exact": 56
+      },
+      "scratch": {
+        "constructs": true
+      }
+    },
+    {
+      "name": "aggarray",
+      "source": "tests/c_programs/aggarray.c",
+      "llvm_ir": "tests/c_programs/aggarray.ll",
+      "feature_tags": [
+        "struct",
+        "array",
+        "memory",
+        "integer"
+      ],
+      "expected_result": 138,
+      "expected_stage": "scratch",
+      "expected_status": "success",
+      "vm": {
+        "exact": 138
+      },
+      "scratch": {
+        "constructs": true
+      }
+    },
+    {
+      "name": "aggglobal",
+      "source": "tests/c_programs/aggglobal.c",
+      "llvm_ir": "tests/c_programs/aggglobal.ll",
+      "feature_tags": [
+        "struct",
+        "global",
+        "pointer",
+        "memory",
+        "integer"
+      ],
+      "expected_result": 162,
+      "expected_stage": "scratch",
+      "expected_status": "success",
+      "vm": {
+        "exact": 162
+      },
+      "scratch": {
+        "constructs": true
+      }
+    },
+    {
+      "name": "aggmatrix",
+      "source": "tests/c_programs/aggmatrix.c",
+      "llvm_ir": "tests/c_programs/aggmatrix.ll",
+      "feature_tags": [
+        "array",
+        "global",
+        "struct",
+        "memory",
+        "integer"
+      ],
+      "expected_result": 314,
+      "expected_stage": "scratch",
+      "expected_status": "success",
+      "vm": {
+        "exact": 314
+      },
+      "scratch": {
+        "constructs": true
+      }
+    },
+    {
+      "name": "aggnested",
+      "source": "tests/c_programs/aggnested.c",
+      "llvm_ir": "tests/c_programs/aggnested.ll",
+      "feature_tags": [
+        "struct",
+        "array",
+        "global",
+        "memory",
+        "integer"
+      ],
+      "expected_result": 63,
+      "expected_stage": "scratch",
+      "expected_status": "success",
+      "vm": {
+        "exact": 63
+      },
+      "scratch": {
+        "constructs": true
+      }
+    },
+    {
+      "name": "aggbytes",
+      "source": "tests/c_programs/aggbytes.c",
+      "llvm_ir": "tests/c_programs/aggbytes.ll",
+      "feature_tags": [
+        "struct",
+        "array",
+        "global",
+        "pointer",
+        "memory"
+      ],
+      "expected_result": 514,
+      "expected_stage": "scratch",
+      "expected_status": "success",
+      "vm": {
+        "exact": 514
       },
       "scratch": {
         "constructs": true
