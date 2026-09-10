@@ -48,12 +48,17 @@ entry:
 }
 
 // ---------------------------------------------------------------------------
-// Global-variable unsupported forms (Part 6): the translator supports scalar /
+// Global-variable unsupported forms: the translator supports scalar /
 // zeroinitializer / `c"…"` / null / pointer-relocation / flat-array-of-scalar
-// initializers. Every other form must fail with a diagnostic that says why —
-// SAIR has no undefined values, struct literals and nested aggregates have no
-// flat serialization, and a pointer relocation to an undeclared global would
-// fabricate an address. These pin the rejection diagnostics.
+// initializers, and (since v0.5) nested aggregate initializers laid out through
+// `DataLayout`. What remains must fail with a diagnostic that says why: SAIR has
+// no undefined values, a pointer relocation to an undeclared global would
+// fabricate an address, and an aggregate *value* has no SAIR representation at
+// all. These pin the rejection diagnostics so a later accidental "support" that
+// is actually a silent approximation cannot sneak in unnoticed.
+//
+// The positive side of the v0.5 aggregate model — the exact byte image an
+// aggregate initializer produces — lives in `aggregate_tests.rs`.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -91,40 +96,63 @@ entry:
 }
 
 #[test]
-fn struct_typed_global_is_rejected() {
-    // Struct-typed globals are rejected at the type check, before any
-    // initializer is consumed: the flat static-data segment has no struct
-    // layout, so a `{ i32 1, i32 2 }` literal could never be serialized.
+fn struct_value_type_is_rejected() {
+    // A struct *value* has no SAIR representation: there is no aggregate-by-value
+    // ABI, so a `load %T` cannot produce an operand. The translator must say so
+    // rather than flatten the struct into a scalar.
     let ir = r#"
 %T = type { i32, i32 }
-@t = global %T { i32 1, i32 2 }
 define i32 @main() {
 entry:
+  %p = alloca %T
+  %v = load %T, ptr %p
   ret i32 0
 }
 "#;
-    let err = translate_llvm(ir).expect_err("struct-typed global must be rejected");
+    let err = translate_llvm(ir).expect_err("struct value type must be rejected");
     let msg = err.to_string();
     assert!(
-        msg.contains("@t") && msg.contains("struct/void data is not modeled"),
-        "diagnostic must explain the struct-global rejection, got: {msg}"
+        msg.contains("%T") && msg.contains("no SAIR value representation"),
+        "diagnostic must explain the struct-value rejection, got: {msg}"
     );
 }
 
 #[test]
-fn nested_aggregate_global_initializer_is_rejected() {
+fn array_value_type_is_rejected() {
+    // Same rule for arrays; the diagnostic points at the layout-preserving path.
     let ir = r#"
-@a = global [2 x [3 x i32]] [[3 x i32] [i32 1, i32 2, i32 3], [3 x i32] [i32 4, i32 5, i32 6]]
+define i32 @main() {
+entry:
+  %a = alloca [2 x i32]
+  %v = load [2 x i32], ptr %a
+  ret i32 0
+}
+"#;
+    let err = translate_llvm(ir).expect_err("array value type must be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("[2 x i32]") && msg.contains("no SAIR value representation"),
+        "diagnostic must explain the array-value rejection, got: {msg}"
+    );
+}
+
+#[test]
+fn zero_sized_array_global_is_rejected() {
+    // `[0 x i32]` occupies no storage. Giving it a made-up size would shift every
+    // later global's offset, so `DataLayout` rejects it and the translator
+    // surfaces that as a diagnostic instead of guessing.
+    let ir = r#"
+@z = global [0 x i32] zeroinitializer
 define i32 @main() {
 entry:
   ret i32 0
 }
 "#;
-    let err = translate_llvm(ir).expect_err("nested-aggregate global initializer must be rejected");
+    let err = translate_llvm(ir).expect_err("zero-sized global type must be rejected");
     let msg = err.to_string();
     assert!(
-        msg.contains("nested-aggregate global initializer"),
-        "diagnostic must explain the nested-aggregate rejection, got: {msg}"
+        msg.contains("zero-sized") && msg.contains("[0 x i32]"),
+        "diagnostic must explain the zero-sized rejection, got: {msg}"
     );
 }
 

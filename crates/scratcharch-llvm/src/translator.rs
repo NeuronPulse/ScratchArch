@@ -48,11 +48,112 @@ use scratcharch_ir::instruction::{CastOp as IrCastOp, GepIndex, Instruction as S
 use scratcharch_ir::r#module::{IrModule, StaticData, STATIC_DATA_BASE};
 use scratcharch_ir::types::IrType;
 use scratcharch_ir::value::ValueId;
-use scratcharch_target::layout::layout_struct;
+use scratcharch_target::layout::{AggregateType, DataLayout, LayoutScalar, TypeLayout};
 
 use crate::errors::LlvmError;
 use crate::parser::*;
 
+/// The layout governing aggregate geometry for the LLVM frontend.
+///
+/// The corpus is compiled by clang for `x86_64-pc-linux-gnu`, so struct field
+/// offsets, array strides and aggregate sizes must follow that source target's
+/// rules rather than the 32-bit SA48 pointer model. This is the *only* place
+/// the frontend chooses a layout; every offset, size and stride below is read
+/// from it (see `docs/design/AGGREGATE_DATA_MODEL.md`).
+fn source_layout() -> DataLayout {
+    DataLayout::x86_64()
+}
+
+/// Map an LLVM type to the target-aware aggregate type used for layout.
+///
+/// `void` and `f64` are scalars here even though SAIR stores them
+/// differently; the mapping describes *memory*, and rejection of unsupported
+/// leaves happens where they are read or written.
+fn llvm_type_to_aggregate(
+    structs: &HashMap<String, Vec<LlvmType>>,
+    ty: &LlvmType,
+) -> Result<AggregateType, LlvmError> {
+    match ty {
+        LlvmType::I1 => Ok(AggregateType::Scalar(LayoutScalar::I1)),
+        LlvmType::I8 => Ok(AggregateType::Scalar(LayoutScalar::I8)),
+        LlvmType::I16 => Ok(AggregateType::Scalar(LayoutScalar::I16)),
+        LlvmType::I32 => Ok(AggregateType::Scalar(LayoutScalar::I32)),
+        LlvmType::I64 => Ok(AggregateType::Scalar(LayoutScalar::I64)),
+        LlvmType::Ptr => Ok(AggregateType::Scalar(LayoutScalar::Ptr)),
+        LlvmType::Void => Err(LlvmError::Translation(
+            "cannot compute layout of void type".into(),
+        )),
+        LlvmType::Array { inner, count } => Ok(AggregateType::Array(
+            Box::new(llvm_type_to_aggregate(structs, inner)?),
+            *count,
+        )),
+        LlvmType::Struct(_) | LlvmType::UnnamedStruct { .. } => {
+            let fields = struct_fields(structs, ty).ok_or_else(|| {
+                LlvmError::Translation(format!("struct fields not collected for {:?}", ty))
+            })?;
+            let mut mapped = Vec::with_capacity(fields.len());
+            for f in fields {
+                mapped.push(llvm_type_to_aggregate(structs, f)?);
+            }
+            Ok(AggregateType::Struct(mapped))
+        }
+    }
+}
+
+/// The resolved layout (size, alignment, struct field offsets) of `ty`.
+fn layout_of_llvm(
+    structs: &HashMap<String, Vec<LlvmType>>,
+    ty: &LlvmType,
+) -> Result<TypeLayout, LlvmError> {
+    let agg = llvm_type_to_aggregate(structs, ty)?;
+    source_layout()
+        .layout_of(&agg)
+        .map_err(|e| LlvmError::Translation(format!("{e}")))
+}
+
+/// Byte distance between consecutive elements of an array of `element`.
+///
+/// Read from [`DataLayout`], never recomputed: an array of structs strides by
+/// the struct's full size *including* its trailing padding.
+fn array_stride_of_llvm(
+    structs: &HashMap<String, Vec<LlvmType>>,
+    element: &LlvmType,
+) -> Result<u32, LlvmError> {
+    let agg = llvm_type_to_aggregate(structs, element)?;
+    source_layout()
+        .array_stride(&agg)
+        .map_err(|e| LlvmError::Translation(format!("{e}")))
+}
+
+/// Byte offset of struct field `index` within `ty`.
+///
+/// Read from [`DataLayout`]; the translator must never re-derive field offsets
+/// from the field list itself (`docs/design/AGGREGATE_DATA_MODEL.md`).
+fn field_offset_of_llvm(
+    structs: &HashMap<String, Vec<LlvmType>>,
+    ty: &LlvmType,
+    index: u32,
+) -> Result<u32, LlvmError> {
+    let agg = llvm_type_to_aggregate(structs, ty)?;
+    source_layout()
+        .field_offset(&agg, index as usize)
+        .ok_or_else(|| {
+            LlvmError::Translation(format!(
+                "struct field {} is out of bounds of {}",
+                index,
+                agg.describe()
+            ))
+        })
+}
+
+/// Map a *scalar* LLVM type to its SAIR value type.
+///
+/// SAIR has no aggregate values — aggregation is a memory/layout concern (see
+/// [`llvm_type_to_aggregate`] and `docs/design/AGGREGATE_DATA_MODEL.md`) — so an
+/// aggregate operand is a hard error rather than a silent collapse onto a leaf
+/// type. clang `-O0` never emits an aggregate `load`/`store` (it lowers struct
+/// assignment to `llvm.memcpy` over the byte layout), so this only fires on
+/// genuinely unsupported input.
 fn llvm_type_to_ir(ty: &LlvmType) -> Result<IrType, LlvmError> {
     match ty {
         LlvmType::I1 => Ok(IrType::I1),
@@ -62,9 +163,36 @@ fn llvm_type_to_ir(ty: &LlvmType) -> Result<IrType, LlvmError> {
         LlvmType::I64 => Ok(IrType::I64),
         LlvmType::Ptr => Ok(IrType::Pointer),
         LlvmType::Void => Ok(IrType::Void),
-        LlvmType::Array { inner, .. } => llvm_type_to_ir(inner),
-        LlvmType::Struct(_) => Ok(IrType::I32),
-        LlvmType::UnnamedStruct { .. } => Ok(IrType::I32),
+        LlvmType::Array { .. } | LlvmType::Struct(_) | LlvmType::UnnamedStruct { .. } => {
+            Err(LlvmError::UnsupportedType(format!(
+                "aggregate value type {} has no SAIR value representation; \
+                 access its scalar leaves through GEP over the aggregate layout",
+                llvm_type_name(ty)
+            )))
+        }
+    }
+}
+
+/// Render a type in LLVM syntax for diagnostics.
+///
+/// `LlvmType`'s derived `Debug` output is Rust-shaped (`I32`,
+/// `Struct("Pair")`), which reads badly in a message that quotes LLVM IR back at
+/// the user, so diagnostics spell the type the way the input did.
+fn llvm_type_name(ty: &LlvmType) -> String {
+    match ty {
+        LlvmType::I1 => "i1".into(),
+        LlvmType::I8 => "i8".into(),
+        LlvmType::I16 => "i16".into(),
+        LlvmType::I32 => "i32".into(),
+        LlvmType::I64 => "i64".into(),
+        LlvmType::Ptr => "ptr".into(),
+        LlvmType::Void => "void".into(),
+        LlvmType::Array { inner, count } => format!("[{} x {}]", count, llvm_type_name(inner)),
+        LlvmType::Struct(name) => format!("%{name}"),
+        LlvmType::UnnamedStruct { fields } => {
+            let inner: Vec<String> = fields.iter().map(llvm_type_name).collect();
+            format!("{{ {} }}", inner.join(", "))
+        }
     }
 }
 
@@ -88,35 +216,15 @@ fn struct_fields<'a>(
 /// therefore placed at 8-byte-aligned offsets while a stored pointer value
 /// occupies the SAIR pointer size; this stays self-consistent because every
 /// access to such a field goes through the same layout offsets.
+///
+/// All geometry comes from [`DataLayout`] — this function is a thin adapter
+/// over [`layout_of_llvm`], never a second implementation of the rules.
 fn type_size_align(
     structs: &HashMap<String, Vec<LlvmType>>,
     ty: &LlvmType,
 ) -> Result<(u32, u32), LlvmError> {
-    match ty {
-        LlvmType::I1 | LlvmType::I8 => Ok((1, 1)),
-        LlvmType::I16 => Ok((2, 2)),
-        LlvmType::I32 => Ok((4, 4)),
-        LlvmType::I64 => Ok((8, 8)),
-        LlvmType::Ptr => Ok((8, 8)),
-        LlvmType::Void => Err(LlvmError::Translation(
-            "cannot compute layout of void type".into(),
-        )),
-        LlvmType::Array { inner, count } => {
-            let (size, align) = type_size_align(structs, inner)?;
-            Ok((size * count, align))
-        }
-        LlvmType::Struct(_) | LlvmType::UnnamedStruct { .. } => {
-            let fields = struct_fields(structs, ty).ok_or_else(|| {
-                LlvmError::Translation(format!("struct fields not collected for {:?}", ty))
-            })?;
-            let mut infos = Vec::with_capacity(fields.len());
-            for f in fields {
-                infos.push(type_size_align(structs, f)?);
-            }
-            let l = layout_struct(&infos);
-            Ok((l.size, l.align))
-        }
-    }
+    let l = layout_of_llvm(structs, ty)?;
+    Ok((l.size, l.align))
 }
 
 /// Total bytes of an allocation of `count` objects of type `ty`.
@@ -286,20 +394,21 @@ struct PhiFixup {
 fn layout_globals(program: &LlvmProgram) -> Result<(HashMap<String, u32>, StaticData), LlvmError> {
     let structs = &program.struct_types;
     // Pass 1: assign regions and absolute addresses.
-    let mut next = 0usize;
+    let mut next: u32 = 0;
     let mut addr_of: HashMap<String, u32> = HashMap::new();
     for g in &program.globals {
         let (size, align) = type_size_align(structs, &g.ty)?;
-        next = align_up(next, align as usize);
-        let abs = STATIC_DATA_BASE as usize + next;
-        let abs = u32::try_from(abs).map_err(|_| {
+        next = DataLayout::align_up(next, align);
+        let abs = STATIC_DATA_BASE.checked_add(next).ok_or_else(|| {
             LlvmError::Translation("global static data region exceeds 32-bit address space".into())
         })?;
         addr_of.insert(g.name.clone(), abs);
-        next += size as usize;
+        next = next.checked_add(size).ok_or_else(|| {
+            LlvmError::Translation("global static data region exceeds 32-bit address space".into())
+        })?;
     }
     // Pass 2: serialize initializers into the byte-exact image.
-    let mut image = vec![0u8; next];
+    let mut image = vec![0u8; next as usize];
     for g in &program.globals {
         let abs = addr_of[&g.name];
         write_global_init(
@@ -312,15 +421,6 @@ fn layout_globals(program: &LlvmProgram) -> Result<(HashMap<String, u32>, Static
         )?;
     }
     Ok((addr_of, StaticData { image }))
-}
-
-/// Round `n` up to a multiple of `align` (a power of two).
-fn align_up(n: usize, align: usize) -> usize {
-    if align <= 1 {
-        n
-    } else {
-        (n + align - 1) & !(align - 1)
-    }
 }
 
 /// Write a global's static initializer into `image` (which is indexed relative
@@ -1231,7 +1331,7 @@ fn emit_gep_byte_offset(
         }
         match &cur {
             LlvmType::Array { inner, .. } => {
-                let (inner_size, _) = type_size_align(structs, inner)?;
+                let inner_size = array_stride_of_llvm(structs, inner)?;
                 add_index_term(builder, structs, syms, st, &mut acc, idx, inner_size)?;
                 cur = (**inner).clone();
             }
@@ -1248,22 +1348,15 @@ fn emit_gep_byte_offset(
                         ))
                     }
                 };
-                let field_index: usize = usize::try_from(field).map_err(|_| {
+                let field_index = u32::try_from(field).map_err(|_| {
                     LlvmError::Translation("negative struct field index".into())
                 })?;
-                let mut infos = Vec::with_capacity(fields.len());
-                for f in &fields {
-                    infos.push(type_size_align(structs, f)?);
-                }
-                let layout = layout_struct(&infos);
-                let offset = *layout.offsets.get(field_index).ok_or_else(|| {
-                    LlvmError::Translation(format!(
-                        "struct field index {} out of bounds for {:?}",
-                        field_index, cur
-                    ))
-                })?;
+                // The offset is a property of the layout, not of the field list:
+                // read it from `DataLayout` so it cannot drift from the offsets
+                // the static-data serializer and the allocator use.
+                let offset = field_offset_of_llvm(structs, &cur, field_index)?;
                 acc.add_const(offset as u64);
-                cur = fields[field_index].clone();
+                cur = fields[field_index as usize].clone();
             }
             _ => {
                 // Pointer arithmetic over the scalar itself.
