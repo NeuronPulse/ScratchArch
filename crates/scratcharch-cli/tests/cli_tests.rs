@@ -568,26 +568,27 @@ fn run_compat_json(args: &[&str]) -> (bool, serde_json::Value, String) {
 #[test]
 fn test_cli_test_compat_json_gate_green() {
     // The corpus manifest lives at the workspace root; the CLI must discover it
-    // from the crate directory without an explicit --corpus-root. As of the v0.5
-    // aggregate data model every `struct`-tagged fixture succeeds end-to-end
-    // through Scratch: `global-agg` (the old aggregate-global parser gap) and
-    // the six new aggregate fixtures joined the seven that already constructed,
-    // so the feature is now a clean 14/14 rather than a mixed distribution.
+    // from the crate directory without an explicit --corpus-root. As of the v0.6
+    // aggregate ABI every `struct`-tagged fixture succeeds end-to-end through
+    // Scratch except the one named `i24` width boundary: the eight new
+    // `abi-*` fixtures joined the fourteen that already constructed, and nine of
+    // the twenty-three still fail at the parser because a non-power-of-two record
+    // width has no SAIR representation.
     let (ok, value, output) = run_compat_json(&["--feature", "struct"]);
     assert!(ok, "test-compat failed: {}", output);
     assert_eq!(value["gate_green"].as_bool(), Some(true), "output: {}", output);
-    assert_eq!(value["total"].as_u64(), Some(14), "output: {}", output);
-    assert_eq!(value["classes"]["success"].as_u64(), Some(14), "output: {}", output);
-    assert_eq!(value["classes"]["parse-failure"].as_u64(), None, "output: {}", output);
-    assert_eq!(value["stages"]["scratch"].as_u64(), Some(100), "output: {}", output);
+    assert_eq!(value["total"].as_u64(), Some(23), "output: {}", output);
+    assert_eq!(value["classes"]["success"].as_u64(), Some(22), "output: {}", output);
+    assert_eq!(value["classes"]["parse-failure"].as_u64(), Some(1), "output: {}", output);
+    assert_eq!(value["stages"]["scratch"].as_u64(), Some(96), "output: {}", output);
 }
 
 #[test]
 fn test_cli_test_compat_stage_filter_selects_parser_gaps() {
     let (ok, value, output) = run_compat_json(&["--stage", "parser"]);
     assert!(ok, "test-compat failed: {}", output);
-    assert_eq!(value["total"].as_u64(), Some(4), "output: {}", output);
-    assert_eq!(value["classes"]["parse-failure"].as_u64(), Some(4), "output: {}", output);
+    assert_eq!(value["total"].as_u64(), Some(5), "output: {}", output);
+    assert_eq!(value["classes"]["parse-failure"].as_u64(), Some(5), "output: {}", output);
 }
 
 #[test]

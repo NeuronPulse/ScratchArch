@@ -1,5 +1,5 @@
 {
-  "version": "0.5",
+  "version": "0.6",
   "fixtures": [
     {
       "name": "hello",
@@ -753,6 +753,199 @@
       },
       "scratch": {
         "constructs": true
+      }
+    },
+    {
+      "name": "abi-struct-param",
+      "source": "tests/c_programs/abi-struct-param.c",
+      "llvm_ir": "tests/c_programs/abi-struct-param.ll",
+      "feature_tags": [
+        "struct",
+        "struct-param",
+        "aggregate-abi",
+        "memory",
+        "integer"
+      ],
+      "expected_result": 57,
+      "expected_stage": "scratch",
+      "expected_status": "success",
+      "vm": {
+        "exact": 57
+      },
+      "scratch": {
+        "constructs": true
+      }
+    },
+    {
+      "name": "abi-struct-return",
+      "source": "tests/c_programs/abi-struct-return.c",
+      "llvm_ir": "tests/c_programs/abi-struct-return.ll",
+      "feature_tags": [
+        "struct",
+        "struct-return",
+        "aggregate-abi",
+        "memory",
+        "integer"
+      ],
+      "expected_result": 66,
+      "expected_stage": "scratch",
+      "expected_status": "success",
+      "vm": {
+        "exact": 66
+      },
+      "scratch": {
+        "constructs": true
+      }
+    },
+    {
+      "name": "abi-nested-param",
+      "source": "tests/c_programs/abi-nested-param.c",
+      "llvm_ir": "tests/c_programs/abi-nested-param.ll",
+      "feature_tags": [
+        "struct",
+        "struct-param",
+        "nested-aggregate",
+        "aggregate-abi",
+        "memory",
+        "integer"
+      ],
+      "expected_result": 125,
+      "expected_stage": "scratch",
+      "expected_status": "success",
+      "vm": {
+        "exact": 125
+      },
+      "scratch": {
+        "constructs": true
+      }
+    },
+    {
+      "name": "abi-nested-return",
+      "source": "tests/c_programs/abi-nested-return.c",
+      "llvm_ir": "tests/c_programs/abi-nested-return.ll",
+      "feature_tags": [
+        "struct",
+        "struct-return",
+        "nested-aggregate",
+        "aggregate-abi",
+        "memory",
+        "integer"
+      ],
+      "expected_result": 126,
+      "expected_stage": "scratch",
+      "expected_status": "success",
+      "vm": {
+        "exact": 126
+      },
+      "scratch": {
+        "constructs": true
+      }
+    },
+    {
+      "name": "abi-i64-field",
+      "source": "tests/c_programs/abi-i64-field.c",
+      "llvm_ir": "tests/c_programs/abi-i64-field.ll",
+      "feature_tags": [
+        "struct",
+        "i64",
+        "struct-param",
+        "struct-return",
+        "aggregate-abi",
+        "memory",
+        "integer"
+      ],
+      "expected_result": 7,
+      "expected_stage": "scratch",
+      "expected_status": "success",
+      "vm": {
+        "exact": 7
+      },
+      "scratch": {
+        "constructs": true
+      }
+    },
+    {
+      "name": "abi-ptr-field",
+      "source": "tests/c_programs/abi-ptr-field.c",
+      "llvm_ir": "tests/c_programs/abi-ptr-field.ll",
+      "feature_tags": [
+        "struct",
+        "pointer",
+        "struct-param",
+        "struct-return",
+        "aggregate-abi",
+        "memory",
+        "integer"
+      ],
+      "expected_result": 36,
+      "expected_stage": "scratch",
+      "expected_status": "success",
+      "vm": {
+        "exact": 36
+      },
+      "scratch": {
+        "constructs": true
+      }
+    },
+    {
+      "name": "abi-multi-agg",
+      "source": "tests/c_programs/abi-multi-agg.c",
+      "llvm_ir": "tests/c_programs/abi-multi-agg.ll",
+      "feature_tags": [
+        "struct",
+        "struct-param",
+        "aggregate-abi",
+        "memory",
+        "integer"
+      ],
+      "expected_result": 119,
+      "expected_stage": "scratch",
+      "expected_status": "success",
+      "vm": {
+        "exact": 119
+      },
+      "scratch": {
+        "constructs": true
+      }
+    },
+    {
+      "name": "abi-mixed-args",
+      "source": "tests/c_programs/abi-mixed-args.c",
+      "llvm_ir": "tests/c_programs/abi-mixed-args.ll",
+      "feature_tags": [
+        "struct",
+        "struct-param",
+        "aggregate-abi",
+        "memory",
+        "integer"
+      ],
+      "expected_result": 87,
+      "expected_stage": "scratch",
+      "expected_status": "success",
+      "vm": {
+        "exact": 87
+      },
+      "scratch": {
+        "constructs": true
+      }
+    },
+    {
+      "name": "abi-odd-width",
+      "source": "tests/corpus/llvm/fixtures/abi-odd-width.c",
+      "llvm_ir": "tests/corpus/llvm/fixtures/abi-odd-width.ll",
+      "feature_tags": [
+        "struct",
+        "struct-param",
+        "aggregate-abi"
+      ],
+      "expected_result": 6,
+      "expected_stage": "parser",
+      "expected_status": "unsupported",
+      "vm": {
+        "rejected": "unsupported"
+      },
+      "scratch": {
+        "rejected": "unsupported"
       }
     }
   ]

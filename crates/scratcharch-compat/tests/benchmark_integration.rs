@@ -34,13 +34,15 @@ fn no_native() -> RunConfig {
     }
 }
 
-/// v0.5 full-corpus snapshot values (must match LLVM_COMPATIBILITY_BASELINE.md).
+/// v0.6 full-corpus snapshot values (must match LLVM_COMPATIBILITY_BASELINE.md).
 ///
-/// v0.5 adds the aggregate data model: six real-clang aggregate fixtures plus
-/// the `global-agg` fixture, which moves from a parser capability gap to a
-/// success. The denominator therefore grows 34 → 40 while the absolute pass
-/// count grows 29 → 36.
-fn assert_v05_stage_snapshot(report: &scratcharch_compat::report::Report) {
+/// v0.6 adds the aggregate ABI: eight real-clang fixtures that pass a struct by
+/// value, return one, nest them, and carry `i64`/pointer members across the call
+/// boundary — every one green on all five surfaces, including Scratch. A ninth
+/// fixture, `abi-odd-width`, is the newly *named* boundary (an `i24`-coerced
+/// record has no SAIR representation), so the denominator grows 40 → 49, the
+/// parse gaps 4 → 5, and the absolute pass count 36 → 44.
+fn assert_v06_stage_snapshot(report: &scratcharch_compat::report::Report) {
     let percent_of = |s: Stage| {
         report
             .stage_metrics
@@ -49,19 +51,19 @@ fn assert_v05_stage_snapshot(report: &scratcharch_compat::report::Report) {
             .expect("stage row present")
             .percent
     };
-    assert_eq!(report.total, 40);
+    assert_eq!(report.total, 49);
     assert_eq!(report.overall_percent, 90);
     assert_eq!(percent_of(Stage::Parser), 90);
     assert_eq!(percent_of(Stage::Sair), 90);
     assert_eq!(percent_of(Stage::Interpreter), 90);
     assert_eq!(percent_of(Stage::Vm), 90);
-    assert_eq!(percent_of(Stage::Scratch), 83);
+    assert_eq!(percent_of(Stage::Scratch), 84);
 }
 
 #[test]
-fn v05_full_corpus_gate_is_green_and_snapshot_holds() {
+fn v06_full_corpus_gate_is_green_and_snapshot_holds() {
     let outcomes = run_all(&corpus(), &no_native());
-    assert_eq!(outcomes.len(), 40, "v0.5 corpus has 40 fixtures");
+    assert_eq!(outcomes.len(), 49, "v0.6 corpus has 49 fixtures");
 
     // Regression oracle: no fixture drifts from its recorded expectation.
     for o in &outcomes {
@@ -75,7 +77,7 @@ fn v05_full_corpus_gate_is_green_and_snapshot_holds() {
 
     let report = build_report(
         &outcomes,
-        "0.5",
+        "0.6",
         "2026-09-10",
         None,
         &scratcharch_compat::status::REPORT_STAGES,
@@ -83,15 +85,14 @@ fn v05_full_corpus_gate_is_green_and_snapshot_holds() {
     assert!(report.gate_green);
     assert!(report.failures.is_empty());
     assert!(report.semantic_mismatches.is_empty());
-    assert_v05_stage_snapshot(&report);
+    assert_v06_stage_snapshot(&report);
 
-    // Classification matches the v0.5 shape: every non-success fixture is a
+    // Classification matches the v0.6 shape: every non-success fixture is a
     // *known* capability gap (frontend or Scratch model), never a hidden
-    // correctness failure. The VM now runs every fixture the interpreter does,
-    // so no fixture is a vm-failure any more, and `global-agg` (the v0.2
-    // aggregate-constant global initializer gap) is now supported.
-    assert_eq!(report.class_counts.get("success"), Some(&33));
-    assert_eq!(report.class_counts.get("parse-failure"), Some(&4));
+    // correctness failure. No fixture is a vm-failure — the VM runs everything
+    // the interpreter does, aggregate ABI included.
+    assert_eq!(report.class_counts.get("success"), Some(&41));
+    assert_eq!(report.class_counts.get("parse-failure"), Some(&5));
     assert_eq!(report.class_counts.get("scratch-backend-failure"), Some(&3));
     assert!(!report.class_counts.contains_key("vm-failure"));
     assert!(!report.class_counts.contains_key("semantic-mismatch"));
@@ -117,10 +118,10 @@ fn v05_full_corpus_gate_is_green_and_snapshot_holds() {
     let json = render_json(&report);
     assert!(!json.contains('█') && !json.contains('#'), "JSON must not carry bars");
     let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON report");
-    assert_eq!(value["total"].as_u64(), Some(40));
+    assert_eq!(value["total"].as_u64(), Some(49));
     assert_eq!(value["overall"].as_u64(), Some(90));
     assert_eq!(value["gate_green"].as_bool(), Some(true));
-    assert_eq!(value["stages"]["scratch"].as_u64(), Some(83));
+    assert_eq!(value["stages"]["scratch"].as_u64(), Some(84));
     assert_eq!(value["stages"]["vm"].as_u64(), Some(90));
 }
 
@@ -152,6 +153,50 @@ fn feature_filter_selects_only_tagged_fixtures() {
 }
 
 #[test]
+fn aggregate_abi_feature_rows_are_tracked_and_green() {
+    // v0.6 tracks four aggregate-ABI dimensions in the feature breakdown. Each
+    // must have its own row with at least one tagged fixture; every tagged
+    // fixture except the named `i24` boundary is a full success, and none is a
+    // semantic mismatch.
+    let outcomes = run_all(&corpus(), &no_native());
+    let report = build_report(
+        &outcomes,
+        "0.6",
+        "2026-09-10",
+        None,
+        &scratcharch_compat::status::REPORT_STAGES,
+    );
+
+    let row = |feat: &str| {
+        report
+            .features
+            .iter()
+            .find(|m| m.feature == feat)
+            .unwrap_or_else(|| panic!("missing feature row {feat}"))
+    };
+
+    let abi = row("aggregate-abi");
+    assert_eq!(abi.total, 9, "every abi-* fixture is tagged aggregate-abi");
+    assert_eq!(abi.success, 8, "eight of nine pass; the ninth is the i24 boundary");
+    assert_eq!(abi.unsupported, 1);
+    assert_eq!(abi.mismatches, 0);
+
+    let params = row("struct-param");
+    assert_eq!(params.success, 6);
+    assert_eq!(params.mismatches, 0);
+
+    let returns = row("struct-return");
+    assert_eq!(returns.total, 4);
+    assert_eq!(returns.success, 4);
+    assert_eq!(returns.mismatches, 0);
+
+    let nested = row("nested-aggregate");
+    assert_eq!(nested.total, 2);
+    assert_eq!(nested.success, 2);
+    assert_eq!(nested.mismatches, 0);
+}
+
+#[test]
 fn boundary_filter_selects_parser_gap_fixtures() {
     let cfg = RunConfig {
         boundary: vec![Stage::Parser],
@@ -160,10 +205,14 @@ fn boundary_filter_selects_parser_gap_fixtures() {
     };
     let outcomes = run_all(&corpus(), &cfg);
     let names: Vec<&str> = outcomes.iter().map(|o| o.name.as_str()).collect();
-    // v0.5 leaves four parser gaps: `global-agg`, the aggregate-constant global
-    // initializer gap introduced in v0.2, is now supported and no longer
-    // appears here.
-    assert_eq!(names, vec!["float", "vector", "indirect-call", "atomic"]);
+    // v0.6 parser gaps: the four language-feature boundaries carried over from
+    // v0.5 plus `abi-odd-width`, the non-power-of-two record width that has no
+    // SAIR representation. `global-agg` no longer appears: it became supported
+    // in v0.5.
+    assert_eq!(
+        names,
+        vec!["float", "vector", "indirect-call", "atomic", "abi-odd-width"]
+    );
     for o in &outcomes {
         assert_eq!(o.class, ResultClass::ParseFailure);
     }

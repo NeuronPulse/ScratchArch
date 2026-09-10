@@ -1,21 +1,14 @@
 {
   "clang": "Debian clang version 19.1.7 (3+b1)",
   "classes": {
-    "parse-failure": 5,
+    "parse-failure": 4,
     "scratch-backend-failure": 3,
-    "success": 41
+    "success": 33
   },
-  "corpus_version": "0.6",
+  "corpus_version": "0.5",
   "date": "2026-09-10",
   "failures": [],
   "features": {
-    "aggregate-abi": {
-      "percent": 89,
-      "semantic_mismatches": 0,
-      "success": 8,
-      "total": 9,
-      "unsupported": 1
-    },
     "array": {
       "percent": 89,
       "semantic_mismatches": 0,
@@ -52,10 +45,10 @@
       "unsupported": 1
     },
     "i64": {
-      "percent": 80,
+      "percent": 75,
       "semantic_mismatches": 0,
-      "success": 4,
-      "total": 5,
+      "success": 3,
+      "total": 4,
       "unsupported": 1
     },
     "indirect-call": {
@@ -66,10 +59,10 @@
       "unsupported": 1
     },
     "integer": {
-      "percent": 92,
+      "percent": 90,
       "semantic_mismatches": 0,
-      "success": 35,
-      "total": 38,
+      "success": 27,
+      "total": 30,
       "unsupported": 3
     },
     "intrinsic": {
@@ -80,18 +73,11 @@
       "unsupported": 0
     },
     "memory": {
-      "percent": 97,
+      "percent": 96,
       "semantic_mismatches": 0,
-      "success": 30,
-      "total": 31,
+      "success": 22,
+      "total": 23,
       "unsupported": 1
-    },
-    "nested-aggregate": {
-      "percent": 100,
-      "semantic_mismatches": 0,
-      "success": 2,
-      "total": 2,
-      "unsupported": 0
     },
     "phi": {
       "percent": 100,
@@ -101,10 +87,10 @@
       "unsupported": 0
     },
     "pointer": {
-      "percent": 91,
+      "percent": 90,
       "semantic_mismatches": 0,
-      "success": 10,
-      "total": 11,
+      "success": 9,
+      "total": 10,
       "unsupported": 1
     },
     "shift": {
@@ -115,24 +101,10 @@
       "unsupported": 1
     },
     "struct": {
-      "percent": 96,
-      "semantic_mismatches": 0,
-      "success": 22,
-      "total": 23,
-      "unsupported": 1
-    },
-    "struct-param": {
-      "percent": 86,
-      "semantic_mismatches": 0,
-      "success": 6,
-      "total": 7,
-      "unsupported": 1
-    },
-    "struct-return": {
       "percent": 100,
       "semantic_mismatches": 0,
-      "success": 4,
-      "total": 4,
+      "success": 14,
+      "total": 14,
       "unsupported": 0
     },
     "switch": {
@@ -156,7 +128,7 @@
       "fresh_ir": false,
       "interpreter": "I32(42)",
       "name": "hello",
-      "native_exit": null,
+      "native_exit": 42,
       "stages": [
         {
           "message": null,
@@ -197,7 +169,7 @@
       "fresh_ir": false,
       "interpreter": "I32(42)",
       "name": "add",
-      "native_exit": null,
+      "native_exit": 42,
       "stages": [
         {
           "message": null,
@@ -238,7 +210,7 @@
       "fresh_ir": false,
       "interpreter": "I32(120)",
       "name": "factorial",
-      "native_exit": null,
+      "native_exit": 120,
       "stages": [
         {
           "message": null,
@@ -279,7 +251,7 @@
       "fresh_ir": false,
       "interpreter": "I32(55)",
       "name": "fib",
-      "native_exit": null,
+      "native_exit": 55,
       "stages": [
         {
           "message": null,
@@ -320,7 +292,7 @@
       "fresh_ir": false,
       "interpreter": "I32(42)",
       "name": "array",
-      "native_exit": null,
+      "native_exit": 42,
       "stages": [
         {
           "message": null,
@@ -361,7 +333,7 @@
       "fresh_ir": false,
       "interpreter": "I32(30)",
       "name": "struct",
-      "native_exit": null,
+      "native_exit": 30,
       "stages": [
         {
           "message": null,
@@ -402,7 +374,7 @@
       "fresh_ir": false,
       "interpreter": "I32(42)",
       "name": "pointer",
-      "native_exit": null,
+      "native_exit": 42,
       "stages": [
         {
           "message": null,
@@ -443,7 +415,7 @@
       "fresh_ir": false,
       "interpreter": "I32(15)",
       "name": "recursion",
-      "native_exit": null,
+      "native_exit": 15,
       "stages": [
         {
           "message": null,
@@ -484,7 +456,7 @@
       "fresh_ir": false,
       "interpreter": "I32(78)",
       "name": "signed",
-      "native_exit": null,
+      "native_exit": 78,
       "stages": [
         {
           "message": null,
@@ -525,7 +497,7 @@
       "fresh_ir": false,
       "interpreter": "I32(293345)",
       "name": "bitwise",
-      "native_exit": null,
+      "native_exit": 225,
       "stages": [
         {
           "message": null,
@@ -566,7 +538,7 @@
       "fresh_ir": false,
       "interpreter": "I32(3579139508)",
       "name": "i64muldiv",
-      "native_exit": null,
+      "native_exit": 180,
       "stages": [
         {
           "message": null,
@@ -607,7 +579,7 @@
       "fresh_ir": false,
       "interpreter": "I32(95)",
       "name": "globals",
-      "native_exit": null,
+      "native_exit": 95,
       "stages": [
         {
           "message": null,
@@ -648,7 +620,7 @@
       "fresh_ir": false,
       "interpreter": "I32(59)",
       "name": "signedcmp",
-      "native_exit": null,
+      "native_exit": 59,
       "stages": [
         {
           "message": null,
@@ -689,7 +661,7 @@
       "fresh_ir": false,
       "interpreter": "I32(8)",
       "name": "i64arith",
-      "native_exit": null,
+      "native_exit": 8,
       "stages": [
         {
           "message": null,
@@ -730,7 +702,7 @@
       "fresh_ir": false,
       "interpreter": "I32(412)",
       "name": "bytes",
-      "native_exit": null,
+      "native_exit": 156,
       "stages": [
         {
           "message": null,
@@ -771,7 +743,7 @@
       "fresh_ir": false,
       "interpreter": "I32(331)",
       "name": "reinterp",
-      "native_exit": null,
+      "native_exit": 75,
       "stages": [
         {
           "message": null,
@@ -812,7 +784,7 @@
       "fresh_ir": false,
       "interpreter": "I32(5)",
       "name": "string",
-      "native_exit": null,
+      "native_exit": 5,
       "stages": [
         {
           "message": null,
@@ -853,7 +825,7 @@
       "fresh_ir": false,
       "interpreter": "I32(6)",
       "name": "memory",
-      "native_exit": null,
+      "native_exit": 6,
       "stages": [
         {
           "message": null,
@@ -894,7 +866,7 @@
       "fresh_ir": false,
       "interpreter": "I32(1)",
       "name": "memintrin",
-      "native_exit": null,
+      "native_exit": 1,
       "stages": [
         {
           "message": null,
@@ -935,7 +907,7 @@
       "fresh_ir": false,
       "interpreter": "I32(2018928754)",
       "name": "intrinsics",
-      "native_exit": null,
+      "native_exit": 114,
       "stages": [
         {
           "message": null,
@@ -976,7 +948,7 @@
       "fresh_ir": false,
       "interpreter": "I32(255)",
       "name": "runtime_mem",
-      "native_exit": null,
+      "native_exit": 255,
       "stages": [
         {
           "message": null,
@@ -1017,7 +989,7 @@
       "fresh_ir": false,
       "interpreter": "I32(56)",
       "name": "aggstruct",
-      "native_exit": null,
+      "native_exit": 56,
       "stages": [
         {
           "message": null,
@@ -1058,7 +1030,7 @@
       "fresh_ir": false,
       "interpreter": "I32(138)",
       "name": "aggarray",
-      "native_exit": null,
+      "native_exit": 138,
       "stages": [
         {
           "message": null,
@@ -1099,7 +1071,7 @@
       "fresh_ir": false,
       "interpreter": "I32(162)",
       "name": "aggglobal",
-      "native_exit": null,
+      "native_exit": 162,
       "stages": [
         {
           "message": null,
@@ -1140,7 +1112,7 @@
       "fresh_ir": false,
       "interpreter": "I32(314)",
       "name": "aggmatrix",
-      "native_exit": null,
+      "native_exit": 58,
       "stages": [
         {
           "message": null,
@@ -1181,7 +1153,7 @@
       "fresh_ir": false,
       "interpreter": "I32(63)",
       "name": "aggnested",
-      "native_exit": null,
+      "native_exit": 63,
       "stages": [
         {
           "message": null,
@@ -1222,7 +1194,7 @@
       "fresh_ir": false,
       "interpreter": "I32(514)",
       "name": "aggbytes",
-      "native_exit": null,
+      "native_exit": 2,
       "stages": [
         {
           "message": null,
@@ -1263,7 +1235,7 @@
       "fresh_ir": false,
       "interpreter": "I32(30)",
       "name": "switch",
-      "native_exit": null,
+      "native_exit": 30,
       "stages": [
         {
           "message": null,
@@ -1368,7 +1340,7 @@
       "fresh_ir": false,
       "interpreter": "I32(156)",
       "name": "nested-struct",
-      "native_exit": null,
+      "native_exit": 156,
       "stages": [
         {
           "message": null,
@@ -1409,7 +1381,7 @@
       "fresh_ir": false,
       "interpreter": "I32(66)",
       "name": "struct-array",
-      "native_exit": null,
+      "native_exit": 66,
       "stages": [
         {
           "message": null,
@@ -1450,7 +1422,7 @@
       "fresh_ir": false,
       "interpreter": "I32(36)",
       "name": "ptrstruct",
-      "native_exit": null,
+      "native_exit": 36,
       "stages": [
         {
           "message": null,
@@ -1491,7 +1463,7 @@
       "fresh_ir": false,
       "interpreter": "I32(56)",
       "name": "struct-assign",
-      "native_exit": null,
+      "native_exit": 56,
       "stages": [
         {
           "message": null,
@@ -1532,7 +1504,7 @@
       "fresh_ir": false,
       "interpreter": "I32(51)",
       "name": "global-agg",
-      "native_exit": null,
+      "native_exit": 51,
       "stages": [
         {
           "message": null,
@@ -1573,7 +1545,7 @@
       "fresh_ir": false,
       "interpreter": "I32(5)",
       "name": "byte-scan",
-      "native_exit": null,
+      "native_exit": 5,
       "stages": [
         {
           "message": null,
@@ -1614,7 +1586,7 @@
       "fresh_ir": false,
       "interpreter": "I32(7988)",
       "name": "char-mix",
-      "native_exit": null,
+      "native_exit": 52,
       "stages": [
         {
           "message": null,
@@ -1655,7 +1627,7 @@
       "fresh_ir": false,
       "interpreter": "I32(45)",
       "name": "i64-struct",
-      "native_exit": null,
+      "native_exit": 45,
       "stages": [
         {
           "message": null,
@@ -1690,366 +1662,21 @@
       ],
       "violations": [],
       "vm": "I32(45)"
-    },
-    {
-      "class": "success",
-      "fresh_ir": false,
-      "interpreter": "I32(57)",
-      "name": "abi-struct-param",
-      "native_exit": null,
-      "stages": [
-        {
-          "message": null,
-          "stage": "parser",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "sair",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "optimizer",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "interpreter",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "vm",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "scratch",
-          "status": "pass"
-        }
-      ],
-      "violations": [],
-      "vm": "I32(57)"
-    },
-    {
-      "class": "success",
-      "fresh_ir": false,
-      "interpreter": "I32(66)",
-      "name": "abi-struct-return",
-      "native_exit": null,
-      "stages": [
-        {
-          "message": null,
-          "stage": "parser",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "sair",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "optimizer",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "interpreter",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "vm",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "scratch",
-          "status": "pass"
-        }
-      ],
-      "violations": [],
-      "vm": "I32(66)"
-    },
-    {
-      "class": "success",
-      "fresh_ir": false,
-      "interpreter": "I32(125)",
-      "name": "abi-nested-param",
-      "native_exit": null,
-      "stages": [
-        {
-          "message": null,
-          "stage": "parser",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "sair",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "optimizer",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "interpreter",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "vm",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "scratch",
-          "status": "pass"
-        }
-      ],
-      "violations": [],
-      "vm": "I32(125)"
-    },
-    {
-      "class": "success",
-      "fresh_ir": false,
-      "interpreter": "I32(126)",
-      "name": "abi-nested-return",
-      "native_exit": null,
-      "stages": [
-        {
-          "message": null,
-          "stage": "parser",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "sair",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "optimizer",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "interpreter",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "vm",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "scratch",
-          "status": "pass"
-        }
-      ],
-      "violations": [],
-      "vm": "I32(126)"
-    },
-    {
-      "class": "success",
-      "fresh_ir": false,
-      "interpreter": "I32(7)",
-      "name": "abi-i64-field",
-      "native_exit": null,
-      "stages": [
-        {
-          "message": null,
-          "stage": "parser",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "sair",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "optimizer",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "interpreter",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "vm",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "scratch",
-          "status": "pass"
-        }
-      ],
-      "violations": [],
-      "vm": "I32(7)"
-    },
-    {
-      "class": "success",
-      "fresh_ir": false,
-      "interpreter": "I32(36)",
-      "name": "abi-ptr-field",
-      "native_exit": null,
-      "stages": [
-        {
-          "message": null,
-          "stage": "parser",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "sair",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "optimizer",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "interpreter",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "vm",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "scratch",
-          "status": "pass"
-        }
-      ],
-      "violations": [],
-      "vm": "I32(36)"
-    },
-    {
-      "class": "success",
-      "fresh_ir": false,
-      "interpreter": "I32(119)",
-      "name": "abi-multi-agg",
-      "native_exit": null,
-      "stages": [
-        {
-          "message": null,
-          "stage": "parser",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "sair",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "optimizer",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "interpreter",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "vm",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "scratch",
-          "status": "pass"
-        }
-      ],
-      "violations": [],
-      "vm": "I32(119)"
-    },
-    {
-      "class": "success",
-      "fresh_ir": false,
-      "interpreter": "I32(87)",
-      "name": "abi-mixed-args",
-      "native_exit": null,
-      "stages": [
-        {
-          "message": null,
-          "stage": "parser",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "sair",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "optimizer",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "interpreter",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "vm",
-          "status": "pass"
-        },
-        {
-          "message": null,
-          "stage": "scratch",
-          "status": "pass"
-        }
-      ],
-      "violations": [],
-      "vm": "I32(87)"
-    },
-    {
-      "class": "parse-failure",
-      "fresh_ir": false,
-      "interpreter": null,
-      "name": "abi-odd-width",
-      "native_exit": null,
-      "stages": [
-        {
-          "message": "unsupported type: integer width i24 is not supported: SAIR represents i1, i8, i16, i32 and i64 only (clang coerces a struct whose fields total an odd number of bytes — e.g. three `char`s — to a width like i24)",
-          "stage": "parser",
-          "status": "unsupported"
-        }
-      ],
-      "violations": [],
-      "vm": null
     }
   ],
   "gate_green": true,
   "overall": 90,
-  "overall_pass": 44,
+  "overall_pass": 36,
   "semantic_mismatches": [],
   "stages": {
     "interpreter": 90,
     "parser": 90,
     "sair": 90,
-    "scratch": 84,
+    "scratch": 83,
     "vm": 90
   },
-  "total": 49,
+  "total": 40,
   "unsupported_features": {
-    "aggregate-abi": 1,
     "array": 1,
     "atomic": 1,
     "bitwise": 1,
@@ -2061,8 +1688,6 @@
     "memory": 1,
     "pointer": 1,
     "shift": 1,
-    "struct": 1,
-    "struct-param": 1,
     "vector": 1
   }
 }
